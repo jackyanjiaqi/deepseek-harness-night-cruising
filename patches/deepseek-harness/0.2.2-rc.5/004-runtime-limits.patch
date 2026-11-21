@@ -1,0 +1,183 @@
+diff --git a/apps/desktop/scripts/prepare-runtime.ts b/apps/desktop/scripts/prepare-runtime.ts
+index 4822da1148..44df6586b7 100644
+--- a/apps/desktop/scripts/prepare-runtime.ts
++++ b/apps/desktop/scripts/prepare-runtime.ts
+@@ -1,9 +1,9 @@
+ /** Prepare Desktop resources and publish their versions after every preparation stage succeeds. */
+ 
+ import { execFileSync } from 'node:child_process'
+-import { chmodSync, cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
++import { chmodSync, constants, cpSync, existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+ import { createRequire } from 'node:module'
+-import { join } from 'node:path'
++import { dirname, join } from 'node:path'
+ import { parseArgs } from 'node:util'
+ import { downloadArtifact } from '@electron/get'
+ import extractZip from 'extract-zip'
+@@ -23,10 +23,16 @@ type DesktopTarget = ReturnType<typeof desktopTargetPlatform>
+ async function prepareElectron({ platform, arch }: DesktopTarget): Promise<string> {
+   const require = createRequire(import.meta.url)
+   const { version } = require('electron/package.json') as { version: string }
+-  const archive = await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'download:electron',
+-    () => downloadArtifact({ version, platform, arch, artifactName: 'electron', cacheRoot: BUILD_PATHS.downloads }))
++  const distribution = join(dirname(require.resolve('electron/package.json')), 'dist')
+   rmSync(BUILD_PATHS.electron, { recursive: true, force: true })
+-  await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'extract:electron', () => extractZip(archive, { dir: BUILD_PATHS.electron }))
++  if (platform === process.platform && arch === process.arch && existsSync(join(distribution, 'version'))
++    && readFileSync(join(distribution, 'version'), 'utf8').trim() === version) {
++    cpSync(distribution, BUILD_PATHS.electron, { recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE })
++  } else {
++    const archive = await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'download:electron',
++      () => downloadArtifact({ version, platform, arch, artifactName: 'electron', cacheRoot: BUILD_PATHS.downloads }))
++    await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'extract:electron', () => extractZip(archive, { dir: BUILD_PATHS.electron }))
++  }
+   const executable = join(BUILD_PATHS.electron, platform === 'win32' ? 'electron.exe' : platform === 'linux' ? 'electron' : 'Electron.app/Contents/MacOS/Electron')
+   return execFileSync(executable, ['-p', 'process.versions.node'], {
+     encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+diff --git a/packages/boot/plugin-manager/src/run-tree.ts b/packages/boot/plugin-manager/src/run-tree.ts
+index f02fe32817..4105339ce6 100644
+--- a/packages/boot/plugin-manager/src/run-tree.ts
++++ b/packages/boot/plugin-manager/src/run-tree.ts
+@@ -1,8 +1,5 @@
+ /** Waiting for one package run's process tree to disappear before its caller touches the profile. */
+ 
+-/** How long a terminated tree may take to disappear before the caller stops waiting. */
+-const TREE_WAIT_MS = 5_000
+-
+ /** Poll cadence while waiting for a terminated tree to disappear. */
+ const TREE_POLL_MS = 15
+ 
+@@ -69,9 +66,7 @@ export function treeAlive(tree: RunTree, internals: RunTreeInternals = {}): bool
+  * @returns Fulfillment once no member remains, or the wait bound elapsed.
+  */
+ export async function awaitTreeGone(tree: RunTree, internals: RunTreeInternals = {}): Promise<void> {
+-  const deadline = Date.now() + (internals.waitMs ?? TREE_WAIT_MS)
+   while (treeAlive(tree, internals)) {
+-    if (Date.now() >= deadline) return
+     await new Promise(resolve => setTimeout(resolve, TREE_POLL_MS))
+   }
+ }
+diff --git a/packages/credentials/deepseek-account/src/index.ts b/packages/credentials/deepseek-account/src/index.ts
+index 561fc5ccde..3f2f1da9b2 100644
+--- a/packages/credentials/deepseek-account/src/index.ts
++++ b/packages/credentials/deepseek-account/src/index.ts
+@@ -80,11 +80,11 @@ const Config = Schema.object({
+   rewriteBrowserOrigin: Schema.boolean().default(false),
+   requestHeaders: Schema.dict(Schema.string().role('secret')).default({}),
+   accountRequestHeaders: Schema.dict(Schema.string().role('secret')).default({}),
+-  requestTimeoutMs: Schema.number().min(1).max(120_000).default(Math.max(30_000, 2_147_483_647)),
+-  balanceTimeoutMs: Schema.number().min(1).max(120_000).default(Math.max(30_000, 2_147_483_647)),
++  requestTimeoutMs: Schema.number().min(1).max(2_147_483_647).default(2_147_483_647),
++  balanceTimeoutMs: Schema.number().min(1).max(2_147_483_647).default(2_147_483_647),
+   logoutMaxRetries: Schema.number().min(0).max(5).step(1).default(5),
+   logoutRetryDelayMs: Schema.number().min(1).max(60_000).default(1_000),
+-  attemptTimeoutMs: Schema.number().min(1).max(3_600_000).default(Math.max(600_000, 2_147_483_647)),
++  attemptTimeoutMs: Schema.number().min(1).max(2_147_483_647).default(2_147_483_647),
+ })
+ 
+ interface Attempt {
+@@ -116,7 +116,6 @@ export class DeepSeekAccount extends TypertRemoteService {
+   private readonly accountRequestHeaders: Record<string, string>
+   private readonly requestTimeout: number
+   private readonly balanceTimeout: number
+-  private readonly attemptTimeout: number
+   private readonly logoutPolicy: LogoutRetryPolicy
+   private readonly logoutLifetime = new AbortController()
+   private readonly revocations = new Set<Promise<void>>()
+@@ -155,7 +154,6 @@ export class DeepSeekAccount extends TypertRemoteService {
+     }
+     this.requestTimeout = resolved.requestTimeoutMs
+     this.balanceTimeout = resolved.balanceTimeoutMs
+-    this.attemptTimeout = resolved.attemptTimeoutMs
+     this.logoutPolicy = {
+       maxRetries: resolved.logoutMaxRetries, delayMs: resolved.logoutRetryDelayMs, requestTimeoutMs: (void (this.requestTimeout), 2_147_483_647),
+     }
+@@ -691,9 +689,8 @@ export class DeepSeekAccount extends TypertRemoteService {
+     // Callback requests may precede initialization settlement; the rejection is observed immediately.
+     void code.promise.catch(() => undefined)
+     const deadline = new AbortController()
+-    let expiresAt = Date.now() + this.attemptTimeout
+     const signal = AbortSignal.any([session.signal, deadline.signal])
+-    let timer = setTimeout(() =>{  deadline.abort() }, (void (this.attemptTimeout), 2_147_483_647))
++    let timer: ReturnType<typeof setTimeout> | undefined
+     const abort = (): void => { code.reject(new PlatformAuthError('expired')) }
+     signal.addEventListener('abort', abort, { once: true })
+     try {
+@@ -728,11 +725,11 @@ export class DeepSeekAccount extends TypertRemoteService {
+       authorizeId = init.data.authorize_id
+       signal.throwIfAborted()
+       const now = Date.now()
+-      expiresAt = Math.min(expiresAt, now + init.data.expires_in * 1000)
++      const expiresAt = now + init.data.expires_in * 1000
+       const remaining = expiresAt - now
+       if (remaining <= 0) { deadline.abort(); signal.throwIfAborted() }
+       clearTimeout(timer)
+-      timer = setTimeout(() =>{  deadline.abort() }, (void (remaining), 2_147_483_647))
++      if (remaining <= 2_147_483_647) timer = setTimeout(() => { deadline.abort() }, remaining)
+       this.update(attempt, { phase: 'waiting-browser', authorizeUrl, expiresAt })
+       const receivedCode = await code.promise
+       signal.throwIfAborted()
+diff --git a/packages/util/atomic-write/src/index.ts b/packages/util/atomic-write/src/index.ts
+index 60e2c67b8c..2c6a00e913 100644
+--- a/packages/util/atomic-write/src/index.ts
++++ b/packages/util/atomic-write/src/index.ts
+@@ -185,17 +185,6 @@ async function takeOverExitedLock(lockPath: string): Promise<boolean> {
+ const LOCK_RETRY_INITIAL_MS = 20
+ const LOCK_RETRY_MAX_MS = 200
+ 
+-/**
+- * How long a contender waits when the caller states no limit — sized for the
+- * render-and-rename cycle every call site had when this package was written.
+- * Expiry fails the contender rather than guessing whether the existing lock
+- * still has an owner. How long is *worth* waiting is a property of the
+- * operation the lock holder runs, which is why {@link FileLockOptions.waitMs}
+- * exists; the value here is the floor for an operation that does file work
+- * alone.
+- */
+-const DEFAULT_LOCK_WAIT_MS = 2_000
+-
+ /** Options for one {@link withFileLock} acquisition. */
+ export interface FileLockOptions {
+   /** Cancel acquisition and contention waits; the operation owns cancellation after it starts. */
+@@ -232,7 +221,7 @@ export interface FileLockOptions {
+  * the lock. The parent directory must exist.
+  * @param filename - the file whose writers this lock serializes.
+  * @param operation - the read-render-commit cycle to run while holding the lock.
+- * @param options - acquisition options; omitted waits {@link DEFAULT_LOCK_WAIT_MS}.
++ * @param options - acquisition cancellation signal.
+  * @returns the operation's result; the lock releases on both outcomes.
+  */
+ export async function withFileLock<T>(
+@@ -241,7 +230,6 @@ export async function withFileLock<T>(
+   options?: FileLockOptions,
+ ): Promise<T> {
+   const lockPath = `${filename}.lock`
+-  const deadline = Date.now() + (options?.waitMs ?? DEFAULT_LOCK_WAIT_MS)
+   let delay = LOCK_RETRY_INITIAL_MS
+   let retriedUnconfirmedPermissionError = false
+   for (;;) {
+@@ -258,9 +246,6 @@ export async function withFileLock<T>(
+         retriedUnconfirmedPermissionError = true
+       } else if (await takeOverExitedLock(lockPath)) continue
+     }
+-    if (Date.now() >= deadline) {
+-      throw new Error(`atomic-write: timed out waiting for the writer lock at ${lockPath}`)
+-    }
+     await wait(delay, undefined, { signal: options?.signal })
+     delay = Math.min(delay * 2, LOCK_RETRY_MAX_MS)
+   }
+diff --git a/scripts/primary-runtime/prepare.ts b/scripts/primary-runtime/prepare.ts
+index b7ae0e3882..a3abce0a6a 100644
+--- a/scripts/primary-runtime/prepare.ts
++++ b/scripts/primary-runtime/prepare.ts
+@@ -31,9 +31,7 @@ export async function downloadPrimaryRuntimeAsset(url: string, sha256: string, c
+   try { bytes = readFileSync(destination) } catch (error) {
+     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+     cached = false
+-    const timeout = Number(process.env.DSH_RESOURCE_DOWNLOAD_TIMEOUT_MS ?? '300000')
+-    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 2_147_483_647) throw new Error('DSH_RESOURCE_DOWNLOAD_TIMEOUT_MS must be an integer from 1 to 2147483647')
+-    const response = await fetch(url, { signal: (void (timeout), new AbortController().signal) })
++    const response = await fetch(url)
+     if (!response.ok) throw new Error(`primary runtime download: ${String(response.status)} ${url}`)
+     bytes = Buffer.from(await response.arrayBuffer())
+   }

@@ -1,0 +1,36 @@
+name: Night Cruising desktop
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+      - run: npm test
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a npm run release
+      - if: runner.os != 'Linux'
+        run: npm run release
+      - if: runner.os == 'Linux'
+        run: npm run release:source
+      - uses: actions/upload-artifact@v4
+        with:
+          name: night-cruising-${{ runner.os }}-${{ runner.arch }}
+          path: dist/*
+          if-no-files-found: error

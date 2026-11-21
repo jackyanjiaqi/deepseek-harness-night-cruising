@@ -1,0 +1,110 @@
+# Reviewed against dsh-v0.2.2-rc.5 (9c2670d3bc); carried from 0.2.1-rc.2 unchanged.
+# Linux x64 source desktop: development target, primary runtime payload and smoke check.
+# Behavior on win32/darwin is unchanged (helpers fall back to the upstream paths).
+diff --git a/apps/desktop/scripts/dev.ts b/apps/desktop/scripts/dev.ts
+--- a/apps/desktop/scripts/dev.ts
++++ b/apps/desktop/scripts/dev.ts
+@@ -11,11 +11,35 @@
+ import { prepareDevelopmentProject } from './development-project.ts'
+ import { prepareDevelopmentApp } from './development-app.ts'
+ import { preparePrimaryRuntime } from './prepare-primary-runtime.ts'
++import { preparePrimaryRuntime as preparePayload, smokePrimaryRuntime } from '../../../scripts/primary-runtime/prepare.ts'
+ 
+ const APP_ROOT = resolve(import.meta.dirname, '..')
+ const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
+ const BUILD_ROOT = join(APP_ROOT, '.desktop-build')
+ const DEVELOPMENT_ROOT = join(BUILD_ROOT, 'development')
++
++function developmentTarget(): ReturnType<typeof resolveDesktopBuildTarget> | 'linux-x64' {
++  if (process.platform !== 'linux') return resolveDesktopBuildTarget()
++  if (process.arch !== 'x64') throw new Error(`desktop development: unsupported Linux architecture ${process.arch}`)
++  return 'linux-x64'
++}
++
++function primaryRuntimeDirectory(): string {
++  return process.platform === 'linux'
++    ? join(BUILD_ROOT, 'targets', developmentTarget(), 'runtime', 'primary-runtime')
++    : developmentRuntimeDirectory()
++}
++
++async function prepareDevelopmentRuntime(version: string): Promise<void> {
++  if (process.platform !== 'linux') {
++    await preparePrimaryRuntime()
++    return
++  }
++  const root = primaryRuntimeDirectory()
++  await preparePayload({ target: 'linux-x64', output: join(root, '..'),
++    cache: join(BUILD_ROOT, 'downloads'), version })
++  smokePrimaryRuntime(root)
++}
+ 
+ interface PackageManifest {
+   readonly version?: string
+@@ -68,7 +92,7 @@
+   const environment: NodeJS.ProcessEnv = {
+     ...process.env,
+     DSH_HOME: home,
+-    DSH_DESKTOP_PRIMARY_RUNTIME_DIR: process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR ?? developmentRuntimeDirectory(),
++    DSH_DESKTOP_PRIMARY_RUNTIME_DIR: process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR ?? primaryRuntimeDirectory(),
+     DSH_DESKTOP_HOST_INSPECT_PORT: String(hostPort),
+     DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
+     ELECTRON_ENABLE_LOGGING: process.env.ELECTRON_ENABLE_LOGGING ?? '1',
+@@ -118,9 +142,9 @@
+     hostDir: join(REPOSITORY_ROOT, 'apps', 'desktop-host'),
+     dependencyDir: join(REPOSITORY_ROOT, 'node_modules', '.pnpm', 'node_modules'),
+     release,
+-    target: resolveDesktopBuildTarget(),
++    target: developmentTarget(),
+   })
+-  await preparePrimaryRuntime()
++  await prepareDevelopmentRuntime(version)
+   await launchElectron()
+ }
+ 
+diff --git a/apps/desktop/scripts/development-project.ts b/apps/desktop/scripts/development-project.ts
+--- a/apps/desktop/scripts/development-project.ts
++++ b/apps/desktop/scripts/development-project.ts
+@@ -38,7 +38,7 @@
+   /** Release identity written into the disposable project metadata. */
+   readonly release: DesktopRelease
+   /** Build target whose prepared payload the disposable project runs against. */
+-  readonly target: DesktopAutoUpdateTarget
++  readonly target: DesktopAutoUpdateTarget | 'linux-x64'
+ }
+ 
+ function readManifest(path: string): PackageManifest {
+@@ -163,7 +163,7 @@
+     return typeof manifest.version === 'string' ? [{ name, version: manifest.version, path: `node_modules/${name}` }] : []
+   })
+   const runtime: DesktopRuntimeDescriptor = { schemaVersion: 1, release: options.release,
+-    ...desktopTargetPlatform(options.target), sharedPackages, files: [] }
++    ...(options.target === 'linux-x64' ? { platform: 'linux' as const, arch: 'x64' } : desktopTargetPlatform(options.target)), sharedPackages, files: [] }
+   writeFileSync(join(options.projectDir, DESKTOP_RUNTIME_FILE), `${JSON.stringify(runtime, undefined, 2)}\n`)
+   return options.projectDir
+ }
+diff --git a/apps/desktop/tests/development-project.spec.ts b/apps/desktop/tests/development-project.spec.ts
+--- a/apps/desktop/tests/development-project.spec.ts
++++ b/apps/desktop/tests/development-project.spec.ts
+@@ -31,7 +31,7 @@
+ })
+ 
+ describe('desktop development project', () => {
+-  it('includes declared workspace packages missing from the hoist directory in the runtime inventory', () => {
++  it.each(['mac-arm64', 'linux-x64'] as const)('includes unhoisted workspace packages in the %s development runtime', (target) => {
+     const root = temporaryRoot()
+     const cli = join(root, 'cli')
+     const host = join(root, 'host')
+@@ -46,10 +46,11 @@
+     writeFileSync(join(host, 'lib/index.js'), '')
+     writeFileSync(join(dependency, 'package.json'), JSON.stringify({ name: 'unhoisted', version: '1.2.3' }))
+     symlinkSync(dependency, join(cli, 'node_modules/unhoisted'), process.platform === 'win32' ? 'junction' : 'dir')
+-    const project = prepareDevelopmentProject({ projectDir: join(root, 'runtime'), cliDir: cli, hostDir: host, dependencyDir: hoisted, release: release(), target: 'mac-arm64' })
++    const project = prepareDevelopmentProject({ projectDir: join(root, 'runtime'), cliDir: cli, hostDir: host, dependencyDir: hoisted, release: release(), target })
+     expect(realpathSync(join(project, 'node_modules/unhoisted'))).toBe(realpathSync(dependency))
+     const descriptor = JSON.parse(readFileSync(join(project, 'desktop-runtime.json'), 'utf8')) as { platform: string; arch: string; sharedPackages: unknown[] }
+-    expect(descriptor).toMatchObject({ platform: 'darwin', arch: 'arm64' })
++    expect(descriptor).toMatchObject(target === 'linux-x64'
++      ? { platform: 'linux', arch: 'x64' } : { platform: 'darwin', arch: 'arm64' })
+     expect(descriptor.sharedPackages).toContainEqual({ name: 'unhoisted', version: '1.2.3', path: 'node_modules/unhoisted' })
+   })
+ 

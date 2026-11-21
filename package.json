@@ -1,0 +1,14 @@
+{
+  "name": "deepseek-harness-night-cruising",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "prepare:source": "node patches/tools/cruise.mjs prepare",
+    "build": "node patches/tools/cruise.mjs build",
+    "start": "node patches/tools/cruise.mjs start",
+    "dev": "node patches/tools/cruise.mjs dev",
+    "release": "node patches/tools/cruise.mjs release",
+    "release:source": "node patches/tools/cruise.mjs source",
+    "test": "node --test patches/tools/*.test.mjs"
+  }
+}
