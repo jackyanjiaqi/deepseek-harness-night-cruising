@@ -31,13 +31,14 @@ test('release history, partial platform uploads and atomic catalog publication',
     },
   }
   let date = new Date('2026-11-21T10:00:00Z')
+  let packageVersion = '1.0.0'
   const deploy = async () => {
-    const files = await scanArtifacts(dir)
+    const files = await scanArtifacts(packageVersion, dir)
     return publish(
       store,
       files,
       ['index.html'],
-      (prev) => catalog(prev, files, '1.3.0', '测试备案号', date),
+      (prev) => catalog(prev, files, packageVersion, '测试备案号', date),
       dir,
     )
   }
@@ -49,8 +50,16 @@ test('release history, partial platform uploads and atomic catalog publication',
   await writeFile(join(dir, 'index.html'), 'site')
   const mac = 'night-cruising-1.0.0-darwin-arm64.dmg'
   await artifact(mac, 'mac')
+  await writeFile(join(dir, 'night-cruising-0.1.0-darwin-arm64.dmg'), 'excluded')
+  objects.set(catalogKey, {
+    bytes: Buffer.from(JSON.stringify({
+      schema: 1, siteVersion: '0.1.0-20261120-v1', releases: [{ version: '0.1.0', files: [] }],
+    })),
+  })
   const first = await deploy()
-  assert.equal(first.siteVersion, '1.3.0-20261121-v1')
+  assert.deepEqual(first.releases.map((item) => item.version), [packageVersion])
+  assert.equal(first.latestVersion, packageVersion)
+  assert.equal(first.siteVersion, '1.0.0-20261121-v1')
   assert.deepEqual(
     first.releases[0].files.map((f) => f.platform),
     ['darwin'],
@@ -63,18 +72,24 @@ test('release history, partial platform uploads and atomic catalog publication',
   await assert.rejects(deploy(), /conflict/)
   assert.deepEqual(await store.current(), first)
   fail = ''
+  await deploy()
+  packageVersion = '1.0.1-rc.2'
+  await deploy()
+  packageVersion = '1.0.1-rc.10'
   const second = await deploy()
-  assert.equal(second.siteVersion, '1.3.0-20261121-v2')
+  assert.equal(second.latestVersion, packageVersion)
+  assert.equal(second.siteVersion, '1.0.1-rc.10-20261121-v4')
   assert.equal(second.releases[0].version, '1.0.1-rc.10')
   assert.deepEqual(
     second.releases.at(-1).files.map((f) => f.platform),
     ['darwin', 'win32'],
   )
   date = new Date('2026-11-21T16:01:00Z')
-  assert.equal((await deploy()).siteVersion, '1.3.0-20261122-v1')
+  assert.equal((await deploy()).siteVersion, '1.0.1-rc.10-20261122-v1')
   objects.set('data/site-publish.lock', { bytes: Buffer.from('held') })
   await assert.rejects(deploy(), /conflict/)
   assert(objects.has('data/site-publish.lock'))
+  packageVersion = '1.0.0'
   await writeFile(join(dir, 'night-cruising-1.0.0-win32-x64.exe'), 'bad data')
-  await assert.rejects(scanArtifacts(dir), /校验失败/)
+  await assert.rejects(scanArtifacts(packageVersion, dir), /校验失败/)
 })

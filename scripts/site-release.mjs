@@ -9,7 +9,6 @@ import semver from 'semver'
 export const root = fileURLToPath(new URL('../', import.meta.url))
 export const site = join(root, 'site')
 export const catalogKey = 'data/releases.json'
-export const domainName = 'deepseek-harness-night-cruising.partyplay.top'
 const hero =
   'patches/deepseek-harness/0.2.2-rc.5/000-night-cruising-media.dir.patch/files/apps/web/src/night-ride.jpg'
 const dist = join(root, 'dist')
@@ -61,7 +60,10 @@ export async function kodoHash(stream) {
   const etag = Buffer.concat([Buffer.from([multi ? 0x96 : 0x16]), hash]).toString('base64url')
   return { size, sha256: digest.digest('hex'), etag }
 }
-export async function scanArtifacts(directory = dist) {
+const unlistedVersion = '0.1.0'
+
+export async function scanArtifacts(packageVersion, directory = dist) {
+  if (!semver.valid(packageVersion)) throw Error('package.json version 必须是有效的语义版本号')
   let entries
   try {
     entries = await readdir(directory, { withFileTypes: true })
@@ -78,6 +80,7 @@ export async function scanArtifacts(directory = dist) {
     )
     if (!match || !semver.valid(match[1])) throw Error('无法识别发行文件 ' + entry.name)
     const [, version, target, format] = match
+    if (version !== packageVersion || version === unlistedVersion) continue
     const [platform, arch = ''] = target.split('-')
     if (format !== { src: 'tar.gz', linux: 'tar.gz', darwin: 'dmg', win32: 'exe' }[platform])
       throw Error('平台和扩展名不匹配 ' + entry.name)
@@ -102,7 +105,11 @@ export function catalog(previous, artifacts, packageVersion, icp, date = new Dat
   const serial = previous?.siteVersion.match(/-(\d{8})-v(\d+)$/)
   if (previous && !serial) throw Error('线上网站版本格式未知')
   if (serial && serial[1] > stamp) throw Error('本地日期早于已发布的网站版本')
-  const releases = new Map((previous?.releases ?? []).map((item) => [item.version, structuredClone(item)]))
+  const releases = new Map(
+    (previous?.releases ?? [])
+      .filter((item) => item.version !== unlistedVersion)
+      .map((item) => [item.version, structuredClone(item)]),
+  )
   for (const { version, file } of artifacts) {
     const release = releases.get(version) ?? { version, date: today, files: [] }
     const at = release.files.findIndex((f) => f.platform === file.platform && f.arch === file.arch)
@@ -121,7 +128,7 @@ export function catalog(previous, artifacts, packageVersion, icp, date = new Dat
   const sorted = [...releases.values()].sort((a, b) => semver.rcompare(a.version, b.version))
   return {
     schema: 1,
-    latestVersion: sorted[0]?.version ?? null,
+    latestVersion: releases.has(packageVersion) ? packageVersion : null,
     siteVersion: packageVersion + '-' + stamp + '-v' + (serial?.[1] === stamp ? Number(serial[2]) + 1 : 1),
     icp: icp.trim(),
     releases: sorted,

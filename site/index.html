@@ -14,8 +14,10 @@
       <nav class="frame" aria-label="主导航">
         <a class="brand" href="./"><i class="mark" aria-hidden="true"></i>深夜巡航</a>
         <div class="nav-links">
-          <a href="./" aria-current="page">概览</a><a href="downloads.html">下载</a
-          ><a class="source" href="https://github.com/deepseek-ai/deepseek-harness">上游源码</a>
+          <a href="./" aria-current="page">概览</a>
+          <a href="downloads.html">下载</a>
+          <a class="source" href="https://github.com/deepseek-ai/deepseek-harness">上游</a>
+          <a href="https://github.com/jackyanjiaqi/deepseek-harness-night-cruising">源码</a>
         </div>
       </nav>
     </header>
@@ -25,9 +27,29 @@
           <p class="wordmark"><span></span> DEEPSEEK HARNESS</p>
           <h1 id="title">深夜巡航</h1>
           <p class="english" lang="en">Night Cruising</p>
-          <p class="intro">为长时间运行的 AI 任务打造的桌面发行版。<br />深色工作区，保留手动取消。</p>
+          <p class="intro">为长时间运行的 AI 任务打造的桌面发行版。</p>
           <a class="button light" href="downloads.html">下载桌面版</a>
         </div>
+      </section>
+      <section class="frame features" data-feature-version="0.2.2-rc.5" aria-labelledby="features-title" hidden>
+        <div class="section-title">
+          <h2 id="features-title">版本特性</h2>
+          <span class="feature-version"></span>
+        </div>
+        <dl class="feature-list">
+          <div>
+            <dt>长任务持续等待</dt>
+            <dd>模型请求和流式响应取消了应用层超时。即使模型长时间没有返回新内容，仍会继续等待，你可以随时手动取消。</dd>
+          </div>
+          <div>
+            <dt>夜间巡航工作区</dt>
+            <dd>工作区默认采用深色配色，底部是一幅骑手穿过跨江大桥的夜景。点「播放音乐」即可循环播放随包的合成器配乐，再点一次暂停。</dd>
+          </div>
+          <div>
+            <dt>Linux 桌面构建</dt>
+            <dd>可以从源码构建 Linux x64 桌面版。解压生成的发行包后，即可启动图形界面，也可以使用随包的 dsh 命令行工具。</dd>
+          </div>
+        </dl>
       </section>
       <section class="frame home-release">
         <div class="section-title">

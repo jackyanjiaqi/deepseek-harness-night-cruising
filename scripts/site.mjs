@@ -9,7 +9,6 @@ import {
   catalog,
   catalogKey,
   config,
-  domainName,
   downloadKey,
   kodoHash,
   prepareSite,
@@ -44,8 +43,8 @@ function qiniuStore(env) {
     if (!env[key]?.trim()) throw Error('缺少 .env.local 字段 ' + key)
   }
   const domain = new URL(env.DOMAIN)
-  if (domain.origin !== 'https://' + domainName || domain.href !== domain.origin + '/')
-    throw Error('DOMAIN 应为 https://' + domainName + '，请同时核对 BUCKET 为巡航站点专用空间')
+  if (domain.protocol !== 'https:' || domain.href !== domain.origin + '/')
+    throw Error('DOMAIN 应为巡航站点的 HTTPS 根地址')
   const upload = new URL(env.UPLOAD_HOST.includes('://') ? env.UPLOAD_HOST : 'https://' + env.UPLOAD_HOST)
   if (upload.protocol !== 'https:' || upload.href !== upload.origin + '/')
     throw Error('UPLOAD_HOST 应为 HTTPS 上传域名')
@@ -61,7 +60,7 @@ function qiniuStore(env) {
   return {
     async checkDomain() {
       const result = await manager.listBucketDomains(bucket)
-      if (!result.ok() || !result.data.some((entry) => entry.domain === domainName))
+      if (!result.ok() || !result.data.some((entry) => entry.domain === domain.hostname))
         throw Error('七牛未确认巡航域名绑定到此 BUCKET，请检查空间和自定义源站域名')
     },
     async current() {
@@ -134,17 +133,17 @@ async function main() {
     throw Error('请选择 build、plan、preview 或 deploy')
   const env = await config()
   const version = await prepareSite()
-  const artifacts = await scanArtifacts()
+  const artifacts = await scanArtifacts(version)
   const files = await siteFiles(site)
   const buildCatalog = (previous) => catalog(previous, artifacts, version, env.ICP)
   if (action === 'deploy') {
     const next = await publish(qiniuStore(env), artifacts, files, buildCatalog)
-    console.log('已发布网站', next.siteVersion, '最新软件版本', next.releases[0]?.version ?? '暂无')
+    console.log('已发布网站', next.siteVersion, '最新软件版本', next.latestVersion ?? '暂无')
     return
   }
   const next = buildCatalog(null)
   await writeCatalog(next)
-  console.log('本地预览版本', next.siteVersion, '最新软件版本', next.releases[0]?.version ?? '暂无')
+  console.log('本地预览版本', next.siteVersion, '最新软件版本', next.latestVersion ?? '暂无')
   if (action === 'plan') {
     for (const { version, file } of artifacts) console.log(downloadKey(version, file), '+ .sha256')
     console.log([...files, catalogKey].join('\n'))

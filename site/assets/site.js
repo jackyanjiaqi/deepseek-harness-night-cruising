@@ -45,7 +45,13 @@ try {
   const data = await response.json()
   const footer = document.querySelector('#footer-info')
   footer.append(el('span', '网站 ' + data.siteVersion), link(data.icp, 'https://beian.miit.gov.cn/'))
-  const [first, ...previous] = data.releases
+  const first = data.releases.find((release) => release.version === data.latestVersion)
+  const features = document.querySelector('[data-feature-version]')
+  if (first && features?.dataset.featureVersion === first.version) {
+    features.querySelector('.feature-version').textContent = 'v' + first.version
+    features.hidden = false
+  }
+  const previous = data.releases.filter((release) => release.version !== data.latestVersion)
   latest.replaceChildren(first ? releaseCard(first) : el('p', '暂无已发布版本。', 'empty'))
   if (previous.length && document.querySelector('#history')) {
     document.querySelector('#previous').replaceChildren(...previous.map(releaseCard))
