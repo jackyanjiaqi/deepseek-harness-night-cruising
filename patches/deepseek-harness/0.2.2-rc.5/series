@@ -3,3 +3,4 @@
 003-night-cruising.patch
 004-runtime-limits.patch
 005-desktop-release.patch
+006-test-and-sdk-timeouts.patch

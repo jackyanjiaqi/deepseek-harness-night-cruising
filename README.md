@@ -46,7 +46,7 @@ npm run dev
 | 登录授权、更新和下载 | 保留服务端返回的授权过期时间；运行时下载移除本地截止时间，其他操作见补丁 | packages/credentials/deepseek-account、apps/desktop、scripts/primary-runtime |
 | 打包、退出和测试框架 | 依接口关闭或采用最大计时值 | apps/desktop/scripts、scripts/run-gates.ts、vitest.*.config.ts |
 
-`2_147_483_647` 毫秒约为 24.86 天。使用该值的路径仍有上界。操作系统、远端服务和网络代理仍可终止连接。完整变更可按文件核查 `002-disable-operation-timeouts.patch`、`003-night-cruising.patch`、`004-runtime-limits.patch` 和 `005-desktop-release.patch`。
+`2_147_483_647` 毫秒约为 24.86 天。使用该值的路径仍有上界。操作系统、远端服务和网络代理仍可终止连接。完整变更可按文件核查 `002-disable-operation-timeouts.patch`、`003-night-cruising.patch`、`004-runtime-limits.patch`、`005-desktop-release.patch` 和 `006-test-and-sdk-timeouts.patch`。
 
 ## 维护补丁
 
