@@ -1,0 +1,21 @@
+diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
+--- a/apps/desktop/scripts/electron-builder-config.mjs
++++ b/apps/desktop/scripts/electron-builder-config.mjs
+@@ -163,7 +163,6 @@
+       // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
+       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
+     ],
+-    linux: { executableName: 'night-cruising', target: ['tar.gz'], category: 'Development' },
+     mac: {
+       icon: fileURLToPath(new URL('../resources/icon-macos.png', import.meta.url)),
+       category: 'public.app-category.developer-tools',
+@@ -257,7 +256,8 @@
+     },
+     linux: {
+       category: 'Development',
+-      target: ['AppImage'],
++      executableName: 'night-cruising',
++      target: ['tar.gz'],
+     },
+     nsis: {
+       uninstallDisplayName: '${productName}',

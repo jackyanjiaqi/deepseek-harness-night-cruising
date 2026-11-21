@@ -4,3 +4,4 @@
 004-runtime-limits.patch
 005-desktop-release.patch
 006-test-and-sdk-timeouts.patch
+007-linux-package-name.patch
