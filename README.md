@@ -92,3 +92,7 @@ npm run patch:build
 版本与固定提交配置在本工程 `package.json` 的 `patches-tools` 字段。可用 `npm run patch -- status --version <版本>` 选择已登记版本。每个版本有独立的编辑副本和 `patches/deepseek-harness/<版本>/series`；桌面构建使用默认版本。构建器按基线及补丁内容生成独立的 `.build/harness-<摘要>/`，官方子模块作为源码来源。
 
 夜景封面由内置 ImageGen 生成，资源位于补丁后的 `apps/web/src/night-ride.jpg`。画面描述为「午夜摩托车骑手穿过悬索桥高速公路，驶向灯火繁密的滨水都市，青蓝夜色、湿路面和暖黄色车灯」。同目录中的 `night-cruising.wav` 是随包提供的 20 秒原创合成器循环。
+
+## 官网与下载发布
+
+官网位于 `site/`。在本仓库运行 `npm ci` 和 `npm run site:preview` 可预览本地安装包；`npm run site:plan` 列出将发布的对象。七牛空间、阿里云 DNS、证书续期及正式发布步骤见[七牛静态站点部署手册](docs/七牛静态站点部署手册.md)。

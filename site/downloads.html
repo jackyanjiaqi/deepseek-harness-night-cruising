@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#10151b" />
+    <meta name="description" content="下载深夜巡航桌面版、查看历史版本和 SHA-256 校验值。" />
+    <title>版本下载 · 深夜巡航</title>
+    <link rel="stylesheet" href="assets/site.css" />
+    <script type="module" src="assets/site.js"></script>
+  </head>
+  <body>
+    <header>
+      <nav class="frame" aria-label="主导航">
+        <a class="brand" href="./"><i class="mark" aria-hidden="true"></i>深夜巡航</a>
+        <div class="nav-links">
+          <a href="./">概览</a><a href="downloads.html" aria-current="page">下载</a
+          ><a class="source" href="https://github.com/deepseek-ai/deepseek-harness">上游源码</a>
+        </div>
+      </nav>
+    </header>
+    <main class="frame downloads">
+      <p class="wordmark ink"><span></span> NIGHT CRUISING</p>
+      <h1>版本下载<span>.</span></h1>
+      <p class="subhead">桌面安装包、源码与文件校验。</p>
+      <section>
+        <h2>最新版本</h2>
+        <div id="latest" aria-live="polite">正在读取发行清单…</div>
+      </section>
+      <section id="history" hidden>
+        <h2>历史版本</h2>
+        <div id="previous"></div>
+      </section>
+    </main>
+    <footer class="frame">
+      <span class="footer-brand">深夜巡航 <span>/</span> Night Cruising</span><span id="footer-info"></span>
+    </footer>
+  </body>
+</html>

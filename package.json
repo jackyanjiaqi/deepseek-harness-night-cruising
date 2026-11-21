@@ -1,12 +1,17 @@
 {
   "name": "deepseek-harness-night-cruising",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.2-rc.5",
+  "private": false,
   "submodule-paths":{
     "deepseek-harness": [ "../deepseek-harness" ],
     "shared-agent-config": [ "../shared-agent-config" ]
   },
   "scripts": {
+    "site:test": "node --test scripts/site-release.test.mjs",
+    "site:preview": "node scripts/site.mjs preview",
+    "site:build": "node scripts/site.mjs build",
+    "site:plan": "node scripts/site.mjs plan",
+    "site:deploy": "node scripts/site.mjs deploy",
     "sync-agents": "node scripts/link-agent-config.mjs",
     "clean-agents": "node scripts/link-agent-config.mjs clean",
     "prepare:source": "node patches/tools/cruise.mjs prepare",
@@ -37,5 +42,9 @@
     "versions": {
       "0.2.2-rc.5": "9c2670d3bce5275e0d1610272958121af87787bb"
     }
+  },
+  "devDependencies": {
+    "qiniu": "7.15.2",
+    "semver": "7.8.6"
   }
 }

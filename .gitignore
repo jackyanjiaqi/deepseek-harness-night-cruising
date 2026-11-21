@@ -2,6 +2,11 @@
 /dist/
 __pycache__/
 .DS_Store
+.env.local
+/node_modules/
+/site/data/releases.json
+/site/data/*.tmp
+/site/assets/night-ride.jpg
 # BEGIN sync-agents
 # source "../shared-agent-config"
 /.agents/interview
