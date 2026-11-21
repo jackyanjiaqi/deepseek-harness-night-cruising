@@ -1,17 +1,20 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
 test('independent patch and build tools share a reproducible series', t => {
-  const root = mkdtempSync(join(tmpdir(), 'cruising-patch-test-'))
-  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'cruising-patch-test-')))
+  t.after(() => rmSync(workspace, { recursive: true, force: true }))
+  const root = join(workspace, 'night-cruising')
   const tools = join(root, 'patches/tools')
   mkdirSync(tools, { recursive: true })
   cpSync(import.meta.dirname, tools, { recursive: true })
-  const upstream = join(root, 'deepseek-harness')
+  const upstream = join(workspace, 'shared source')
+  const internal = join(root, 'deepseek-harness')
+  mkdirSync(internal)
   const series = join(root, 'patches/deepseek-harness/1')
   mkdirSync(series, { recursive: true })
   mkdirSync(upstream)
@@ -21,14 +24,21 @@ test('independent patch and build tools share a reproducible series', t => {
   git(upstream, 'add', '.')
   git(upstream, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'base')
   const base = git(upstream, 'rev-parse', 'HEAD')
-  writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.0.0', 'patches-tools': {
-    library: 'deepseek-harness', version: '1', versions: { '1': base },
-  } }))
+  writeFileSync(join(root, 'package.json'), JSON.stringify({
+    version: '1.0.0',
+    'submodule-paths': { 'deepseek-harness': ['../missing', '../shared source'] },
+    'patches-tools': { library: 'deepseek-harness', version: '1', versions: { '1': base } },
+  }))
   const run = (script, ...args) => execFileSync(process.execPath, [join(tools, script), ...args], {
     cwd: tmpdir(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   }).trim()
   const patch = (...args) => run('patch.mjs', ...args)
-  assert.equal(JSON.parse(patch('config')).base, base)
+  const config = JSON.parse(patch('config'))
+  assert.equal(config.base, base)
+  assert.equal(config.upstream, upstream)
+  // The shared checkout may be on a different commit and have pending edits.
+  git(upstream, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', '-c', 'commit.gpgSign=false', 'commit', '--allow-empty', '-qm', 'later')
+  writeFileSync(join(upstream, 'original'), 'local edits\n')
   const editor = patch('init')
   assert.equal(readFileSync(join(series, 'series'), 'utf8'), '')
   writeFileSync(join(editor, 'original'), 'one\n')
@@ -38,7 +48,15 @@ test('independent patch and build tools share a reproducible series', t => {
   patch('create', 'first', 'original')
   assert.equal(git(editor, 'diff', '--cached', '--name-only'), 'new image')
   patch('create', 'second')
-  assert.equal(patch('list'), '001-first.patch\n002-second.patch')
+  assert.equal(patch('list'), '001-first.patch\n002-second.dir.patch')
+  const mediaUnit = join(series, '002-second.dir.patch')
+  const mediaFile = join(mediaUnit, 'files/new image')
+  assert.deepEqual(JSON.parse(readFileSync(join(mediaUnit, 'meta.json'))).added, ['new image'])
+  assert.deepEqual(readFileSync(mediaFile), bytes)
+  bytes[3] = 100
+  writeFileSync(join(editor, 'new image'), bytes)
+  patch('update', 'second', 'new image')
+  assert.deepEqual(readFileSync(mediaFile), bytes)
   assert.match(patch('status'), /工作区干净/)
   writeFileSync(join(editor, 'original'), 'amended\n')
   patch('update', '1', 'original')
@@ -59,16 +77,22 @@ test('independent patch and build tools share a reproducible series', t => {
   git(editor, 'restore', '--staged', '--worktree', '--', 'original')
   rmSync(join(editor, 'original'))
   patch('create', 'remove')
+  assert.deepEqual(JSON.parse(readFileSync(join(series, '003-remove.dir.patch/meta.json'))).deleted, ['original'])
   const before = readFileSync(join(series, '001-first.patch'))
   patch('restore', '001')
   writeFileSync(join(editor, 'original'), 'conflicting edit\n')
-  assert.throws(() => patch('update', 'first'), /003-remove.patch|导出结果/)
+  assert.throws(() => patch('update', 'first'), /003-remove.dir.patch|导出结果/)
   assert.deepEqual(readFileSync(join(series, '001-first.patch')), before)
   git(editor, 'restore', 'original')
   patch('revert')
   assert.equal(git(editor, 'rev-parse', 'HEAD'), base)
   patch('restore')
   assert.equal(git(editor, 'ls-files'), 'new image')
-  assert.equal(git(upstream, 'status', '--porcelain'), '')
-  assert.equal(readFileSync(join(upstream, 'original'), 'utf8'), 'base\n')
+  assert.equal(readFileSync(join(upstream, 'original'), 'utf8'), 'local edits\n')
+  git(root, 'clone', '--quiet', '--local', upstream, internal)
+  git(internal, 'checkout', '--quiet', '--detach', base)
+  assert.equal(JSON.parse(patch('config')).upstream, internal)
+  const internalBuild = run('cruise.mjs', 'prepare')
+  assert.equal(git(internalBuild, 'rev-parse', 'HEAD'), base)
+  assert.deepEqual(readFileSync(join(internalBuild, 'new image')), bytes)
 })

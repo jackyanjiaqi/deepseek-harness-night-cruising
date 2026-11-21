@@ -2,11 +2,13 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { applyPatch } from './dir-patch.mjs'
 import { checksum } from './release.mjs'
-import { root, upstream, build, manifest, patchSet } from './series.mjs'
+import { root, submodulePath, settings, build, manifest, patchSet } from './series.mjs'
 
 const stack = patchSet()
 const base = stack.base
+const upstream = submodulePath(settings.library, base)
 const dist = join(root, 'dist')
 const releaseVersion = manifest.version
 function git(cwd, ...args) {
@@ -23,8 +25,8 @@ function pnpm(cwd, args, env) {
   else run(cwd, 'pnpm', args, env)
 }
 function prepare() {
-  if (lstatSync(upstream).isSymbolicLink() || git(upstream, 'rev-parse', 'HEAD') !== base)
-    throw Error('Initialize the pinned submodule with git submodule update --init')
+  if (upstream === join(root, settings.library) && git(upstream, 'rev-parse', 'HEAD') !== base)
+    throw Error('请将工程内子模块检出到固定基线 ' + base)
   mkdirSync(build, { recursive: true })
   if (lstatSync(build).isSymbolicLink()) throw Error('Build directory must be local')
   const work = join(build, 'harness-' + stack.digest)
@@ -37,11 +39,12 @@ function prepare() {
   const temp = mkdtempSync(join(build, 'prepare-'))
   try {
     run(root, 'git', ['clone', '-q', '--local', '--no-checkout', upstream, temp])
-    git(temp, 'checkout', '-q', '--detach', base)
-    for (const bytes of stack.patches.values()) {
-      execFileSync('git', ['-C', temp, 'apply', '--index', '--whitespace=nowarn', '-'], { input: bytes })
-    }
-    writeFileSync(join(temp, '.git/night-tree'), git(temp, 'write-tree'))
+    git(temp, 'update-ref', '--no-deref', 'HEAD', base)
+    git(temp, 'read-tree', base)
+    for (const patch of stack.patches.values()) applyPatch(temp, patch)
+    const tree = git(temp, 'write-tree')
+    git(temp, 'checkout-index', '--all')
+    writeFileSync(join(temp, '.git/night-tree'), tree)
     try {
       renameSync(temp, work)
     } catch (error) {

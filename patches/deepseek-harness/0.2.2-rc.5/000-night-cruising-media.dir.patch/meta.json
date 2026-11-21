@@ -1,0 +1,9 @@
+{
+  "type": "dir-patch",
+  "added": [
+    "apps/web/src/night-cruising.wav",
+    "apps/web/src/night-ride.jpg",
+    "apps/desktop/renderer/assets/night-ride.jpg"
+  ],
+  "deleted": []
+}

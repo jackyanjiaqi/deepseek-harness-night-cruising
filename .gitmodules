@@ -1,3 +1,6 @@
 [submodule "deepseek-harness"]
 	path = deepseek-harness
 	url = https://github.com/deepseek-ai/deepseek-harness.git
+[submodule "shared-agent-config"]
+	path = shared-agent-config
+	url = https://github.com/jackyanjiaqi/shared-agent-config.git

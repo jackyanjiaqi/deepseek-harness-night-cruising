@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
+import { applyPatch, readDiff, writeDirPatch } from './dir-patch.mjs'
 import { parseArgs } from 'node:util'
-import { build, patchSet, root, seriesLocation, settings, upstream } from './series.mjs'
+import { build, patchSet, root, seriesLocation, settings, submodulePath } from './series.mjs'
 
 const help = `npm run patch -- <命令> [参数] [--version <版本>]
   init                      准备独立编辑副本并显示路径
@@ -36,9 +37,8 @@ function atomicWrite(path, bytes) {
     renameSync(staged, path)
   })
 }
-function clone(directory, bare = false) {
-  if (lstatSync(upstream).isSymbolicLink() || resolve(value(upstream, ['rev-parse', '--show-toplevel'])) !== upstream)
-    throw Error('请先执行 git submodule update --init')
+function clone(directory, base, bare = false) {
+  const upstream = submodulePath(settings.library, base)
   git(root, ['clone', '--quiet', '--local', bare ? '--bare' : '--no-checkout', upstream, directory])
 }
 
@@ -58,8 +58,8 @@ function replay(repo, stack, index) {
     identity['GIT_' + role + '_DATE'] = date
   }
   git(repo, ['read-tree', stack.base], index)
-  for (const [name, bytes] of stack.patches) {
-    try { git(repo, ['apply', '--cached', '--whitespace=nowarn', '-'], { ...index, input: bytes }) }
+  for (const [name, patch] of stack.patches) {
+    try { applyPatch(repo, patch, index) }
     catch (error) { throw Error(name + ' 无法应用：' + error.message) }
     const tree = value(repo, ['write-tree'], index)
     commits.push(value(repo, ['-c', 'commit.gpgSign=false', 'commit-tree', tree, '-p', commits.at(-1), '-m', name], { env: identity }))
@@ -69,7 +69,7 @@ function replay(repo, stack, index) {
 
 function select(names, spec) {
   const matches = names.filter(name => name === spec || name === spec + '.patch' ||
-    name.slice(4, -6) === spec || (/^\d{1,3}$/.test(spec) && name.startsWith(spec.padStart(3, '0') + '-')))
+    name.slice(4).replace(/(?:\.dir)?\.patch$/, '') === spec || (/^\d{1,3}$/.test(spec) && name.startsWith(spec.padStart(3, '0') + '-')))
   if (matches.length !== 1) throw Error('请指定唯一的补丁编号或名称：' + spec)
   return names.indexOf(matches[0]) + 1
 }
@@ -77,6 +77,23 @@ function difference(repo, before, after) {
   return git(repo, ['diff', '--no-ext-diff', '--no-textconv', '--binary', '--full-index', '--no-renames',
     '--src-prefix=a/', '--dst-prefix=b/', before, after, '--'])
 }
+function changedFiles(repo, before, after) {
+  const fields = git(repo, ['diff', '--raw', '-z', '--no-abbrev', '--no-renames', before, after, '--'])
+    .toString().split('\0')
+  const changes = []
+  for (let i = 0; i < fields.length - 1; i += 2) {
+    const [oldMode, mode, oldOid, oid, status] = fields[i].slice(1).split(' ')
+    changes.push({ path: fields[i + 1], oldMode, mode, oldOid, oid, status })
+  }
+  return changes
+}
+
+function needsDirectory(repo, before, after, changes) {
+  if (changes.some(change => change.status === 'A' || change.status === 'D')) return true
+  return git(repo, ['diff', '--numstat', '-z', '--no-renames', before, after])
+    .toString().split('\0').some(line => line.startsWith('-\t-\t'))
+}
+
 function editorHead(editor) {
   if (realpathSync(editor) !== editor || !lstatSync(join(editor, '.git')).isDirectory() ||
       resolve(value(editor, ['rev-parse', '--show-toplevel'])) !== editor)
@@ -116,33 +133,72 @@ function save(editor, stack, commits, args, update, index) {
     '--name-only', '-z', tree, '--', ...selected]).toString().split('\0').filter(Boolean)
   const staged = new Set(indexChanges(commits[current]))
   if (indexChanges(snapshot).some(path => staged.has(path))) throw Error('选中的文件含有部分暂存的改动，请先统一暂存区和工作文件')
-  const delta = difference(editor, commits[current], snapshot)
-  if (!delta.length) throw Error('指定路径没有可导出的改动')
-  let bytes = delta
-  if (update) {
-    git(editor, ['read-tree', commits[position]], index)
-    try { git(editor, ['apply', '--cached', '--whitespace=nowarn', '-'], { ...index, input: delta }) }
-    catch { throw Error('改动依赖后续补丁，无法直接合入 ' + name + '。请在对应补丁位置编辑，或创建末尾补丁。') }
-    const amendedTree = value(editor, ['write-tree'], index)
-    bytes = difference(editor, commits[position - 1], amendedTree)
-    if (!bytes.length) throw Error('更新后补丁将为空')
-    const original = stack.patches.get(name)
-    const start = original.toString('latin1').search(/^(?:diff --git |--- |Index: )/m)
-    if (start > 0) bytes = Buffer.concat([original.subarray(0, start), bytes])
+  if (snapshot === value(editor, ['rev-parse', commits[current] + '^{tree}'])) throw Error('指定路径没有可导出的改动')
+  const parent = commits[position - 1]
+  let result = snapshot
+  if (update && current !== position) {
+    // Transplant just the editor changes onto an earlier patch. Git works with
+    // blob IDs here, including for large files that are absent from that patch.
+    const tip = value(editor, ['-c', 'user.name=Patch Tool', '-c', 'user.email=patch@localhost',
+      '-c', 'commit.gpgSign=false', 'commit-tree', snapshot, '-p', commits[current], '-m', 'editor changes'])
+    try {
+      result = value(editor, ['merge-tree', '--write-tree', '--merge-base=' + commits[current], commits[position], tip])
+    } catch { throw Error('改动依赖后续补丁，无法直接合入 ' + name) }
   }
-  const candidate = new Map(stack.patches).set(name, bytes)
-  const checked = replay(editor, { ...stack, patches: candidate }, index)
-  const newHead = checked[update ? current : position]
-  if (value(editor, ['rev-parse', newHead + '^{tree}']) !== snapshot)
-    throw Error('后续补丁改变了导出结果，已停止写入')
+  const changes = changedFiles(editor, parent, result)
+  if (!changes.length) throw Error('更新后补丁将为空')
+  const original = stack.patches.get(name)
+  const directory = (update && !original.diff) || needsDirectory(editor, parent, result, changes)
+  const oldName = name
+  if (directory && !name.endsWith('.dir.patch')) name = name.slice(0, -6) + '.dir.patch'
   const file = join(stack.directory, name)
-  if (update) atomicWrite(file, bytes)
-  else {
-    writeFileSync(file, bytes, { flag: 'wx' })
-    const separator = stack.contents && !stack.contents.endsWith('\n') ? '\n' : ''
-    try { atomicWrite(stack.seriesFile, stack.contents + separator + name + '\n') }
-    catch (error) { rmSync(file); throw error }
-  }
+  if ((!update || oldName !== name) && existsSync(file)) throw Error('文件已存在：' + name)
+  const newHead = temporary(stack.directory, '.patch-save-', dir => {
+    const stagedFile = join(dir, name)
+    let patch
+    if (directory) {
+      patch = writeDirPatch(editor, stagedFile, changes)
+    } else {
+      let bytes = difference(editor, parent, result)
+      if (original) {
+        const previous = readFileSync(original.diff)
+        const start = previous.toString('latin1').search(/^(?:diff --git |--- |Index: )/m)
+        if (start > 0) bytes = Buffer.concat([previous.subarray(0, start), bytes])
+      }
+      writeFileSync(stagedFile, bytes)
+      patch = readDiff(stagedFile)
+    }
+    const candidate = new Map()
+    for (const [key, entry] of stack.patches) {
+      if (key === oldName && update) candidate.set(name, patch)
+      else candidate.set(key, entry)
+    }
+    if (!update) candidate.set(name, patch)
+    const checked = replay(editor, { ...stack, patches: candidate }, index)
+    const head = checked[update ? current : position]
+    if (value(editor, ['rev-parse', head + '^{tree}']) !== snapshot)
+      throw Error('后续补丁改变了导出结果，已停止写入')
+
+    let contents = stack.contents
+    if (!update) contents += (contents && !contents.endsWith('\n') ? '\n' : '') + name + '\n'
+    else if (oldName !== name) contents = contents.split('\n').map(line => {
+      return line.split('#')[0].trim() === oldName ? line.replace(oldName, name) : line
+    }).join('\n')
+    const previous = join(stack.directory, oldName)
+    const backup = join(dir, 'previous')
+    if (update) renameSync(previous, backup)
+    let installed = false
+    try {
+      renameSync(stagedFile, file)
+      installed = true
+      if (contents !== stack.contents) atomicWrite(stack.seriesFile, contents)
+    } catch (error) {
+      if (installed) renameSync(file, stagedFile)
+      if (update) renameSync(backup, previous)
+      throw error
+    }
+    return head
+  })
   git(editor, ['reset', '--soft', newHead])
   git(editor, ['--literal-pathspecs', 'reset', '-q', newHead, '--', ...selected])
   git(editor, ['update-ref', 'refs/night-cruising/editor', newHead])
@@ -153,6 +209,7 @@ function manage(command, args, version) {
   const editor = join(build, 'patch-work-' + version)
   if (command === 'config') {
     const location = seriesLocation(version)
+    const upstream = submodulePath(settings.library, location.base, { optional: true }) ?? join(root, settings.library)
     console.log(JSON.stringify({ library: settings.library, version, base: location.base, upstream, series: location.seriesFile, editor }, null, 2))
     return
   }
@@ -163,7 +220,7 @@ function manage(command, args, version) {
     process.exitCode = result.status ?? 1
     return
   }
-  if (command === 'init' && !existsSync(join(upstream, '.git'))) {
+  if (command === 'init' && !submodulePath(settings.library, settings.versions[version], { optional: true })) {
     git(root, ['submodule', 'update', '--init', '--', settings.library])
   }
   const stack = patchSet(version, { initialize: command === 'init' })
@@ -179,7 +236,7 @@ function manage(command, args, version) {
     const index = gitIndex(dir)
     if (command === 'verify') {
       const repo = join(dir, 'verify.git')
-      clone(repo, true)
+      clone(repo, stack.base, true)
       replay(repo, stack, index)
       console.log('重放通过：' + names.length + ' 个补丁，基线 ' + stack.base)
       return
@@ -187,7 +244,7 @@ function manage(command, args, version) {
     if (!existsSync(editor)) {
       if (!['init', 'restore', 'clean'].includes(command)) throw Error('请先运行 npm run patch:init')
       const repo = join(dir, 'work')
-      clone(repo)
+      clone(repo, stack.base)
       const commits = replay(repo, stack, index)
       const target = command === 'clean' ? 0 : args.length ? select(names, args[0]) : names.length
       checkout(repo, commits[target])

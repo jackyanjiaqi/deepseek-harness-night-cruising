@@ -1,20 +1,21 @@
 # DeepSeek Harness 深夜巡航版
 
-独立维护的桌面发行工程。基线是 DeepSeek Harness `0.2.2-rc.5`，固定提交为 `9c2670d3bce5275e0d1610272958121af87787bb`。登录页和工作区使用夜间巡航主题，工作区默认使用深色配色，底部展示摩托车穿过跨江大桥驶向夜间都市的全景。点「播放音乐」可循环播放原创曲《夜间巡航》，再次点击暂停。已有外观偏好优先。
+独立维护的桌面发行工程。基线是 DeepSeek Harness `0.2.2-rc.5`，固定提交为 `9c2670d3bce5275e0d1610272958121af87787bb`。登录页和工作区使用夜间巡航主题，工作区默认使用深色配色，底部展示摩托车穿过跨江大桥驶向夜间都市的全景。点「播放音乐」可循环播放当前的 20 秒合成器占位音轨，再次点击暂停。正式配乐已选定动画《乒乓》原声带中牛尾宪辅（牛尾憲輔）的《Night Cruising》，待取得可随包分发的录音后替换。已有外观偏好优先。
 
 ## 从仓库启动
 
 需要 Git、Node.js 24、pnpm 11.28.5 以及本机平台的原生编译工具。首次构建会读取锁文件并下载 Electron、Node、Python 和 wheel。调试和打包都从本仓库根目录执行。
 
+构建、测试和补丁命令优先使用工程内已初始化的 `deepseek-harness/`。若该目录缺失或为空，脚本按 `package.json` 中 `submodule-paths.deepseek-harness` 的顺序查找含固定提交的 Git 工作区，相对路径从本工程根目录计算。可用 `npm run patch:config` 查看实际源码路径。外层源码可以有本地改动，构建和补丁重放都从固定提交创建独立副本。独立克隆且没有本地源码时，先执行 `git submodule update --init -- deepseek-harness`。
+
 ```sh
-git submodule update --init
 npm test
 npm run dev
 ```
 
 | 命令 | 作用 |
 | --- | --- |
-| `npm run prepare:source` | 从固定子模块创建本地副本，按 series 应用补丁，打印源码目录 |
+| `npm run prepare:source` | 从选定的本地 Git 仓库检出固定提交，按 series 应用补丁，打印源码目录 |
 | `npm run build` | 按锁文件安装依赖并编译 Host、客户端、Web、Electron |
 | `npm start` | 启动桌面，首次启动补齐构建 |
 | `npm run dev` | 重新构建后启动，可连接主进程、渲染进程、Host 调试器 |
@@ -24,6 +25,16 @@ npm run dev
 启动器继承当前用户环境。DSH 和 Electron 自行选择默认数据目录。显式传入的 `DSH_HOME`、`DSH_DESKTOP_USER_DATA_DIR` 在开发启动时生效；个人配置、凭据和会话由应用按原有方式管理。开发调试端口默认是 9229、9222、9230，可以分别用 `DSH_DESKTOP_MAIN_INSPECT_PORT`、`DSH_DESKTOP_RENDERER_DEBUG_PORT`、`DSH_DESKTOP_HOST_INSPECT_PORT` 覆盖。
 
 ## 发行
+
+### 从全新克隆重新打包
+
+在巡航仓库根目录执行以下命令。发行用的 JPG 和 WAV 作为独立文件放在目录补丁的 `files/` 下，路径与补丁后的源码一致。构建器按清单还原资源并生成 `.build/` 和 `dist/`。[媒体清单](patches/deepseek-harness/0.2.2-rc.5/000-night-cruising-media.dir.patch/meta.json) · [夜景 JPG](patches/deepseek-harness/0.2.2-rc.5/000-night-cruising-media.dir.patch/files/apps/web/src/night-ride.jpg) · [巡航 WAV](patches/deepseek-harness/0.2.2-rc.5/000-night-cruising-media.dir.patch/files/apps/web/src/night-cruising.wav)
+
+```sh
+git submodule update --init -- deepseek-harness
+npm run release:source  # 生成带图片的源码包
+npm run release         # 生成当前平台的桌面安装包
+```
 
 | 原生构建主机 | 产物 | 使用方式 |
 | --- | --- | --- |
@@ -54,7 +65,7 @@ npm run dev
 
 | 命令 | 作用 |
 | --- | --- |
-| `npm run patch:init` | 初始化官方子模块和独立编辑副本，输出编辑目录。已存在的编辑副本可继续使用 |
+| `npm run patch:init` | 准备独立编辑副本并输出目录。缺少本地源码仓库时才初始化官方子模块 |
 | `npm run patch:config`、`npm run patch:list-versions` | 查看基线提交、版本和绝对路径，或列出配置中登记的版本 |
 | `npm run patch:list`、`npm run patch:status` | 查看 series 顺序，或查看编辑副本已应用的补丁及本地修改 |
 | `npm run patch:create -- <名称> [路径...]` | 根据工作文件生成下一个三位编号的补丁，并登记到 series。路径相对于编辑副本，省略时包含全部非忽略改动 |
@@ -71,6 +82,10 @@ npm run patch:create -- desktop-menu apps/desktop/src/main.ts
 npm run patch:verify
 npm run patch:build
 ```
+
+**新增、替换或删除媒体**。将视频放入编辑副本中的目标路径后，可执行 `npm run patch:create -- ride-video apps/web/src/ride.mp4`。工具会将原始字节写入 `NNN-ride-video.dir.patch/files/apps/web/src/ride.mp4`，并在同目录的 `meta.json` 中记录 `added`、`deleted`。删除操作只记录路径和基线信息。替换文件时先删除旧版本，再添加新文件。修改同一补丁可用 `npm run patch:update -- ride-video apps/web/src/ride.mp4`，恢复和验证沿用原命令。提交时将目录补丁和更新后的 `series` 一起纳入 Git。
+
+只修改文本时仍生成差异补丁；同一次导出包含新增、删除或二进制替换时，其中的普通文件以完整快照保存。可以通过命令后面的文件路径，将代码修改和大型媒体分别导出。
 
 **维护旧补丁**。例如，先执行 `npm run patch:restore -- 003`，在编辑副本修改文件，再执行 `npm run patch:update -- 003`。成功后用 `npm run patch:restore` 切回完整序列。切换补丁前应先导出改动或在副本内使用 `git stash -u`。若后续补丁与本次更新冲突，可在完整序列末尾用 `patch:create` 保存变更。
 

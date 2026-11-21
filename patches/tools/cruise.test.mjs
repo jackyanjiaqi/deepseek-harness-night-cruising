@@ -3,19 +3,23 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
 import { nativeTarget } from './release.mjs'
+import { root, seriesLocation, settings, submodulePath } from './series.mjs'
 
-const root = fileURLToPath(new URL('../../', import.meta.url))
 const run = (program, args, cwd = root) => execFileSync(program, args, { cwd, encoding: 'utf8' }).trim()
 const prepare = () => run(process.execPath, ['patches/tools/cruise.mjs', 'prepare'])
+const { base } = seriesLocation()
+const upstream = submodulePath(settings.library, base)
+const sourceStatus = () => run('git', ['status', '--porcelain'], upstream)
+const initialStatus = sourceStatus()
 const work = prepare()
 
 test('patches reproduce in a separate checkout of the pinned gitlink', () => {
   assert.equal(prepare(), work)
-  const submodule = join(root, 'deepseek-harness')
-  assert.match(run('git', ['ls-files', '-s', 'deepseek-harness']), /^160000 9c2670d3/)
-  assert.equal(run('git', ['status', '--porcelain'], submodule), '')
+  assert.ok(run('git', ['ls-files', '-s', settings.library]).startsWith('160000 ' + base + ' '))
+  assert.equal(run('git', ['rev-parse', 'HEAD'], work), base)
+  assert.equal(sourceStatus(), initialStatus)
   assert.equal(run('git', ['write-tree'], work), readFileSync(join(work, '.git/night-tree'), 'utf8'))
 })
 
