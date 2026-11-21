@@ -51,7 +51,12 @@ function prepare() {
     git(temp, 'checkout', '-q', '--detach', base)
     for (const name of names) git(temp, 'apply', '--index', '--whitespace=nowarn', join(series, name))
     writeFileSync(join(temp, '.git/night-tree'), git(temp, 'write-tree'))
-    renameSync(temp, work)
+    try {
+      renameSync(temp, work)
+    } catch (error) {
+      if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(error.code) || !existsSync(work)) throw error
+      return prepare()
+    }
   } finally { rmSync(temp, { recursive: true, force: true }) }
   return work
 }
@@ -79,7 +84,7 @@ if (action === 'source') {
     pnpm(desktop, ['run','start'])
   }
   if (action === 'release') {
-    if (git(work, 'diff', '--name-only') || git(work, 'write-tree') !== readFileSync(join(work, '.git/night-tree'),'utf8'))
+    if (git(work, 'ls-files', '--others', '--exclude-standard') || git(work, 'diff', '--name-only') || git(work, 'write-tree') !== readFileSync(join(work, '.git/night-tree'),'utf8'))
       throw Error('Release requires the reviewed source tree')
     await (await import('./release.mjs')).packageDesktop({ work, desktop, dist, releaseVersion, pnpm })
   }
