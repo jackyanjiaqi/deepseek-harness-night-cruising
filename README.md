@@ -50,6 +50,30 @@ npm run dev
 
 ## 维护补丁
 
-`deepseek-harness/` 是官方 Git 子模块。启动器从该提交创建 `.build/harness-<摘要>/`，摘要包含基线和全部补丁。修改 `patches/deepseek-harness/0.2.2-rc.5/` 中的 series 或补丁后重新准备，即可得到新的副本。用 `npm test` 检查子模块、Linux 目标、音频资源和取消语义。打包工具在 `patches/tools/`。
+在本仓库根目录执行 `npm run patch -- --help` 查看用法。也可以从任意目录用 Node 直接调用本工程的 `patches/tools/patch.mjs`。工具使用本地 Git 和 Node.js，构建另需 pnpm。
+
+| 命令 | 作用 |
+| --- | --- |
+| `npm run patch:init` | 初始化官方子模块和独立编辑副本，输出编辑目录。已存在的编辑副本可继续使用 |
+| `npm run patch:config`、`npm run patch:list-versions` | 查看基线提交、版本和绝对路径，或列出配置中登记的版本 |
+| `npm run patch:list`、`npm run patch:status` | 查看 series 顺序，或查看编辑副本已应用的补丁及本地修改 |
+| `npm run patch:create -- <名称> [路径...]` | 根据工作文件生成下一个三位编号的补丁，并登记到 series。路径相对于编辑副本，省略时包含全部非忽略改动 |
+| `npm run patch:update -- <编号或名称> [路径...]` | 把本次改动合入已有补丁；写入前重放后续补丁并核对结果 |
+| `npm run patch:restore -- [编号或名称]` | 将编辑副本恢复到该补丁应用后的位置，省略编号时恢复整套补丁。`patch:apply` 同义 |
+| `npm run patch:clean` | 将编辑副本切回官方基线，保留 series 和补丁文件。`patch:revert` 同义 |
+| `npm run patch:verify` | 在临时 Git 仓库中从基线完整重放，无需准备桌面依赖 |
+| `npm run patch:build` | 构建已保存的 series，与 `npm run build` 使用相同的构建入口 |
+
+**制作新补丁**。先执行 `npm run patch:init`，在输出的 `.build/patch-work-<版本>/` 中修改源码，再回到仓库根目录执行。例如，只导出桌面主进程的改动：
+
+```sh
+npm run patch:create -- desktop-menu apps/desktop/src/main.ts
+npm run patch:verify
+npm run patch:build
+```
+
+**维护旧补丁**。例如，先执行 `npm run patch:restore -- 003`，在编辑副本修改文件，再执行 `npm run patch:update -- 003`。成功后用 `npm run patch:restore` 切回完整序列。切换补丁前应先导出改动或在副本内使用 `git stash -u`。若后续补丁与本次更新冲突，可在完整序列末尾用 `patch:create` 保存变更。
+
+版本与固定提交配置在本工程 `package.json` 的 `patches-tools` 字段。可用 `npm run patch -- status --version <版本>` 选择已登记版本。每个版本有独立的编辑副本和 `patches/deepseek-harness/<版本>/series`；桌面构建使用默认版本。构建器按基线及补丁内容生成独立的 `.build/harness-<摘要>/`，官方子模块作为源码来源。
 
 夜景封面由内置 ImageGen 生成，资源位于补丁后的 `apps/web/src/night-ride.jpg`。画面描述为「午夜摩托车骑手穿过悬索桥高速公路，驶向灯火繁密的滨水都市，青蓝夜色、湿路面和暖黄色车灯」。同目录中的 `night-cruising.wav` 是随包提供的 20 秒原创合成器循环。

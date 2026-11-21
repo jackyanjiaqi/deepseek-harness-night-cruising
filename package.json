@@ -9,6 +9,27 @@
     "dev": "node patches/tools/cruise.mjs dev",
     "release": "node patches/tools/cruise.mjs release",
     "release:source": "node patches/tools/cruise.mjs source",
-    "test": "node --test patches/tools/*.test.mjs"
+    "test": "node --test patches/tools/*.test.mjs",
+    "patch": "node patches/tools/patch.mjs",
+    "patch:init": "node patches/tools/patch.mjs init",
+    "patch:status": "node patches/tools/patch.mjs status",
+    "patch:list": "node patches/tools/patch.mjs list",
+    "patch:list-versions": "node patches/tools/patch.mjs list-versions",
+    "patch:config": "node patches/tools/patch.mjs config",
+    "patch:create": "node patches/tools/patch.mjs create",
+    "patch:update": "node patches/tools/patch.mjs update",
+    "patch:restore": "node patches/tools/patch.mjs restore",
+    "patch:apply": "node patches/tools/patch.mjs apply",
+    "patch:clean": "node patches/tools/patch.mjs clean",
+    "patch:revert": "node patches/tools/patch.mjs revert",
+    "patch:verify": "node patches/tools/patch.mjs verify",
+    "patch:build": "node patches/tools/patch.mjs build"
+  },
+  "patches-tools": {
+    "library": "deepseek-harness",
+    "version": "0.2.2-rc.5",
+    "versions": {
+      "0.2.2-rc.5": "9c2670d3bce5275e0d1610272958121af87787bb"
+    }
   }
 }
