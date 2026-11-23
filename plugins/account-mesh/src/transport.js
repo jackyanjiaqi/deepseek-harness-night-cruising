@@ -33,9 +33,15 @@ export class PeerLink extends EventEmitter {
     const module = await import('node-datachannel')
     const ndc = module.default ?? module
     this.ndc = ndc
+    const range = this.options.icePortRange
     const pc = new ndc.PeerConnection(`mesh-${this.peer.deviceId.slice(0, 8)}`, {
       iceServers: this.options.iceServers ?? [],
       maxMessageSize: 262144,
+      // Multiplex every ICE transport over one socket and keep it inside a
+      // documented UDP range, so an inbound firewall rule is one port window.
+      ...(this.options.iceUdpMux ? { enableIceUdpMux: true } : {}),
+      ...(range ? { portRangeBegin: range.begin, portRangeEnd: range.end } : {}),
+      ...(this.options.iceTcp ? { enableIceTcp: true } : {}),
     })
     this.pc = pc
     this.setState('connecting')
@@ -43,6 +49,7 @@ export class PeerLink extends EventEmitter {
       this.emit('local-description', { sdp, type })
     })
     pc.onLocalCandidate((candidate, mid) => {
+      this.log?.debug?.(`local candidate ${candidate}`)
       this.emit('local-candidate', { candidate, mid })
     })
     pc.onStateChange(state => {

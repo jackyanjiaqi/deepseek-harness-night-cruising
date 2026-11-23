@@ -43,6 +43,13 @@ export const DEFAULT_CONFIG = {
   autoTrustSameAccount: true,
   allowRoots: [],
   iceServers: [],
+  // Opt-in fixed ICE range for hosts whose firewall cannot allow the app
+  // itself; leave unset to let libdatachannel pick ephemeral ports.
+  icePortBegin: null,
+  icePortEnd: null,
+  iceUdpMux: false,
+  // Last-resort transport for networks that block UDP: ICE-TCP candidates.
+  iceTcp: false,
   dataDir: '',
 }
 
@@ -205,6 +212,9 @@ export class Mesh {
       initiator,
       log: this.log,
       iceServers: this.config.iceServers,
+      icePortRange: this.icePortRange(),
+      iceUdpMux: this.config.iceUdpMux === true,
+      iceTcp: this.config.iceTcp === true,
     })
     let resolveReady
     let rejectReady
@@ -298,6 +308,7 @@ export class Mesh {
       })
     }
     peer.address = remote.address
+    peer.lastSeen = now()
     this.log?.info?.(`account-mesh: received ${frame.kind} from ${shortId(peer.deviceId)}`)
     const payload = this.inbox.push(frame, peer)
     if (!payload) return
@@ -316,7 +327,7 @@ export class Mesh {
     // not abandon their peer connections at the same time.
     if (this.isInitiator(peer) && existing && (existing.link?.state === 'connecting' || existing.link?.isOpen())) return
     if (existing?.link) existing.link.teardown('replaced by inbound offer')
-    const link = new PeerLink({ peer, initiator: false, log: this.log, iceServers: this.config.iceServers })
+    const link = new PeerLink({ peer, initiator: false, log: this.log, iceServers: this.config.iceServers, icePortRange: this.icePortRange() })
     let resolveReady
     let rejectReady
     const ready = new Promise((resolve, reject) => {
@@ -507,6 +518,16 @@ export class Mesh {
       default:
         throw rpcError('bad-request', `unknown or unsupported operation: ${op}`)
     }
+  }
+
+  /** Fixed ICE UDP range so a host firewall needs one rule instead of many random ports. */
+  icePortRange() {
+    if (this.config.icePortBegin == null || this.config.icePortEnd == null) return undefined
+    const begin = Number(this.config.icePortBegin)
+    const end = Number(this.config.icePortEnd)
+    if (!Number.isInteger(begin) || !Number.isInteger(end) || begin <= 0 || end < begin || end > 65535) return undefined
+    if (end - begin > 200) return undefined
+    return { begin, end }
   }
 
   describeForPeer() {
