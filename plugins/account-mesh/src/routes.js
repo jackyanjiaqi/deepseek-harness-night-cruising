@@ -26,6 +26,21 @@ export function registerRoutes(ctx, mesh, log) {
         if (route === '/api/state' && req.method === 'GET') {
           return json(res, 200, { ...mesh.state(), tailscale: await mesh.tailscaleStatus() })
         }
+        if (route === '/api/tree' && req.method === 'GET') {
+          return json(res, 200, await buildTree(mesh, log))
+        }
+        if (route === '/api/transcript' && req.method === 'GET') {
+          const peer = String(url.searchParams.get('peer') ?? '')
+          const sessionId = String(url.searchParams.get('sessionId') ?? '')
+          if (!peer || !sessionId) return json(res, 400, { error: 'peer and sessionId are required' })
+          const fromSeq = Number(url.searchParams.get('fromSeq') ?? 0) || 0
+          const limit = Number(url.searchParams.get('limit') ?? 200) || 200
+          try {
+            return json(res, 200, await mesh.call(peer, 'sessions/events', { sessionId, fromSeq, limit }))
+          } catch (error) {
+            return json(res, 502, { error: error.message, code: error.code ?? 'remote-failed' })
+          }
+        }
         if (route === '/api/pair' && req.method === 'POST') {
           const body = await readBody(req)
           const deviceId = String(body.deviceId ?? '')
@@ -62,6 +77,69 @@ export function registerRoutes(ctx, mesh, log) {
       }
     },
   })
+}
+
+/**
+ * Remote workspaces with their sessions, grouped as a tree. Only verified
+ * peers are queried; every remote failure stays attached to that peer instead
+ * of failing the whole panel.
+ */
+async function buildTree(mesh, log) {
+  const peers = mesh.peerViews()
+  const nodes = []
+  for (const peer of peers) {
+    const node = {
+      online: peer.online === true,
+      deviceId: peer.deviceId,
+      shortId: peer.shortId,
+      name: peer.name,
+      source: peer.source,
+      address: peer.address,
+      rttMs: peer.rttMs,
+      workspaces: [],
+      error: null,
+      lastSeenAt: peer.lastSeenAt ?? null,
+    }
+    if (!(peer.online && peer.verified)) {
+      nodes.push(node)
+      continue
+    }
+    try {
+      const [workspaces, sessions] = await Promise.all([
+        mesh.call(peer.deviceId, 'workspaces/list', {}),
+        mesh.call(peer.deviceId, 'sessions/list', { limit: 500 }),
+      ])
+      const groups = new Map()
+      for (const workspace of workspaces?.workspaces ?? []) {
+        const key = String(workspace.path ?? workspace.id ?? workspace.title ?? '').toLowerCase()
+        groups.set(key, {
+          id: workspace.id ?? key,
+          title: workspace.title ?? workspace.path ?? key,
+          path: workspace.path ?? null,
+          sessions: [],
+        })
+      }
+      for (const session of sessions?.sessions ?? []) {
+        const key = String(session.cwd ?? '').toLowerCase()
+        let group = groups.get(key)
+        if (!group) {
+          group = { id: `cwd:${key}`, title: session.cwd ?? '', path: session.cwd ?? null, sessions: [] }
+          groups.set(key, group)
+        }
+        group.sessions.push(session)
+      }
+      node.workspaces = [...groups.values()]
+      for (const workspace of node.workspaces) {
+        workspace.sessions.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+      }
+      node.workspaces.sort((a, b) => String(a.title).localeCompare(String(b.title)))
+    } catch (error) {
+      node.error = error.message
+      log.warn(`tree for ${peer.shortId} failed: ${error.message}`)
+    }
+    nodes.push(node)
+  }
+  return { peers: nodes, generatedAt: Date.now() }
 }
 
 function json(res, status, body) {

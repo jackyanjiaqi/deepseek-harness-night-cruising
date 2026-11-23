@@ -33,11 +33,19 @@ export function localAddresses() {
   return out
 }
 
-/** Tailscale CLI candidates, most likely first. */
+/** Tailscale CLI candidates, most likely first; Windows installs it outside PATH. */
 function tailscaleBins() {
+  const windows = process.platform === 'win32'
+    ? [
+        `${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Tailscale\\tailscale.exe`,
+        'C:\\Program Files (x86)\\Tailscale\\tailscale.exe',
+        `${process.env.LOCALAPPDATA ?? ''}\\Tailscale\\tailscale.exe`,
+      ].filter(entry => !entry.startsWith('\\'))
+    : []
   return [
     process.env.TAILSCALE_BIN,
     'tailscale',
+    ...windows,
     '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
     '/usr/local/bin/tailscale',
     '/opt/homebrew/bin/tailscale',
@@ -125,6 +133,7 @@ export class Discovery {
         }
         this.port = this.socket.address().port
         this.every(5000, () => this.announce())
+        this.every(5000, () => this.heartbeat())
         this.every(5000, () => this.prune())
         this.every(30000, () => this.probeTailnet())
         this.every(20000, () => this.probeStatic())
@@ -200,6 +209,24 @@ export class Discovery {
     }
   }
 
+  /** Known peers from the trust table, so a restart re-probes them directly. */
+  knownPeers() {
+    try {
+      return this.options.knownPeers?.() ?? []
+    } catch {
+      return []
+    }
+  }
+
+  /** Unicast announce to every known endpoint: keeps presence fresh on both sides. */
+  heartbeat() {
+    const message = Buffer.from(JSON.stringify(this.announceMessage()))
+    for (const peer of this.knownPeers()) {
+      if (!peer?.address || !peer?.port) continue
+      this.sendRaw(message, peer.address, peer.port)
+    }
+  }
+
   query(address, port = this.port) {
     if (!this.socket) return
     const message = Buffer.from(JSON.stringify({ ...this.announceMessage(), t: 'query' }))
@@ -222,6 +249,12 @@ export class Discovery {
       const [host, port] = String(target).split(':')
       if (!host) continue
       this.query(host, Number(port) || this.port)
+    }
+    // Trusted endpoints remembered from a previous run, plus the default port
+    // in case the peer rebound its discovery socket.
+    for (const peer of this.knownPeers()) {
+      if (!peer?.address) continue
+      this.query(peer.address, Number(peer.port) || this.port)
     }
   }
 
@@ -285,7 +318,7 @@ export class Discovery {
   }
 
   prune() {
-    const cutoff = now() - 20000
+    const cutoff = now() - (this.options.presenceTtlMs ?? 75000)
     for (const [deviceId, peer] of this.peers) {
       if (peer.lastSeen < cutoff) {
         this.peers.delete(deviceId)

@@ -124,6 +124,12 @@ try {
   }
   await routes[0].handler({ method: 'GET', url: '/account-mesh/api/state', headers: {} }, res)
   const state = JSON.parse(responses[0])
+  await routes[0].handler({ method: 'GET', url: '/account-mesh/api/tree', headers: {} }, res)
+  const tree = JSON.parse(responses[responses.length - 1])
+  check('tree route answers an empty peer list', Array.isArray(tree.peers) && tree.peers.length === 0, JSON.stringify(tree))
+  await routes[0].handler({ method: 'GET', url: '/account-mesh/api/transcript?peer=x&sessionId=y', headers: {} }, res)
+  const transcriptFailure = JSON.parse(responses[responses.length - 1])
+  check('transcript route refuses an unknown peer', typeof transcriptFailure.error === 'string', JSON.stringify(transcriptFailure))
   check('state route answers JSON', state.status === 'ready' && state.device.id)
   check('state route never leaks the account id or token', !responses[0].includes('account-1') && !responses[0].includes('never-used-token'))
   console.log('payload keys:', Object.keys(state).join(','))

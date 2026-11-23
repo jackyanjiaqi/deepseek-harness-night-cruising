@@ -1,9 +1,10 @@
 /**
- * Browser half: one settings page showing mesh status and the trust table.
+ * Browser half: a sidebar panel that renders peer workspaces and their
+ * sessions as a read-only tree, a transcript reader, and the settings page
+ * that shows status and owns the trust table.
  *
- * The page reads only this Host's own `/account-mesh/api/*` routes; remote
- * session and file content is never rendered here, so nothing remote is
- * buffered into the page.
+ * Every read goes through this Host's own `/account-mesh/api/*` routes; the
+ * page never opens a peer connection itself and never writes to a peer.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-account-mesh',
@@ -11,11 +12,14 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const NS = 'account-mesh'
+    const PANEL_ID = 'account-mesh'
 
     const TEXT = {
       zh: {
         title: '同账号互联',
         description: '同一账号的两个 DSH 实例在局域网（含 Tailscale）通过加密数据通道互读会话与工作区，只读。',
+        panelTitle: '远端工作区',
+        panelHint: '对方的会话按工作区分组显示，只读。',
         status: '状态',
         account: '账号',
         device: '设备',
@@ -26,6 +30,11 @@ window.__ModuleLoader__.load({
         tailscale: 'Tailscale',
         peers: '对端设备',
         noPeers: '还没有发现同账号的其它实例。',
+        noPeersOnline: '没有在线且已认证的对端。请确认对方已启动 DSH 并安装本插件。',
+        offlineTag: '离线',
+        lastSeen: '最后在线',
+        retry: '重试连接',
+        neverSeen: '从未在本设备上线',
         untrusted: '未信任',
         trusted: '已信任',
         verified: '已认证',
@@ -47,11 +56,22 @@ window.__ModuleLoader__.load({
         disabled: '已停用',
         tailnetOn: '可用',
         tailnetOff: '未检测到',
-        copyFp: '点击复制指纹',
+        untitled: '(无标题)',
+        live: '进行中',
+        empty: '空',
+        openSession: '打开会话',
+        transcriptEmpty: '这个会话没有可显示的文本。',
+        loadMore: '加载更多',
+        sessionsCount: '{n} 个会话',
+        workspaceUnknown: '未知工作区',
+        readOnlyTag: '只读',
+        noWorkspaces: '这个对端没有工作区。',
       },
       en: {
         title: 'Account mesh',
         description: 'Two DSH instances on the same account read each other\'s sessions and workspace over an encrypted data channel on the LAN, Tailscale included. Read-only.',
+        panelTitle: 'Remote workspaces',
+        panelHint: 'The peer\'s sessions grouped by workspace, read-only.',
         status: 'Status',
         account: 'Account',
         device: 'Device',
@@ -62,6 +82,11 @@ window.__ModuleLoader__.load({
         tailscale: 'Tailscale',
         peers: 'Peer devices',
         noPeers: 'No other instance of this account has been discovered yet.',
+        noPeersOnline: 'No online authenticated peer. Make sure the other device runs DSH with this plugin.',
+        offlineTag: 'offline',
+        lastSeen: 'Last seen',
+        retry: 'Retry',
+        neverSeen: 'Never came online on this device',
         untrusted: 'Untrusted',
         trusted: 'Trusted',
         verified: 'Authenticated',
@@ -83,7 +108,16 @@ window.__ModuleLoader__.load({
         disabled: 'Disabled',
         tailnetOn: 'available',
         tailnetOff: 'not detected',
-        copyFp: 'Click to copy the fingerprint',
+        untitled: '(untitled)',
+        live: 'live',
+        empty: 'empty',
+        openSession: 'Open session',
+        transcriptEmpty: 'This session has no displayable text.',
+        loadMore: 'Load more',
+        sessionsCount: '{n} sessions',
+        workspaceUnknown: 'Unknown workspace',
+        readOnlyTag: 'read-only',
+        noWorkspaces: 'This peer has no workspace.',
       },
     }
 
@@ -109,6 +143,24 @@ window.__ModuleLoader__.load({
       buttonPrimary: { font: 'inherit', fontSize: '12px', cursor: 'pointer', color: 'var(--dsw-alias-label-primary-foreground, #fff)', background: 'var(--dsw-alias-brand-primary)', border: '1px solid transparent', borderRadius: '7px', padding: '3px 10px' },
       hint: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11.5px', margin: '10px 0 0' },
       error: { color: 'var(--dsw-alias-state-error-primary, #d64545)', fontSize: '12px', margin: '8px 0 0' },
+      panel: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, color: 'var(--dsw-alias-label-primary)', fontSize: '13px' },
+      panelHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderBottom: '1px solid var(--dsw-alias-border-l2)', flexWrap: 'wrap' },
+      panelBody: { display: 'flex', flex: 1, minHeight: 0 },
+      treePane: { width: '320px', flex: 'none', borderRight: '1px solid var(--dsw-alias-border-l2)', overflow: 'auto', padding: '8px 6px 24px' },
+      transcriptPane: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 },
+      treeRow: (depth, active) => ({
+        display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 6px', paddingLeft: `${6 + depth * 14}px`,
+        borderRadius: '7px', cursor: 'pointer', fontSize: '12.5px',
+        background: active ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
+      }),
+      treeName: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      treeMeta: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', flex: 'none' },
+      chevron: { width: '12px', flex: 'none', color: 'var(--dsw-alias-label-secondary)' },
+      msg: { padding: '8px 14px', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
+      msgRole: { fontSize: '10.5px', letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--dsw-alias-label-secondary)', marginBottom: '3px' },
+      msgText: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '12.5px', lineHeight: 1.55 },
+      toolbar: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
+      empty: { color: 'var(--dsw-alias-label-secondary)', padding: '24px 14px', fontSize: '12.5px' },
     }
 
     function useMeshState() {
@@ -165,6 +217,19 @@ window.__ModuleLoader__.load({
       return t('starting')
     }
 
+    function formatTime(ms) {
+      if (!ms) return ''
+      try {
+        return new Date(ms).toLocaleString()
+      } catch {
+        return String(ms)
+      }
+    }
+
+    function fill(template, values) {
+      return String(template).replace(/\{(\w+)\}/g, (match, key) => (values[key] === undefined ? match : String(values[key])))
+    }
+
     function PeerCard({ peer, t, onAction, pending }) {
       const [confirming, setConfirming] = React.useState(false)
       React.useEffect(() => {
@@ -204,7 +269,7 @@ window.__ModuleLoader__.load({
             : null))
     }
 
-    const Page = props => {
+    const SettingsPage = props => {
       const t = props.translate
       const { data, error } = useMeshState()
       const [pending, setPending] = React.useState(false)
@@ -258,6 +323,213 @@ window.__ModuleLoader__.load({
         h('p', { style: styles.hint }, t('readOnly')))
     }
 
+    /** One message row in the read-only transcript. */
+    function TranscriptItem({ item }) {
+      const role = item.role === 'tool-call'
+        ? `${item.name ?? 'tool'}`
+        : item.role === 'tool-result'
+          ? (item.isError ? 'tool · error' : 'tool')
+          : item.role
+      const tone = item.isError ? 'var(--dsw-alias-state-error-primary, #d64545)' : 'var(--dsw-alias-label-secondary)'
+      return h('div', { style: styles.msg },
+        h('div', { style: { ...styles.msgRole, color: tone } }, `${role} · ${formatTime(item.time)}`),
+        item.text ? h('div', { style: styles.msgText }, item.text) : null)
+    }
+
+    function TreeRow({ depth, label, meta, active, expandable, expanded, onClick }) {
+      return h('div', {
+        style: styles.treeRow(depth, active),
+        onClick,
+        role: expandable ? 'button' : 'button',
+        title: label,
+      },
+        h('span', { style: styles.chevron }, expandable ? (expanded ? '▾' : '▸') : ''),
+        h('span', { style: styles.treeName }, label),
+        meta ? h('span', { style: styles.treeMeta }, meta) : null)
+    }
+
+    const MeshPanel = props => {
+      const t = props.translate
+      const [tree, setTree] = React.useState(null)
+      const [error, setError] = React.useState(null)
+      const [expanded, setExpanded] = React.useState({})
+      const [selection, setSelection] = React.useState(null)
+      const [transcript, setTranscript] = React.useState(null)
+      const [transcriptError, setTranscriptError] = React.useState(null)
+      const [loadingMore, setLoadingMore] = React.useState(false)
+
+      const loadTree = React.useCallback(async () => {
+        try {
+          const response = await fetch('/account-mesh/api/tree', { headers: { accept: 'application/json' } })
+          const body = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`)
+          setTree(body)
+          setError(null)
+        } catch (failure) {
+          setError(failure.message)
+        }
+      }, [])
+
+      React.useEffect(() => {
+        let alive = true
+        const tick = () => { if (alive) loadTree() }
+        tick()
+        const timer = setInterval(tick, 15000)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [loadTree])
+
+      const loadTranscript = React.useCallback(async (target, fromSeq = 0) => {
+        try {
+          const query = new URLSearchParams({ peer: target.peer, sessionId: target.sessionId, fromSeq: String(fromSeq), limit: '200' })
+          const response = await fetch(`/account-mesh/api/transcript?${query.toString()}`, { headers: { accept: 'application/json' } })
+          const body = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`)
+          setTranscript(current => {
+            if (fromSeq === 0 || !current) return body
+            return { ...body, items: [...current.items, ...(body.items ?? [])] }
+          })
+          setTranscriptError(null)
+        } catch (failure) {
+          setTranscriptError(failure.message)
+        }
+      }, [])
+
+      React.useEffect(() => {
+        if (!selection) {
+          setTranscript(null)
+          return
+        }
+        setTranscript(null)
+        setTranscriptError(null)
+        loadTranscript(selection, 0)
+      }, [selection, loadTranscript])
+
+      const toggle = key => setExpanded(current => ({ ...current, [key]: current[key] === false }))
+      const isOpen = key => expanded[key] !== false
+
+      const peers = tree?.peers ?? []
+      const offlinePeers = peers.filter(peer => !peer.online)
+      const verifiedPeers = peers.filter(peer => peer.online === true && !peer.error)
+      const retry = async deviceId => {
+        try {
+          await post('reconnect', { deviceId })
+          await loadTree()
+        } catch (failure) {
+          setError(failure.message)
+        }
+      }
+
+      const transcriptBody = () => {
+        if (!selection) return h('div', { style: styles.empty }, t('panelHint'))
+        if (transcriptError) return h('div', { style: styles.empty }, `${t('error')}: ${transcriptError}`)
+        if (!transcript) return h('div', { style: styles.empty }, t('waiting'))
+        const items = transcript.items ?? []
+        return h(React.Fragment, null,
+          h('div', { style: { flex: 1, overflow: 'auto' } },
+            items.length === 0 ? h('div', { style: styles.empty }, t('transcriptEmpty')) : null,
+            items.map(item => h(TranscriptItem, { key: item.seq, item: item }))),
+          transcript.hasMore
+            ? h('div', { style: { padding: '8px 14px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
+                h('button', {
+                  style: styles.button,
+                  disabled: loadingMore,
+                  onClick: async () => {
+                    setLoadingMore(true)
+                    await loadTranscript(selection, transcript.nextSeq)
+                    setLoadingMore(false)
+                  },
+                }, t('loadMore')))
+            : null)
+      }
+
+      return h('section', { style: styles.panel },
+        h('div', { style: styles.panelHead },
+          h('span', { style: { ...styles.title, margin: 0 } }, t('panelTitle')),
+          h(Chip, { tone: 'off' }, t('readOnlyTag')),
+          h('span', { style: styles.treeMeta }, `${verifiedPeers.length} device(s)`),
+          h('span', { style: { flex: 1 } }),
+          error ? h('span', { style: styles.treeMeta }, `${t('error')}: ${error}`) : null,
+          h('button', { style: styles.button, onClick: () => loadTree() }, t('refresh'))),
+        h('div', { style: styles.panelBody },
+          h('div', { style: styles.treePane },
+            verifiedPeers.length === 0 && tree !== null
+              ? h('div', { style: styles.empty }, t('noPeersOnline'))
+              : null,
+            offlinePeers.map(peer => h('div', { key: `offline:${peer.deviceId}`, style: { ...styles.empty, padding: '6px 10px' } },
+              h('div', { style: { ...styles.row, color: 'var(--dsw-alias-label-secondary)' } },
+                h('span', { style: styles.chevron }, '·'),
+                h('span', { style: { ...styles.treeName, color: 'var(--dsw-alias-label-secondary)' } }, peer.name || peer.shortId),
+                h(Chip, { tone: 'off' }, t('offlineTag'))),
+              h('div', { style: { ...styles.treeMeta, paddingLeft: '18px' } },
+                peer.lastSeenAt ? `${t('lastSeen')} ${formatTime(peer.lastSeenAt)}` : `${t('neverSeen')} · ${peer.shortId}`),
+              h('div', { style: { paddingLeft: '18px', marginTop: '4px' } },
+                h('button', { style: styles.button, onClick: () => retry(peer.deviceId) }, t('retry'))))),
+            verifiedPeers.map(peer => {
+              const peerKey = peer.deviceId
+              const peerOpen = isOpen(peerKey)
+              return h('div', { key: peerKey },
+                h(TreeRow, {
+                  depth: 0,
+                  label: peer.name || peer.shortId,
+                  meta: peer.source === 'tailnet' ? `tailscale · ${peer.rttMs != null ? `${peer.rttMs}ms` : peer.shortId}` : peer.shortId,
+                  expandable: true,
+                  expanded: peerOpen,
+                  onClick: () => toggle(peerKey),
+                }),
+                peer.error ? h('div', { style: { ...styles.empty, padding: '4px 20px' } }, peer.error) : null,
+                peerOpen
+                  ? (peer.workspaces.length === 0
+                      ? h('div', { style: { ...styles.empty, padding: '4px 20px' } }, t('noWorkspaces'))
+                      : peer.workspaces.map(workspace => {
+                          const workspaceKey = `${peerKey}/${workspace.id}`
+                          const workspaceOpen = isOpen(workspaceKey)
+                          return h('div', { key: workspaceKey },
+                            h(TreeRow, {
+                              depth: 1,
+                              label: workspace.title || t('workspaceUnknown'),
+                              meta: `${workspace.sessions.length}`,
+                              expandable: true,
+                              expanded: workspaceOpen,
+                              onClick: () => toggle(workspaceKey),
+                            }),
+                            workspaceOpen
+                              ? workspace.sessions.map(session => {
+                                  const active = selection?.peer === peerKey && selection?.sessionId === session.id
+                                  return h(TreeRow, {
+                                    key: session.id,
+                                    depth: 2,
+                                    label: session.title || t('untitled'),
+                                    meta: session.live ? t('live') : formatTime(session.createdAt),
+                                    active,
+                                    onClick: () => setSelection({ peer: peerKey, sessionId: session.id, title: session.title }),
+                                  })
+                                })
+                              : null)
+                        }))
+                  : null)
+            })),
+          h('div', { style: styles.transcriptPane },
+            selection
+              ? h('div', { style: styles.toolbar },
+                  h('span', { style: { fontWeight: 600, fontSize: '12.5px' } }, selection.title || t('untitled')),
+                  h('span', { style: styles.treeMeta }, selection.sessionId),
+                  h(Chip, { tone: 'off' }, t('readOnlyTag')),
+                  h('span', { style: { flex: 1 } }),
+                  h('button', { style: styles.button, onClick: () => setSelection(null) }, '×'))
+              : null,
+            transcriptBody())))
+    }
+
+    function MeshIcon({ size = 16 }) {
+      return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': true },
+        h('circle', { cx: 6.5, cy: 12, r: 3.2, stroke: 'currentColor', strokeWidth: 1.7 }),
+        h('circle', { cx: 17.5, cy: 12, r: 3.2, stroke: 'currentColor', strokeWidth: 1.7 }),
+        h('path', { d: 'M9.7 12h4.6', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeDasharray: '1.5 2.2' }))
+    }
+
     return {
       name: 'account-mesh',
       inject: ['slots', 'locale'],
@@ -266,21 +538,38 @@ window.__ModuleLoader__.load({
           ctx.effect(() => ctx.locale.register(NS, locale, dict), `account-mesh: ${locale} dictionary`)
         }
         const t = ctx.locale.bind(NS)
-        // Bind the face methods: they are service methods and must keep their receiver.
         const subscribe = ctx.locale.subscribe.bind(ctx.locale)
         const getSnapshot = ctx.locale.getSnapshot.bind(ctx.locale)
-        const Wrapped = props => {
+        const localized = Component => props => {
           const snapshot = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
           void snapshot.revision
-          return h(Page, { ...props, translate: t })
+          return h(Component, { ...props, translate: t })
         }
+        const Settings = localized(SettingsPage)
+        const Panel = localized(MeshPanel)
+
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',
-          id: 'account-mesh',
+          id: PANEL_ID,
           order: 17,
           locale: NS,
           label: () => t('title'),
-        }, Wrapped))
+        }, Settings))
+
+        ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+          name: 'sidebar.panellist',
+          id: PANEL_ID,
+          order: 30,
+          locale: NS,
+          label: () => t('panelTitle'),
+        }, MeshIcon))
+
+        ctx.slots.inject('main', () => ctx.slots.register({
+          name: 'main',
+          key: PANEL_ID,
+          locale: NS,
+          label: () => t('panelTitle'),
+        }, Panel))
       },
     }
   },

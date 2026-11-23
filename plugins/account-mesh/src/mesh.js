@@ -30,6 +30,8 @@ const HELLO_CONTEXT = 'dsh-account-mesh/v1/hello'
  * an authentication failure, or by the user revoking trust — never by a timer.
  */
 const MAX_BACKOFF = 30000
+/** A stalled handshake is retried at this cadence (connection establishment, not a request deadline). */
+const HANDSHAKE_RETRY_MS = 10000
 
 /** Runtime defaults; every field is optional in the patch config. */
 export const DEFAULT_CONFIG = {
@@ -68,6 +70,7 @@ export class Mesh {
     this.lastError = undefined
     this.started = false
     this.startedAt = now()
+    this.lastTouch = new Map()
   }
 
   /** Begin refresh + housekeeping timers; discovery starts once the account is readable. */
@@ -135,6 +138,8 @@ export class Mesh {
       name: this.peerName,
       publicKey: this.identity.publicKey,
       staticPeers: this.config.staticPeers,
+      presenceTtlMs: this.config.presenceTtlMs,
+      knownPeers: () => this.trust.list().filter(peer => typeof peer.address === 'string' && peer.address.length > 0),
       version: this.version,
       log: this.log,
       onPeer: (peer, isNew) => this.onPeer(peer, isNew),
@@ -152,6 +157,12 @@ export class Mesh {
 
   onPeer(peer, isNew) {
     this.peers.set(peer.deviceId, peer)
+    const touched = this.lastTouch.get(peer.deviceId) ?? 0
+    if (now() - touched > 60000) {
+      this.lastTouch.set(peer.deviceId, now())
+      this.trust.touch(peer.deviceId)
+    }
+    this.trust.rememberEndpoint(peer.deviceId, peer.address, peer.port)
     const trusted = this.trust.get(peer.deviceId)
     const keyChanged = trusted !== undefined && trusted.publicKey !== peer.publicKey
     if (this.config.autoTrustSameAccount && (!trusted || keyChanged)) {
@@ -185,8 +196,7 @@ export class Mesh {
   async connect(peer) {
     if (!this.discovery || !this.deviceId) return
     if (!this.trust.has(peer.deviceId)) return
-    // Only the smaller device id initiates; the other side answers the offer.
-    if (!this.isInitiator(peer)) return
+    // Both sides may initiate; the smaller device id's offer wins (see acceptOffer).
     const existing = this.links.get(peer.deviceId)
     if (existing && (existing.link?.isOpen() || existing.link?.state === 'connecting')) return
     const initiator = true
@@ -218,7 +228,9 @@ export class Mesh {
     }
     this.links.set(peer.deviceId, entry)
     link.on('local-description', ({ sdp, type }) => {
+      entry.offeredAt = now()
       this.sendSignal(peer, type, { sdp })
+      this.log?.info?.(`account-mesh: sent ${type} to ${shortId(peer.deviceId)}`)
     })
     link.on('local-candidate', ({ candidate, mid }) => {
       this.sendSignal(peer, 'ice', { candidate, mid })
@@ -286,6 +298,7 @@ export class Mesh {
       })
     }
     peer.address = remote.address
+    this.log?.info?.(`account-mesh: received ${frame.kind} from ${shortId(peer.deviceId)}`)
     const payload = this.inbox.push(frame, peer)
     if (!payload) return
     const parsed = parseSignalPayload(frame.kind, payload)
@@ -298,6 +311,10 @@ export class Mesh {
   async acceptOffer(peer, payload) {
     if (typeof payload.sdp !== 'string') return
     const existing = this.links.get(peer.deviceId)
+    // Glare: the smaller device id is the designated initiator. Ignore its
+    // competing offer while our own handshake is in flight, so both sides do
+    // not abandon their peer connections at the same time.
+    if (this.isInitiator(peer) && existing && (existing.link?.state === 'connecting' || existing.link?.isOpen())) return
     if (existing?.link) existing.link.teardown('replaced by inbound offer')
     const link = new PeerLink({ peer, initiator: false, log: this.log, iceServers: this.config.iceServers })
     let resolveReady
@@ -320,7 +337,10 @@ export class Mesh {
       nextAt: 0,
     }
     this.links.set(peer.deviceId, entry)
-    link.on('local-description', ({ sdp, type }) => this.sendSignal(peer, type, { sdp }))
+    link.on('local-description', ({ sdp, type }) => {
+      this.sendSignal(peer, type, { sdp })
+      this.log?.info?.(`account-mesh: sent ${type} to ${shortId(peer.deviceId)}`)
+    })
     link.on('local-candidate', ({ candidate, mid }) => this.sendSignal(peer, 'ice', { candidate, mid }))
     link.on('message', ({ text }) => this.onLinkText(peer, entry, text))
     link.on('state', state => {
@@ -552,13 +572,18 @@ export class Mesh {
     this.inbox.prune()
     const at = now()
     for (const entry of this.links.values()) {
+      if (entry.link?.state === 'connecting' && entry.offeredAt && now() - entry.offeredAt > HANDSHAKE_RETRY_MS) {
+        this.log?.info?.(`account-mesh: handshake with ${shortId(entry.peer.deviceId)} stalled, retrying`)
+        entry.link.teardown('handshake retry')
+        continue
+      }
       if (!entry.link?.isOpen()) continue
       // Ping measures latency only. An idle link is not expired by this
       // process; WebRTC state and the peer's own actions close it.
       entry.link.ping()
     }
     for (const peer of this.peers.values()) {
-      if (!this.isInitiator(peer) || !this.trust.has(peer.deviceId)) continue
+      if (!this.trust.has(peer.deviceId)) continue
       const entry = this.links.get(peer.deviceId)
       if (entry && (entry.link?.isOpen() || entry.link?.state === 'connecting')) continue
       if (entry?.nextAt && at < entry.nextAt) continue
@@ -627,6 +652,7 @@ export class Mesh {
         fingerprint: fingerprintOf(peer.publicKey),
         pairCode: trusted ? pairCode(this.identity.publicKey, peer.publicKey) : null,
         trustedAt: trusted?.trustedAt ?? null,
+        lastSeenAt: trusted?.lastSeen ?? null,
       })
     }
     for (const trusted of this.trust.list()) {
@@ -645,6 +671,7 @@ export class Mesh {
         fingerprint: trusted.fingerprint,
         pairCode: pairCode(this.identity.publicKey, trusted.publicKey),
         trustedAt: trusted.trustedAt ?? null,
+        lastSeenAt: trusted.lastSeen ?? null,
       })
     }
     return views.sort((a, b) => Number(b.online) - Number(a.online) || String(a.name).localeCompare(String(b.name)))

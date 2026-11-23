@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { Mesh } from '../src/mesh.js'
+import { registerRoutes } from '../src/routes.js'
 
 const root = path.join(import.meta.dirname, '..', '.tmp')
 fs.rmSync(root, { recursive: true, force: true })
@@ -140,6 +141,31 @@ try {
     check('link still healthy after the timer windows', live?.type === 'file', JSON.stringify(live))
     check('discovery still announces', meshA.peerViews().some(peer => peer.verified))
   }
+
+  // Panel HTTP layer: same routes the browser calls, driven against the real mesh.
+  const routes = []
+  const routeCtx = {
+    get(name) {
+      if (name === 'webServer') return { register(route) { routes.push(route); return () => {} } }
+      if (name === 'connection') return { requestRejection: () => undefined }
+      return undefined
+    },
+  }
+  registerRoutes(routeCtx, meshA, log)
+  const call = async url => {
+    const bodies = []
+    const res = { headersSent: false, setHeader() {}, end(body) { bodies.push(body) } }
+    await routes[0].handler({ method: 'GET', url, headers: {} }, res)
+    return JSON.parse(bodies[0])
+  }
+  const tree = await call('/account-mesh/api/tree')
+  const node = tree.peers?.[0]
+  check('tree lists the verified peer', tree.peers?.length === 1, JSON.stringify(tree))
+  check('tree groups the remote workspace', node?.workspaces?.[0]?.path === fs.realpathSync(workspaceB), JSON.stringify(node?.workspaces))
+  check('tree nests the session under its workspace', node?.workspaces?.[0]?.sessions?.[0]?.id === 'session-remote', JSON.stringify(node?.workspaces?.[0]?.sessions))
+  const remoteTranscript = await call('/account-mesh/api/transcript?peer=device-beta&sessionId=session-remote&limit=10')
+  check('transcript route returns the remote events', remoteTranscript?.items?.length === 4, JSON.stringify(remoteTranscript))
+  check('transcript route redacts nothing it should not have', remoteTranscript?.session?.id === 'session-remote')
 
   const state = meshA.state()
   check('state hides the account id', !JSON.stringify(state).includes('account-1'))

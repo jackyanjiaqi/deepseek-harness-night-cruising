@@ -31,6 +31,8 @@ const React = {
   useState: initial => [typeof initial === 'function' ? initial() : initial, () => {}],
   useEffect: () => {},
   useMemo: fn => fn(),
+  useCallback: fn => fn,
+  useRef: value => ({ current: value }),
   useSyncExternalStore: () => ({ revision: 1 }),
 }
 
@@ -75,10 +77,23 @@ try {
   module.apply(ctx)
   check('registers zh and en dictionaries', dicts.length === 2 && dicts.some(d => d.locale === 'zh') && dicts.some(d => d.locale === 'en'))
   check('injects into settings.section', injected.includes('settings.section'), injected.join(','))
-  check('registers one settings section', registrations.length === 1)
-  const registration = registrations[0]
+  check('injects into sidebar.panellist', injected.includes('sidebar.panellist'), injected.join(','))
+  check('injects into main', injected.includes('main'), injected.join(','))
+  check('registers three slots', registrations.length === 3, registrations.map(r => r.options.name).join(','))
+  const registration = registrations.find(r => r.options.name === 'settings.section')
+  const panelEntry = registrations.find(r => r.options.name === 'main')
+  const iconEntry = registrations.find(r => r.options.name === 'sidebar.panellist')
   check('section id is account-mesh', registration.options.id === 'account-mesh')
   check('section label is localized', registration.options.label() === '同账号互联', registration.options.label())
+  check('panel key is account-mesh', panelEntry.options.key === 'account-mesh')
+  check('panel icon label is localized', iconEntry.options.label() === '远端工作区', iconEntry.options.label())
+  const iconTree = iconEntry.Component({ size: 16 })
+  check('panel icon renders an svg', iconTree?.type === 'svg')
+  const panelOuter = panelEntry.Component({})
+  const panel = typeof panelOuter.type === 'function' ? panelOuter.type(panelOuter.props) : panelOuter
+  check('panel renders a section', panel?.type === 'section')
+  check('panel shows the remote tree title', JSON.stringify(panel).includes('远端工作区'))
+  check('panel marks itself read-only', JSON.stringify(panel).includes('只读'))
 
   const outer = registration.Component({ close() {} })
   const tree = typeof outer.type === 'function' ? outer.type(outer.props) : outer

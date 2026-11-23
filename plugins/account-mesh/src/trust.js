@@ -56,6 +56,8 @@ export class TrustStore {
       accountTag: entry.accountTag,
       trustedAt: rebound || previous === undefined ? Date.now() : previous.trustedAt,
       lastSeen: Date.now(),
+      address: entry.address ?? previous?.address ?? null,
+      port: entry.port ?? previous?.port ?? null,
     }
     this.entries.set(entry.deviceId, next)
     this.save()
@@ -66,6 +68,16 @@ export class TrustStore {
     const entry = this.entries.get(deviceId)
     if (!entry) return
     entry.lastSeen = Date.now()
+    this.save()
+  }
+
+  /** Record where the peer was last heard; only a changed endpoint is written. */
+  rememberEndpoint(deviceId, address, port) {
+    const entry = this.entries.get(deviceId)
+    if (!entry || !address) return
+    if (entry.address === address && entry.port === port) return
+    entry.address = address
+    entry.port = port
     this.save()
   }
 
