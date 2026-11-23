@@ -1,0 +1,72 @@
+{
+  "name": "dsh-account-mesh",
+  "version": "0.1.0-rc.1",
+  "description": "Read-only same-account mesh between DSH instances on the LAN, including Tailscale, over WebRTC data channels",
+  "license": "MIT",
+  "author": "jackyanjiaqi",
+  "type": "module",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "webrtc",
+    "node-datachannel",
+    "tailscale",
+    "peer-to-peer",
+    "mesh"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jackyanjiaqi/deepseek-harness-night-cruising.git",
+    "directory": "plugins/account-mesh"
+  },
+  "bugs": {
+    "url": "https://github.com/jackyanjiaqi/deepseek-harness-night-cruising/issues"
+  },
+  "homepage": "https://github.com/jackyanjiaqi/deepseek-harness-night-cruising/tree/main/plugins/account-mesh",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "src",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "node-datachannel": "0.33.6"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.2-rc.5"
+  },
+  "publishConfig": {
+    "tag": "next"
+  },
+  "scripts": {
+    "test": "node spike/p0-apply.mjs && node spike/p0-client.mjs",
+    "test:mesh": "IDLE_MS=33000 node spike/p0-mesh.mjs",
+    "check": "for f in index.js client.js src/*.js; do node --check \"$f\" || exit 1; done"
+  }
+}

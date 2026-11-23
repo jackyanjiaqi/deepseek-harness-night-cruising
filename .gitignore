@@ -26,3 +26,7 @@ __pycache__/
 /docs/AGENTS.md
 /docs/daily/YYYYMM月归档说明.md
 # END sync-agents
+/plugins/*/node_modules/
+/plugins/*/.tmp/
+/plugins/*/spike/.tmp/
+/plugins/*/*.tgz

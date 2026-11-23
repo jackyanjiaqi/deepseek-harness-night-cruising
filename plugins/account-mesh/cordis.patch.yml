@@ -1,0 +1,16 @@
+# Bundle layer for dsh-account-mesh: one read-only mesh row.
+#
+# Override from the profile's cordis.patch.yml, for example:
+#
+# - id: account-mesh
+#   config:
+#     autoTrustSameAccount: false
+#     staticPeers: ['peer-host:47831']
+#
+# The row has no Config export on purpose: every field below is optional and
+# read with a default at activation, so a partial override never breaks the row.
+- insert:
+    - id: account-mesh
+      name: dsh-account-mesh
+      config:
+        autoTrustSameAccount: true

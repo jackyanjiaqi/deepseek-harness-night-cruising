@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Account mesh",
+    "description": "Read-only session and workspace access between DSH instances signed in to the same account, over an authenticated WebRTC data channel on the LAN or a Tailscale tailnet.",
+    "detail": "docs/DETAIL.md"
+  }
+}

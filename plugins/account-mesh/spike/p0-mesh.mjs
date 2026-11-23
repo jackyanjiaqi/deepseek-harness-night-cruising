@@ -1,0 +1,156 @@
+/**
+ * Two-instance integration harness: fake DSH services, real discovery,
+ * signing, WebRTC transport, Ed25519 hello, and read-only RPC.
+ */
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { Mesh } from '../src/mesh.js'
+
+const root = path.join(import.meta.dirname, '..', '.tmp')
+fs.rmSync(root, { recursive: true, force: true })
+const workspaceA = path.join(root, 'ws-a')
+const workspaceB = path.join(root, 'ws-b')
+fs.mkdirSync(workspaceA, { recursive: true })
+fs.mkdirSync(workspaceB, { recursive: true })
+fs.writeFileSync(path.join(workspaceB, 'notes.txt'), ['line one', 'line two', 'line three', 'line four'].join('\n'))
+fs.writeFileSync(path.join(workspaceB, 'secret-in-root.txt'), 'not reachable from outside')
+fs.writeFileSync(path.join(workspaceA, 'notes-a.txt'), 'belongs to the other workspace')
+
+const events = [
+  { type: 'user/message', seq: 1, time: 1000, data: { content: [{ type: 'text', text: 'remote question' }] } },
+  {
+    type: 'assistant/message',
+    seq: 2,
+    time: 2000,
+    data: { message: { content: [{ type: 'text', text: 'remote answer' }, { type: 'tool-call', name: 'read', arguments: '{"path":"notes.txt"}' }] } },
+  },
+  { type: 'tool/call', seq: 3, time: 3000, data: { name: 'read', arguments: '{"path":"notes.txt"}' } },
+  { type: 'tool/result', seq: 4, time: 4000, data: { message: { content: [{ type: 'text', text: 'line one\nline two' }] } } },
+]
+
+function makeCtx({ workspace, deviceId }) {
+  const services = new Map()
+  services.set('deepseekAccount', {
+    async getPlatformSession() {
+      return { origin: 'https://example.invalid', token: 'never-used-token', userId: 'account-1' }
+    },
+    async getDeviceIdentity() {
+      return { deviceId, osVersion: os.release() }
+    },
+  })
+  services.set('sessionQuery', {
+    async listSessions() {
+      return [{ header: { id: 'session-remote', createdAt: 1000, cwd: workspace }, live: true, persisted: true }]
+    },
+    async readTitleSnapshots(ids) {
+      return ids.map(sessionId => ({ sessionId, status: 'fulfilled', value: { title: { title: 'Remote session' } } }))
+    },
+    async readSession() {
+      return { session: { id: 'session-remote', cwd: workspace, createdAt: 1000 }, inheritedEventCount: 0, events }
+    },
+  })
+  services.set('workspaceRegistry', {
+    list() {
+      return [{ id: 'ws', title: 'Workspace', path: workspace }]
+    },
+  })
+  return { get: name => services.get(name) }
+}
+
+const log = {
+  info: (...args) => console.log('[mesh]', ...args),
+  warn: (...args) => console.log('[mesh:warn]', ...args),
+  debug: () => {},
+  error: (...args) => console.log('[mesh:error]', ...args),
+}
+
+const meshA = new Mesh({
+  ctx: makeCtx({ workspace: workspaceA, deviceId: 'device-alpha' }),
+  config: { discoveryPort: 48101, staticPeers: ['127.0.0.1:48102'], dataDir: path.join(root, 'home-a') },
+  log,
+  version: '0.1.0-test',
+})
+const meshB = new Mesh({
+  ctx: makeCtx({ workspace: workspaceB, deviceId: 'device-beta' }),
+  config: { discoveryPort: 48102, staticPeers: ['127.0.0.1:48101'], dataDir: path.join(root, 'home-b') },
+  log,
+  version: '0.1.0-test',
+})
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+async function waitFor(label, predicate, timeout = 20000) {
+  const started = Date.now()
+  while (Date.now() - started < timeout) {
+    if (predicate()) return
+    await sleep(100)
+  }
+  throw new Error(`timeout waiting for ${label}`)
+}
+
+let failures = 0
+function check(label, condition, detail) {
+  if (condition) console.log(`PASS ${label}`)
+  else {
+    failures += 1
+    console.log(`FAIL ${label}`, detail ?? '')
+  }
+}
+
+try {
+  meshA.start()
+  meshB.start()
+  await waitFor('discovery', () => meshA.peerViews().some(peer => peer.deviceId === 'device-beta'))
+  check('discovery finds the same-account peer', meshA.peerViews().some(peer => peer.deviceId === 'device-beta'))
+  check('peer is auto-trusted', meshA.peerViews().every(peer => peer.trusted))
+
+  await waitFor('verified link', () => meshA.peerViews().some(peer => peer.verified))
+  check('Ed25519 hello verifies both sides', meshA.peerViews().some(peer => peer.verified))
+
+  const list = await meshA.call('device-beta', 'sessions/list', {})
+  check('sessions/list returns the remote session', list?.sessions?.[0]?.id === 'session-remote', JSON.stringify(list))
+
+  const transcript = await meshA.call('device-beta', 'sessions/events', { sessionId: 'session-remote', limit: 10 })
+  check('sessions/events projects four items', transcript?.items?.length === 4, JSON.stringify(transcript))
+  check('assistant text and tool call survive projection', transcript.items[1].text === 'remote answer' && transcript.items[1].toolCalls?.[0] === 'read')
+
+  const paged = await meshA.call('device-beta', 'sessions/events', { sessionId: 'session-remote', fromSeq: 3, limit: 10 })
+  check('sessions/events pages by seq', paged.items.length === 2 && paged.nextSeq === 5, JSON.stringify(paged))
+
+  const file = await meshA.call('device-beta', 'files/read', { path: 'notes.txt', offset: 1, limit: 2 })
+  check('files/read reads a line window in the allowed root', file?.lines?.join('|') === 'line two|line three', JSON.stringify(file))
+  check('files/read reports hasMore', file?.hasMore === true)
+
+  const outside = await meshA.call('device-beta', 'files/read', { path: '/etc/hosts' }).then(() => null, error => error)
+  check('absolute path outside the roots is refused', outside?.code === 'path-outside', outside?.code)
+  const escape = await meshA.call('device-beta', 'files/read', { path: '../ws-a/notes-a.txt' }).then(() => null, error => error)
+  check('relative escape out of the root is refused', escape?.code === 'path-outside', escape?.code)
+
+  const unknown = await meshA.call('device-beta', 'sessions/delete', {}).then(() => null, error => error)
+  check('unknown write op is refused', unknown?.code === 'bad-request', unknown?.code)
+
+  const workspaces = await meshA.call('device-beta', 'workspaces/list', {})
+  check('workspaces/list returns the remote workspace', workspaces?.workspaces?.[0]?.path === fs.realpathSync(workspaceB))
+
+  const idle = Number(process.env.IDLE_MS ?? 0)
+  if (idle > 0) {
+    console.log(`idling ${idle} ms across every periodic timer boundary`)
+    await sleep(idle)
+    const live = await meshA.call('device-beta', 'files/stat', { path: 'notes.txt' })
+    check('link still healthy after the timer windows', live?.type === 'file', JSON.stringify(live))
+    check('discovery still announces', meshA.peerViews().some(peer => peer.verified))
+  }
+
+  const state = meshA.state()
+  check('state hides the account id', !JSON.stringify(state).includes('account-1'))
+  check('state lists the peer as verified', state.peers.some(peer => peer.verified && peer.online))
+} catch (error) {
+  failures += 1
+  console.error('HARNESS ERROR', error)
+} finally {
+  await meshA.stop()
+  await meshB.stop()
+  await sleep(300)
+  console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`)
+  process.exit(failures === 0 ? 0 : 1)
+}
