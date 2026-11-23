@@ -9,6 +9,7 @@ import semver from 'semver'
 export const root = fileURLToPath(new URL('../', import.meta.url))
 export const site = join(root, 'site')
 export const catalogKey = 'data/releases.json'
+const githubRepository = 'jackyanjiaqi/deepseek-harness-night-cruising'
 const hero =
   'patches/deepseek-harness/0.2.2-rc.5/000-night-cruising-media.dir.patch/files/apps/web/src/night-ride.jpg'
 const dist = join(root, 'dist')
@@ -80,7 +81,7 @@ export async function scanArtifacts(packageVersion, directory = dist) {
     )
     if (!match || !semver.valid(match[1])) throw Error('无法识别发行文件 ' + entry.name)
     const [, version, target, format] = match
-    if (version !== packageVersion || version === unlistedVersion) continue
+    if (version !== packageVersion || version === unlistedVersion || target === 'src') continue
     const [platform, arch = ''] = target.split('-')
     if (format !== { src: 'tar.gz', linux: 'tar.gz', darwin: 'dmg', win32: 'exe' }[platform])
       throw Error('平台和扩展名不匹配 ' + entry.name)
@@ -111,16 +112,26 @@ export function catalog(previous, artifacts, packageVersion, icp, date = new Dat
       .map((item) => [item.version, structuredClone(item)]),
   )
   for (const { version, file } of artifacts) {
+    if (file.platform === 'src') continue
     const release = releases.get(version) ?? { version, date: today, files: [] }
     const at = release.files.findIndex((f) => f.platform === file.platform && f.arch === file.arch)
-    const url = '/' + downloadKey(version, file)
-    const item = { ...file, url, checksumUrl: url + '.sha256' }
+    const backupUrl = '/' + downloadKey(version, file)
+    const item = { ...file, backupUrl, checksumUrl: backupUrl + '.sha256' }
     if (at === -1) release.files.push(item)
     else release.files[at] = item
     releases.set(version, release)
   }
-  const order = ['darwin', 'win32', 'linux', 'src']
+  const order = ['darwin', 'win32', 'linux']
   for (const release of releases.values()) {
+    release.files = release.files.filter((file) => file.platform !== 'src')
+    if (!release.files.length) {
+      releases.delete(release.version)
+      continue
+    }
+    for (const file of release.files) {
+      file.backupUrl ??= file.url ?? '/' + downloadKey(release.version, file)
+      file.url = `https://github.com/${githubRepository}/releases/download/${encodeURIComponent(release.version)}/${encodeURIComponent(file.name)}`
+    }
     release.files.sort(
       (a, b) => order.indexOf(a.platform) - order.indexOf(b.platform) || a.arch.localeCompare(b.arch),
     )
@@ -145,4 +156,23 @@ export async function writeCatalog(data) {
   const tmp = file + '.' + randomUUID() + '.tmp'
   await writeFile(tmp, JSON.stringify(data, null, 2) + '\n')
   await rename(tmp, file)
+}
+
+// Check every retained platform, including history, before publishing new links.
+export async function verifyGithubDownloads(data, request = fetch) {
+  for (const release of data.releases) {
+    const response = await request(
+      `https://api.github.com/repos/${githubRepository}/releases/tags/${encodeURIComponent(release.version)}`,
+      { headers: { Accept: 'application/vnd.github+json' } },
+    )
+    if (!response.ok) throw Error(`读取 GitHub Release ${release.version} 失败 HTTP ${response.status}`)
+    const assets = (await response.json()).assets
+    for (const file of release.files) {
+      const asset = assets.find((item) => item.name === file.name && item.browser_download_url === file.url)
+      if (!asset || asset.state !== 'uploaded' || asset.size !== file.size)
+        throw Error('GitHub Release 缺少匹配产物，请先上传：' + file.name)
+      if (asset.digest && asset.digest !== 'sha256:' + file.sha256)
+        throw Error('GitHub Release 产物校验不符：' + file.name)
+    }
+  }
 }

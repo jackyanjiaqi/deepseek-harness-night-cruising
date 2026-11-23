@@ -9,13 +9,13 @@ function link(text, url, className) {
   node.href = url
   return node
 }
-const platforms = { darwin: 'macOS', win32: 'Windows', linux: 'Linux', src: '源码包' }
+const platforms = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' }
 function releaseCard(release) {
   const card = el('article', undefined, 'release')
   const info = el('div', undefined, 'release-top')
   info.append(el('h3', 'v' + release.version), el('span', release.date, 'meta'))
   card.append(info)
-  for (const file of release.files) {
+  for (const file of release.files.filter((file) => file.platform !== 'src')) {
     const row = el('div', undefined, 'file-row')
     const desc = el('div')
     const title = platforms[file.platform] + (file.arch ? ' · ' + file.arch : '')
@@ -25,14 +25,16 @@ function releaseCard(release) {
     )
     const details = el('details')
     details.append(
-      el('summary', 'SHA-256 校验'),
+      el('summary', '下载说明与 SHA-256 校验'),
       el('code', file.sha256),
       link('校验文件', file.checksumUrl, 'digest-link'),
     )
+    if (file.backupUrl) {
+      details.append(link('七牛备用下载', file.backupUrl, 'digest-link'))
+    }
     desc.append(details)
     const anchor = link('下载', file.url, 'button')
     anchor.setAttribute('aria-label', '下载 ' + release.version + ' ' + title)
-    anchor.download = file.name
     row.append(desc, anchor)
     card.append(row)
   }

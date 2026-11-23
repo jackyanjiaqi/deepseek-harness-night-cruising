@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { catalog, catalogKey, kodoHash, scanArtifacts } from './site-release.mjs'
+import { catalog, catalogKey, kodoHash, scanArtifacts, verifyGithubDownloads } from './site-release.mjs'
 import { publish } from './site.mjs'
 
 test('release history, partial platform uploads and atomic catalog publication', async (t) => {
@@ -92,4 +92,65 @@ test('release history, partial platform uploads and atomic catalog publication',
   packageVersion = '1.0.0'
   await writeFile(join(dir, 'night-cruising-1.0.0-win32-x64.exe'), 'bad data')
   await assert.rejects(scanArtifacts(packageVersion, dir), /校验失败/)
+})
+
+test('migrate existing and historical downloads, preserving backups across repeat publication', () => {
+  const previous = {
+    schema: 1, siteVersion: '1.0.0-20261121-v1',
+    releases: ['1.0.0', '0.9.0'].map((version) => ({
+      version, date: '2026-11-21', files: [{
+        name: `night-cruising-${version}-darwin-arm64.dmg`, platform: 'darwin', arch: 'arm64',
+        url: `/downloads/${version}/hash/mac.dmg`, checksumUrl: `/downloads/${version}/hash/mac.dmg.sha256`,
+      }],
+    })),
+  }
+  const original = structuredClone(previous)
+  const date = new Date('2026-11-22T01:00:00Z')
+  const next = catalog(previous, [], '1.0.0', '备案号', date)
+  for (const [index, release] of next.releases.entries()) {
+    const file = release.files[0]
+    assert.equal(file.url, `https://github.com/jackyanjiaqi/deepseek-harness-night-cruising/releases/download/${release.version}/${file.name}`)
+    assert.equal(file.backupUrl, previous.releases[index].files[0].url)
+    assert.equal(file.checksumUrl, previous.releases[index].files[0].checksumUrl)
+  }
+  assert.deepEqual(previous, original)
+  assert.deepEqual(catalog(next, [], '1.0.0', '备案号', date).releases, next.releases)
+})
+
+test('new artifacts use GitHub and retain content-addressed Qiniu backups', () => {
+  const file = { name: 'night-cruising-1.0.0-win32-x64.exe', platform: 'win32', arch: 'x64', sha256: 'abc' }
+  const data = catalog(null, [{ version: '1.0.0', file }], '1.0.0', '备案号')
+  const item = data.releases[0].files[0]
+  assert.equal(item.url, `https://github.com/jackyanjiaqi/deepseek-harness-night-cruising/releases/download/1.0.0/${file.name}`)
+  assert.equal(item.backupUrl, `/downloads/1.0.0/abc/${file.name}`)
+  assert.equal(item.checksumUrl, item.backupUrl + '.sha256')
+})
+
+test('GitHub verification rejects missing, mismatched and inaccessible release assets', async () => {
+  const file = { name: 'night-cruising-1.0.0-src.tar.gz', size: 100, sha256: 'abc', url: 'https://github.com/example/asset' }
+  const data = { releases: [{ version: '1.0.0', files: [file] }] }
+  const asset = { name: file.name, size: 100, digest: 'sha256:abc', state: 'uploaded', browser_download_url: file.url }
+  const request = (assets) => async () => ({ ok: true, json: async () => ({ assets }) })
+  await verifyGithubDownloads(data, request([asset]))
+  await assert.rejects(verifyGithubDownloads(data, request([])), /缺少匹配产物/)
+  await assert.rejects(verifyGithubDownloads(data, request([{ ...asset, size: 99 }])), /缺少匹配产物/)
+  await assert.rejects(verifyGithubDownloads(data, request([{ ...asset, digest: 'sha256:wrong' }])), /校验不符/)
+  await assert.rejects(verifyGithubDownloads(data, async () => ({ ok: false, status: 404 })), /HTTP 404/)
+})
+
+test('source archives are excluded from scanning and existing release catalogs', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'night-site-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  await writeFile(join(dir, 'night-cruising-1.0.0-src.tar.gz'), 'source without sidecar')
+  assert.deepEqual(await scanArtifacts('1.0.0', dir), [])
+  const source = { platform: 'src', name: 'night-cruising-1.0.0-src.tar.gz' }
+  const installer = { platform: 'darwin', arch: 'arm64', name: 'mac.dmg', url: '/downloads/mac.dmg' }
+  const previous = { schema: 1, siteVersion: '1.0.0-20261121-v1', releases: [
+    { version: '1.0.0', files: [source, installer] },
+    { version: '0.9.0', files: [source] },
+  ] }
+  const next = catalog(previous, [{ version: '1.0.0', file: source }], '1.0.0', '备案号', new Date('2026-11-22T01:00:00Z'))
+  assert.equal(next.releases.length, 1)
+  assert.deepEqual(next.releases[0].files.map((file) => file.platform), ['darwin'])
+  assert.equal(previous.releases[0].files.length, 2)
 })

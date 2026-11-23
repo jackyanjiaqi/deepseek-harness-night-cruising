@@ -15,6 +15,7 @@ import {
   scanArtifacts,
   site,
   writeCatalog,
+  verifyGithubDownloads,
 } from './site-release.mjs'
 
 export const mime = {
@@ -100,7 +101,7 @@ export async function publish(store, artifacts, files, buildCatalog, directory =
   // A unique body makes an insert-only lock conflict even on idempotent storage.
   await store.put(lock, new Blob([randomUUID()]), true)
   try {
-    const next = buildCatalog(await store.current())
+    const next = await buildCatalog(await store.current())
     for (const { version, path, file, etag } of artifacts) {
       const base = downloadKey(version, file)
       for (const suffix of ['', '.sha256']) {
@@ -137,7 +138,11 @@ async function main() {
   const files = await siteFiles(site)
   const buildCatalog = (previous) => catalog(previous, artifacts, version, env.ICP)
   if (action === 'deploy') {
-    const next = await publish(qiniuStore(env), artifacts, files, buildCatalog)
+    const next = await publish(qiniuStore(env), artifacts, files, async (previous) => {
+      const next = buildCatalog(previous)
+      await verifyGithubDownloads(next)
+      return next
+    })
     console.log('已发布网站', next.siteVersion, '最新软件版本', next.latestVersion ?? '暂无')
     return
   }
