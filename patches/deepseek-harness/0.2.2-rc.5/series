@@ -6,3 +6,4 @@
 005-desktop-release.patch
 006-test-and-sdk-timeouts.patch
 007-linux-package-name.patch
+008-windows-installer-preflight.patch

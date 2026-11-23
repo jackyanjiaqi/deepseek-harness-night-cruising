@@ -1,0 +1,116 @@
+diff --git a/apps/desktop/installer/path.nsh b/apps/desktop/installer/path.nsh
+--- a/apps/desktop/installer/path.nsh
++++ b/apps/desktop/installer/path.nsh
+@@ -117,6 +117,12 @@
+ !macroend
+ !insertmacro InstallerValidatePathFunction ""
+ 
++!macro InstallerProbeFailure OP PATH CODE
++    ; FormatMessage uses the Windows display language for the actual filesystem error.
++    System::Call 'kernel32::FormatMessageW(i 0x1200, p 0, i ${CODE}, i 0, w .r9, i ${NSIS_MAX_STRLEN}, p 0)'
++    StrCpy $InstallerError "$INSTDIR$\r$\n${OP}: ${PATH}$\r$\n$9 (Win32 ${CODE})"
++!macroend
++
+ ; A new installation requires an empty directory; updates require the registered executable.
+ Function InstallerPreflight
+     Call InstallerValidatePath
+@@ -139,31 +145,83 @@
+         ${Loop}
+         FindClose $0
+     ${EndIf}
+-    StrCpy $2 $INSTDIR
++    ; The installer stages a new sibling directory, even for an existing destination.
++    ; Test beneath the closest existing parent. Drive roots can allow creating
++    ; directories while denying creation of loose files.
++    ${GetParent} $INSTDIR $2
+     ${Do}
+-        System::Call 'kernel32::GetFileAttributesW(w r2) i.r0'
++        StrLen $0 $2
++        ${If} $0 == 2
++            StrCpy $2 "$2\"
++        ${EndIf}
++        System::Call 'kernel32::GetFileAttributesW(w r2) i.r0 ?e'
++        Pop $5
+         ${If} $0 != -1
+             ${ExitDo}
+         ${EndIf}
++        StrLen $0 $2
++        ${If} $0 <= 3
++            !insertmacro InstallerProbeFailure "GetFileAttributesW" $2 $5
++            Return
++        ${EndIf}
++        ${If} $5 != 2
++        ${AndIf} $5 != 3
++            !insertmacro InstallerProbeFailure "GetFileAttributesW" $2 $5
++            Return
++        ${EndIf}
+         ${GetParent} $2 $2
+     ${Loop}
+-    System::Call 'kernel32::GetTempFileNameW(w r2, w "HIL", i 0, w .r3) i.r0'
+-    ${If} $0 == 0
+-        StrCpy $InstallerError "$(INSTALLER_PATH_WRITABLE)"
+-        Return
+-    ${EndIf}
+-    System::Call 'kernel32::DeleteFileW(w r3)'
+-    System::Call 'kernel32::GetDiskFreeSpaceExW(w r2, *l .r0, p 0, p 0) i.r1'
++    System::Call 'kernel32::GetDiskFreeSpaceExW(w r2, *l .r0, p 0, p 0) i.r1 ?e'
++    Pop $5
+     ${If} $1 == 0
+-        StrCpy $InstallerError "$(INSTALLER_PATH_WRITABLE)"
+-        Return
+-    ${EndIf}
+-    IntOp $2 ${APP_64_UNPACKED_SIZE} + 65536
+-    System::Int64Op $2 * 1024
+-    Pop $2
+-    System::Int64Op $0 < $2
++        !insertmacro InstallerProbeFailure "GetDiskFreeSpaceExW" $2 $5
++        Return
++    ${EndIf}
++    IntOp $1 ${APP_64_UNPACKED_SIZE} + 65536
++    System::Int64Op $1 * 1024
++    Pop $1
++    System::Int64Op $0 < $1
+     Pop $0
+     ${If} $0 != 0
+         StrCpy $InstallerError "$(INSTALLER_DISK_SPACE)"
++        Return
++    ${EndIf}
++
++    System::Call 'ole32::CoCreateGuid(g .r3) i.r0'
++    ${If} $0 != 0
++        StrCpy $InstallerError "$INSTDIR$\r$\nCoCreateGuid (HRESULT $0)"
++        Return
++    ${EndIf}
++    ; GetParent returns "C:" for a drive root; join with exactly one separator.
++    StrLen $0 $2
++    ${If} $0 == 3
++        StrCpy $2 $2 2
++    ${EndIf}
++    StrCpy $4 "$2\.night-cruising-$3"
++    System::Call 'kernel32::CreateDirectoryW(w r4, p 0) i.r0 ?e'
++    Pop $5
++    ${If} $0 == 0
++        !insertmacro InstallerProbeFailure "CreateDirectoryW" $4 $5
++        Return
++    ${EndIf}
++    ; CREATE_NEW and DELETE_ON_CLOSE keep the probe exclusive and self-cleaning.
++    StrCpy $3 "$4\write.tmp"
++    System::Call 'kernel32::CreateFileW(w r3, i 0x40010000, i 0, p 0, i 1, i 0x04000100, p 0) p.r6 ?e'
++    Pop $5
++    ${If} $6 == -1
++        !insertmacro InstallerProbeFailure "CreateFileW" $3 $5
++    ${Else}
++        System::Call 'kernel32::WriteFile(p r6, w "x", i 1, *i .r7, p 0) i.r0 ?e'
++        Pop $5
++        ${If} $0 == 0
++            !insertmacro InstallerProbeFailure "WriteFile" $3 $5
++        ${EndIf}
++        System::Call 'kernel32::CloseHandle(p r6)'
++    ${EndIf}
++    System::Call 'kernel32::RemoveDirectoryW(w r4) i.r0 ?e'
++    Pop $5
++    ${If} $0 == 0
++    ${AndIf} $InstallerError == ""
++        !insertmacro InstallerProbeFailure "RemoveDirectoryW" $4 $5
+     ${EndIf}
+ FunctionEnd
