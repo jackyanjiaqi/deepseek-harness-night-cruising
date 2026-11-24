@@ -1,0 +1,58 @@
+{
+  "name": "dsh-doc-server",
+  "version": "0.1.0",
+  "description": "Per-session document service: a faithful cmd_tools/doc-server runner with a Conversation View tab, workspace-file locate menus, settings roster, and agent links.",
+  "license": "MIT",
+  "author": "deepseek-harness-night-cruising",
+  "type": "module",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "doc-server",
+    "documentation",
+    "markdown"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "src",
+    "server",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-context-menu",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-tool"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.2-rc.5"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check index.js && node --check client.js && for f in src/*.js; do node --check \"$f\" || exit 1; done && for f in server/lib/*.js server/standalone.js; do node --check \"$f\" || exit 1; done"
+  }
+}

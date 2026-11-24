@@ -1,0 +1,21 @@
+# Bundle layer for dsh-doc-server: one Host row owns every per-Session
+# document server, the /doc-server control routes, and the `doc_server` tool.
+#
+# Optional profile overrides:
+#
+# - id: doc-server
+#   config:
+#     bindHost: 127.0.0.1
+#     graphFileNames: [CATALOG.md]
+#     ignoreDirs: [.git, node_modules, dist]
+#
+# The row has no Config export: every field is optional and read with a
+# default at activation, so a partial override never fails validation.
+- insert:
+    - id: doc-server
+      name: dsh-doc-server
+      config:
+        # Bind each document server to loopback. Set 0.0.0.0 only when the
+        # documents are intentionally reachable on the LAN; the service has
+        # no authentication of its own.
+        bindHost: 0.0.0.0

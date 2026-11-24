@@ -1,0 +1,5 @@
+{
+  "name": "@dsh-doc-server/runtime",
+  "private": true,
+  "type": "commonjs"
+}

@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Document service",
+    "description": "One document server per session with a Conversation View tab, workspace-file start/switch/locate menus, a settings roster with jump actions, and agent links. Runs the original cmd_tools/doc-server implementation.",
+    "detail": "docs/DETAIL.md"
+  }
+}

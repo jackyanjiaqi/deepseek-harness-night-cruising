@@ -9,3 +9,4 @@
 008-windows-installer-preflight.patch
 009-linux-deb-appimage.patch
 010-linux-icon.dir.patch
+011-view-selection.patch
