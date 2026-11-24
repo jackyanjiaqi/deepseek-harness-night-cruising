@@ -1,0 +1,9 @@
+{
+  "type": "dir-patch",
+  "added": [
+    "apps/desktop/resources/icon-linux-512.png"
+  ],
+  "deleted": [],
+  "modes": {},
+  "before": {}
+}

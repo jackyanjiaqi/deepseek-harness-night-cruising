@@ -150,6 +150,7 @@ p {
   margin: 0.08em 0 0.42em;
 }
 .intro {
+  max-width: 42rem;
   line-height: 1.8;
   font-size: 1rem;
   color: #f1f1ec;
@@ -176,6 +177,22 @@ p {
 }
 .features {
   padding-top: clamp(32px, 5vw, 56px);
+}
+.overview {
+  padding-top: clamp(32px, 5vw, 56px);
+}
+.overview > p,
+.install-guide > p {
+  margin-top: 14px;
+  max-width: 70ch;
+  color: var(--muted);
+  line-height: 1.8;
+}
+.overview a,
+.install-guide a,
+noscript a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .feature-version {
   color: var(--muted);

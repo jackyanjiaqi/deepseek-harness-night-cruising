@@ -154,3 +154,36 @@ test('source archives are excluded from scanning and existing release catalogs',
   assert.deepEqual(next.releases[0].files.map((file) => file.platform), ['darwin'])
   assert.equal(previous.releases[0].files.length, 2)
 })
+
+test('Linux formats coexist in the catalog and republishing replaces only the matching format', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'night-site-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const artifact = async (name, body) => {
+    const { sha256 } = await kodoHash([Buffer.from(body)])
+    await writeFile(join(dir, name), body)
+    await writeFile(join(dir, name + '.sha256'), sha256 + '  ' + name + '\n')
+  }
+  await artifact('night-cruising-1.0.0-linux-x64.tar.gz', 'tar')
+  await artifact('night-cruising-1.0.0-linux-x64.deb', 'deb')
+  await artifact('night-cruising-1.0.0-linux-x64.AppImage', 'appimage')
+  const files = await scanArtifacts('1.0.0', dir)
+  assert.deepEqual(files.map((file) => file.file.format).sort(), ['AppImage', 'deb', 'tar.gz'])
+  const date = new Date('2026-11-24T01:00:00Z')
+  const initial = catalog(null, files.filter(({ file }) => file.format === 'tar.gz'), '1.0.0', '备案号', date)
+  const next = catalog(initial, files.filter(({ file }) => file.format !== 'tar.gz'), '1.0.0', '备案号', date)
+  assert.deepEqual(next.releases[0].files.map((file) => file.format), ['tar.gz', 'deb', 'AppImage'])
+  for (const file of next.releases[0].files) {
+    assert.equal(file.url, `https://github.com/jackyanjiaqi/deepseek-harness-night-cruising/releases/download/1.0.0/${file.name}`)
+    assert.equal(file.checksumUrl, file.backupUrl + '.sha256')
+  }
+  assert.deepEqual(catalog(next, files, '1.0.0', '备案号', date).releases, next.releases)
+  await artifact('night-cruising-1.0.0-linux-x64.deb', 'new deb')
+  const updatedFiles = await scanArtifacts('1.0.0', dir)
+  const updated = catalog(next, updatedFiles.filter(({ file }) => file.format === 'deb'), '1.0.0', '备案号', date)
+  assert.deepEqual(updated.releases[0].files.map((file) => file.format), ['tar.gz', 'deb', 'AppImage'])
+  assert.notEqual(updated.releases[0].files[1].sha256, next.releases[0].files[1].sha256)
+  assert.deepEqual(updated.releases[0].files[0], next.releases[0].files[0])
+  assert.deepEqual(updated.releases[0].files[2], next.releases[0].files[2])
+  await writeFile(join(dir, 'night-cruising-1.0.0-linux-x64.deb'), 'tampered')
+  await assert.rejects(scanArtifacts('1.0.0', dir), /校验失败/)
+})
