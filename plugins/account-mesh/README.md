@@ -11,11 +11,39 @@ Full capability notes and limitations: [docs/DETAIL.md](docs/DETAIL.md).
 
 ## Agent tools
 
-`mesh_status`, `mesh_peers`, `mesh_session_list`, `mesh_session_read`, `mesh_workspace_list`, `mesh_file_read`, `mesh_peer_pair`, `mesh_peer_forget`.
+`mesh_status`, `mesh_peers`, `mesh_session_list`, `mesh_session_read`, `mesh_session_summary`, `mesh_workspace_list`, `mesh_file_read`, `mesh_peer_pair`, `mesh_peer_forget`.
+
+`mesh_session_summary` pages through a whole remote session and returns its transcript as plain text, so the agent can summarise a remote conversation in one call.
+
+## MCP endpoint (optional)
+
+Set `mcpPort` in the plugin config to expose the same read-only operations to external MCP clients over the MCP streamable-HTTP transport:
+
+```yaml
+- id: account-mesh
+  config:
+    mcpPort: 47990
+    mcpToken: ''        # set to require Authorization: Bearer <token>
+```
+
+Endpoint: `http://127.0.0.1:47990/mcp` (protocol `2025-06-18`). Tools: `mesh_status`, `mesh_peers`, `mesh_session_list`, `mesh_session_read`, `mesh_session_summary`, `mesh_workspace_list`, `mesh_file_read`. No write, prompt, shell or arbitrary-command tool exists.
+
+Connect it from a DSH profile with a configuration-only bundle:
+
+```yaml
+- id: account-mesh-mcp
+  name: "@deepseek-ai/dsh-mcp-client"
+  config:
+    serverName: account-mesh
+    transport: streamable-http
+    url: http://127.0.0.1:47990/mcp
+```
+
+Then `mcp__account-mesh__mesh_session_summary` reads a remote session by id and returns its full transcript for summarising.
 
 ## Panel
 
-Settings → Account mesh: status, device fingerprint, discovery addresses, Tailscale probe result, peer devices with trust/revoke/reconnect.
+Settings → Account mesh: status, device fingerprint, discovery addresses, Tailscale probe result, discovery channels with LAN/Tailscale probes, local test peer toggle, peer devices with trust/revoke/reconnect.
 
 ## Local development
 

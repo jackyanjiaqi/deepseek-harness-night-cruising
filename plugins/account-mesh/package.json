@@ -1,6 +1,6 @@
 {
   "name": "dsh-account-mesh",
-  "version": "0.1.0-rc.8",
+  "version": "0.1.0-rc.9",
   "description": "Read-only same-account mesh between DSH instances on the LAN, including Tailscale, over WebRTC data channels",
   "license": "MIT",
   "author": "jackyanjiaqi",

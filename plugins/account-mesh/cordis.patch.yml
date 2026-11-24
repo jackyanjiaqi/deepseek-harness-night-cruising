@@ -14,3 +14,8 @@
       name: dsh-account-mesh
       config:
         autoTrustSameAccount: true
+        # Optional MCP endpoint (streamable HTTP) exposing the same read-only
+        # operations to external MCP clients. Unset keeps it off; set mcpToken
+        # to require `Authorization: Bearer <token>`.
+        # mcpPort: 47990
+        # mcpToken: ''

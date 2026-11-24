@@ -12,6 +12,7 @@ ai 侧可用的工具（本地 agent 调用，不会写远端）：
 | `mesh_peers` | 同账号对端：在线、连接、延迟、是否已信任 |
 | `mesh_session_list` | 远端会话列表（标题、工作目录、时间、live/persisted） |
 | `mesh_session_read` | 远端会话消息窗口（user / assistant / tool 调用与结果），按 `nextSeq` 翻页 |
+| `mesh_session_summary` | 分页读完远端会话全部事件，返回纯文本 transcript，便于一次总结整段对话 |
 | `mesh_workspace_list` | 远端工作区列表，或某个目录内容 |
 | `mesh_file_read` | 远端文本文件按行读取，返回 `hasMore` |
 | `mesh_peer_pair` | 显式信任一个已发现设备 |
@@ -62,6 +63,26 @@ ai 侧可用的工具（本地 agent 调用，不会写远端）：
     allowRoots: []
     iceServers: []
     debug: true
+    localSessionTest: false   # 测试端：无真实对端时用本机会话渲染远端工作区
+    mcpPort: 47990            # 可选：开启 MCP streamable-HTTP 端点
+    mcpToken: ''              # 可选：要求 Authorization: Bearer <token>
 ```
+
+### MCP 端点（可选）
+
+设置 `mcpPort` 后，插件在 `127.0.0.1:<mcpPort>/mcp` 上提供 MCP streamable-HTTP 端点（协议 `2025-06-18`），工具与 agent 工具一一对应且全部只读：`mesh_status`、`mesh_peers`、`mesh_session_list`、`mesh_session_read`、`mesh_session_summary`、`mesh_workspace_list`、`mesh_file_read`。没有写入、prompt、shell 或任意命令工具。
+
+外部 MCP 客户端可在 profile 里用配置型 bundle 接入：
+
+```yaml
+- id: account-mesh-mcp
+  name: "@deepseek-ai/dsh-mcp-client"
+  config:
+    serverName: account-mesh
+    transport: streamable-http
+    url: http://127.0.0.1:47990/mcp
+```
+
+接入后可用 `mcp__account-mesh__mesh_session_summary` 按会话 id 读取远端会话全文并总结。
 
 状态与信任表保存在 `$DSH_HOME/account-mesh/`（`peers.json`、`identity.json`、`mesh.log`，权限 0600）。

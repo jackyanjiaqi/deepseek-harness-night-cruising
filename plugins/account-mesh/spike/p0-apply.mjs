@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { apply } from '../index.js'
+import { registerRoutes } from '../src/routes.js'
 
 const root = path.join(import.meta.dirname, '..', '.tmp', 'apply')
 fs.rmSync(root, { recursive: true, force: true })
@@ -33,7 +34,15 @@ const services = new Map([
       return ids.map(sessionId => ({ sessionId, status: 'fulfilled', value: { title: { title: 'Smoke title' } } }))
     },
     async readSession() {
-      return { session: { id: 'session-1', cwd: workspace }, inheritedEventCount: 0, events: [] }
+      return {
+        session: { id: 'session-1', cwd: workspace },
+        inheritedEventCount: 0,
+        events: [
+          { type: 'user/message', seq: 1, time: 1, data: { content: [{ type: 'text', text: 'hello' }] } },
+          { type: 'assistant/message', seq: 2, time: 2, data: { message: { content: [{ type: 'reasoning', text: 'think' }, { type: 'text', text: 'answer' }] } } },
+          { type: 'tool/result', seq: 3, time: 3, data: { error: { name: 'AbortError', code: 'ABORTED' }, message: { content: [{ type: 'text', text: 'failed' }] } } },
+        ],
+      }
     },
   }],
   ['workspaceRegistry', { list: () => [{ id: 'w', title: 'W', path: workspace }] }],
@@ -84,11 +93,11 @@ const check = (label, condition, detail) => {
 }
 
 try {
-  apply(ctx, { dataDir: path.join(root, 'home'), discoveryPort: 48201, debug: false })
+  apply(ctx, { dataDir: path.join(root, 'home'), discoveryPort: 48201, debug: false, localSessionTest: true })
   await new Promise(resolve => setTimeout(resolve, 800))
 
-  check('eight agent tools registered', tools.length === 8, tools.map(tool => tool.name).join(','))
-  const expected = ['mesh_status', 'mesh_peers', 'mesh_session_list', 'mesh_session_read', 'mesh_workspace_list', 'mesh_file_read', 'mesh_peer_pair', 'mesh_peer_forget']
+  check('nine agent tools registered', tools.length === 9, tools.map(tool => tool.name).join(','))
+  const expected = ['mesh_status', 'mesh_peers', 'mesh_session_list', 'mesh_session_read', 'mesh_session_summary', 'mesh_workspace_list', 'mesh_file_read', 'mesh_peer_pair', 'mesh_peer_forget']
   check('tool names are the documented ones', expected.every(name => tools.some(tool => tool.name === name)))
   check('every tool declares object parameters', tools.every(tool => tool.parameters?.type === 'object' && typeof tool.parameters.properties === 'object'))
   check('every tool declares an output schema and render', tools.every(tool => tool.output?.schema?.type === 'object' && typeof tool.output.render === 'function'))
@@ -126,13 +135,37 @@ try {
   const state = JSON.parse(responses[0])
   await routes[0].handler({ method: 'GET', url: '/account-mesh/api/tree', headers: {} }, res)
   const tree = JSON.parse(responses[responses.length - 1])
-  check('tree route answers an empty peer list', Array.isArray(tree.peers) && tree.peers.length === 0, JSON.stringify(tree))
+  check('tree route includes the local-test peer', tree.peers.some(peer => peer.deviceId === 'local-test'), JSON.stringify(tree))
   await routes[0].handler({ method: 'GET', url: '/account-mesh/api/transcript?peer=x&sessionId=y', headers: {} }, res)
   const transcriptFailure = JSON.parse(responses[responses.length - 1])
   check('transcript route refuses an unknown peer', typeof transcriptFailure.error === 'string', JSON.stringify(transcriptFailure))
+  await routes[0].handler({ method: 'GET', url: '/account-mesh/api/transcript?peer=local-test&sessionId=session-1', headers: {} }, res)
+  const localTranscript = JSON.parse(responses[responses.length - 1])
+  check('local transcript route serves reasoning and errors',
+    localTranscript.items?.length === 3 && localTranscript.items[1].reasoning === 'think' && localTranscript.items[2].isError === true,
+    JSON.stringify(localTranscript))
   check('state route answers JSON', state.status === 'ready' && state.device.id)
+  check('state reports the local test peer as enabled and visible', state.localTest?.enabled === true && state.localTest?.visible === true && state.localTest?.hiddenByRealPeer === false, JSON.stringify(state.localTest))
   check('state route never leaks the account id or token', !responses[0].includes('account-1') && !responses[0].includes('never-used-token'))
   console.log('payload keys:', Object.keys(state).join(','))
+
+  // A real verified peer hides the local test peer from the tree and transcript.
+  const fakeMesh = {
+    config: { localSessionTest: true },
+    peerViews: () => [{ deviceId: 'real-peer-0001', name: 'real-peer', online: true, verified: true, trusted: true }],
+    data: { listWorkspaces: () => ({ workspaces: [] }), listSessions: () => ({ sessions: [] }), sessionEvents: () => ({ items: [] }) },
+    call: async () => ({ workspaces: [], sessions: [] }),
+  }
+  const fakeRoutes = []
+  registerRoutes({ get: name => name === 'webServer' ? { register(route) { fakeRoutes.push(route); return () => {} } } : name === 'connection' ? { requestRejection: () => undefined } : undefined }, fakeMesh, ctx.logger)
+  const fakeResponses = []
+  const fakeRes = { headersSent: false, setHeader() {}, end(body) { fakeResponses.push(body) } }
+  await fakeRoutes[0].handler({ method: 'GET', url: '/account-mesh/api/tree', headers: {} }, fakeRes)
+  const hiddenTree = JSON.parse(fakeResponses[fakeResponses.length - 1])
+  check('real peer hides the local-test node', !hiddenTree.peers.some(peer => peer.deviceId === 'local-test'), JSON.stringify(hiddenTree))
+  await fakeRoutes[0].handler({ method: 'GET', url: '/account-mesh/api/transcript?peer=local-test&sessionId=session-1', headers: {} }, fakeRes)
+  const hiddenTranscript = JSON.parse(fakeResponses[fakeResponses.length - 1])
+  check('real peer hides the local-test transcript', hiddenTranscript.error?.includes('hidden'), JSON.stringify(hiddenTranscript))
 } catch (error) {
   failures += 1
   console.error('SMOKE ERROR', error)

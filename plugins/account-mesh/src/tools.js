@@ -101,6 +101,52 @@ export function registerTools(ctx, mesh, log) {
   disposers.push(
     register(
       define({
+        name: 'mesh_session_summary',
+        description:
+          'Read one remote session end to end and return its full projected transcript as plain text (user/assistant messages, tool calls, tool results, errors) so the caller can summarise it. Pages internally through sessions/events; returns every item, not a truncated window.',
+        properties: {
+          peer: PEER_PARAM,
+          sessionId: { type: 'string', description: 'Session id from mesh_session_list.' },
+          includeToolResults: { type: 'boolean', description: 'Include tool results and tool calls. Default true.' },
+        },
+        required: ['peer', 'sessionId'],
+        execute: async (args, exec) => {
+          const peer = requireString(args, 'peer')
+          const sessionId = requireString(args, 'sessionId')
+          const includeTools = args.includeToolResults !== false
+          const items = []
+          let fromSeq = 0
+          let session = null
+          for (;;) {
+            const page = await mesh.call(peer, 'sessions/events', { sessionId, fromSeq, limit: 500 }, exec?.signal)
+            session ??= page.session ?? null
+            items.push(...(page.items ?? []))
+            if (!page.hasMore || page.nextSeq <= fromSeq) break
+            fromSeq = page.nextSeq
+          }
+          const lines = []
+          for (const item of items) {
+            if (item.role === 'tool-call' || item.role === 'tool-result') {
+              if (!includeTools) continue
+              lines.push(`[${item.role === 'tool-call' ? `tool-call ${item.name ?? ''}` : item.isError ? 'tool-result error' : 'tool-result'}] ${item.text ?? ''}`)
+              continue
+            }
+            lines.push(`[${item.role}] ${item.text ?? ''}`)
+            if (item.reasoning) lines.push(`[reasoning] ${item.reasoning}`)
+          }
+          return {
+            session: session ?? { id: sessionId },
+            itemCount: items.length,
+            transcript: lines.join('\n\n'),
+          }
+        },
+      }),
+    ),
+  )
+
+  disposers.push(
+    register(
+      define({
         name: 'mesh_session_read',
         description:
           'Read one remote session\'s transcript window: user and assistant text, tool calls, and tool results, in seq order. Start at fromSeq 0 and continue with the returned nextSeq while hasMore is true.',

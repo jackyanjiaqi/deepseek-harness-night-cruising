@@ -28,7 +28,10 @@ const check = (label, condition, detail) => {
 const React = {
   Fragment: 'Fragment',
   createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
-  useState: initial => [typeof initial === 'function' ? initial() : initial, () => {}],
+  useState: initial => {
+    if (React.__stateQueue && React.__stateQueue.length > 0) return [React.__stateQueue.shift(), () => {}]
+    return [typeof initial === 'function' ? initial() : initial, () => {}]
+  },
   useEffect: () => {},
   useMemo: fn => fn(),
   useCallback: fn => fn,
@@ -94,6 +97,110 @@ try {
   check('panel renders a section', panel?.type === 'section')
   check('panel shows the remote tree title', JSON.stringify(panel).includes('远端工作区'))
   check('panel marks itself read-only', JSON.stringify(panel).includes('只读'))
+  const panelText = JSON.stringify(panel)
+  check('panel labels the session pane', panelText.includes('会话'))
+  check('panel labels the trajectory pane', panelText.includes('轨迹'))
+  check('dictionaries expose session/trajectory copy strings', dicts.every(entry =>
+    typeof entry.dict.sessionsPane === 'string' &&
+    typeof entry.dict.conversationTab === 'string' &&
+    typeof entry.dict.trajectoryTab === 'string' &&
+    typeof entry.dict.copySessionId === 'string' &&
+    typeof entry.dict.copied === 'string'))
+  const clientSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'client.js'), 'utf8')
+  check('client offers clipboard copy for session ids', clientSource.includes('copySessionId') && clientSource.includes('navigator.clipboard'))
+
+  // Render the panel with a populated tree and a selected session so the
+  // session rows, copy buttons, and trajectory item labels are exercised.
+  const presetTree = {
+    peers: [{
+      online: true,
+      verified: true,
+      deviceId: 'sim-remote-workspace-0001',
+      shortId: 'sim-remo…001',
+      name: 'sim-remote-workspace',
+      source: 'lan',
+      address: '127.0.0.1',
+      rttMs: 1,
+      fingerprint: 'F3h7HlLkYZTIlF7VZ0k1K6',
+      pairCode: '475320',
+      trustedAt: 1763000000000,
+      workspaces: [{
+        id: 'sim-ws',
+        title: 'Simulated remote workspace',
+        name: 'workspace',
+        path: '/tmp/sim/workspace',
+        sessions: [
+          { id: 'sim-session-alpha', title: 'Simulated remote session: workspace tour', createdAt: 1763000000000, live: false, persisted: true },
+          { id: 'sim-session-beta', title: 'Simulated remote session: projection rules', createdAt: 1763000100000, live: true, persisted: true },
+        ],
+      }],
+      error: null,
+      lastSeenAt: null,
+    }],
+    generatedAt: 1763000000000,
+  }
+  const presetSelection = { peer: 'sim-remote-workspace-0001', sessionId: 'sim-session-alpha', title: 'Simulated remote session: workspace tour' }
+  const presetTranscript = {
+    session: { id: 'sim-session-alpha', cwd: '/tmp/sim/workspace', createdAt: 1763000000000 },
+    fromSeq: 0,
+    nextSeq: 7,
+    hasMore: false,
+    items: [
+      { seq: 1, time: 1763000001000, role: 'user', text: 'Please inspect the remote workspace.' },
+      {
+        seq: 2,
+        time: 1763000002000,
+        role: 'assistant',
+        text: '## Plan\n\nI will **list** the workspace and read `notes.txt`.',
+        reasoning: 'The user wants a workspace tour.',
+        toolCalls: ['mesh_workspace_list'],
+      },
+      { seq: 3, time: 1763000003000, role: 'tool-call', name: 'mesh_workspace_list', text: '{"peer":"sim-remote-workspace"}' },
+      { seq: 4, time: 1763000004000, role: 'tool-result', isError: true, text: 'Error: wait aborted', errorName: 'AbortError', errorCode: 'ABORTED' },
+    ],
+  }
+  const renderElement = node => {
+    if (!node || typeof node !== 'object') return node
+    if (Array.isArray(node)) return node.map(renderElement)
+    if (typeof node.type === 'function') {
+      const props = { ...(node.props ?? {}) }
+      if (Array.isArray(node.children) && node.children.length > 0) props.children = node.children.map(renderElement)
+      return renderElement(node.type(props))
+    }
+    return { ...node, children: Array.isArray(node.children) ? node.children.map(renderElement) : node.children }
+  }
+  // MeshPanel consumes eight states (tree, error, expanded, selection,
+  // transcript, transcriptError, loadingMore, view), then the two tree copy
+  // buttons, the toolbar copy button, and one reasoning block.
+  React.__stateQueue = [presetTree, null, {}, presetSelection, presetTranscript, null, false, 'conversation', 360, false, false, false, false, false]
+  const richPanel = renderElement(panelEntry.Component({}))
+  const richText = JSON.stringify(richPanel)
+  check('rich panel renders both session rows', richText.includes('Simulated remote session: workspace tour') && richText.includes('Simulated remote session: projection rules'))
+  check('rich panel exposes copy buttons carrying full session ids', richText.includes('sim-session-alpha') && richText.includes('sim-session-beta') && richText.includes('复制会话 ID'))
+  check('rich panel renders compact copy icons and the toolbar copy', richText.includes('⧉') && richText.includes('会话 ID'))
+  check('rich panel renders the conversation and trajectory tabs', richText.includes('对话') && richText.includes('轨迹'))
+  check('rich panel renders a right-aligned user bubble', richText.includes('justifyContent') && richText.includes('Please inspect the remote workspace.'))
+  check('rich panel renders assistant markdown', richText.includes('"type":"h2"') && richText.includes('"type":"strong"') && richText.includes('"type":"code"') && richText.includes('notes.txt'))
+  check('rich panel collapses thinking and points to the trajectory', richText.includes('思考过程') && richText.includes('可在轨迹中查看'))
+  check('rich panel renders the resizable splitter', richText.includes('am-splitter') && richText.includes('am-splitter-line') && richText.includes('separator'))
+  check('rich panel carries tree hover styles', richText.includes('am-tree-row:hover') && richText.includes('am-button:hover'))
+  check('hint line does not grow vertically', richText.includes('"flex":"none"'))
+  check('workspace label uses the last path segment', richText.includes('"children":["workspace"]') && !richText.includes('"children":["/tmp/sim/workspace"]'))
+  check('workspace hover carries the full path', richText.includes('/tmp/sim/workspace'))
+  check('peer hover carries device details', richText.includes('设备 ID: sim-remote-workspace-0001') && richText.includes('指纹:'))
+  check('session hover carries id and full date', richText.includes('会话 ID: sim-session-alpha') && richText.includes('创建时间:'))
+  check('session meta uses relative time, not a full date', richText.includes('天') || richText.includes('小时') || richText.includes('分钟'))
+  check('labels render an inner marquee text span', richText.includes('am-tree-name') && richText.includes('am-tree-text'))
+  check('marquee only applies to overflowing labels', richText.includes('data-overflow') && !richText.includes('data-marquee'))
+  check('marquee animation is declared', richText.includes('am-marquee-text'))
+
+  // Second render: the trajectory tab, with reasoning expanded and full calls/errors.
+  React.__stateQueue = [presetTree, null, {}, presetSelection, presetTranscript, null, false, 'trajectory', 360, false, false, false, false, true]
+  const trajectoryPanel = renderElement(panelEntry.Component({}))
+  const trajectoryText = JSON.stringify(trajectoryPanel)
+  check('trajectory tab shows tool calls and arguments', trajectoryText.includes('工具调用 · mesh_workspace_list') && trajectoryText.includes('参数:') && trajectoryText.includes('sim-remote-workspace'))
+  check('trajectory tab shows tool errors and error codes', trajectoryText.includes('工具结果 · 报错') && trajectoryText.includes('AbortError') && trajectoryText.includes('ABORTED'))
+  check('trajectory tab expands reasoning', trajectoryText.includes('The user wants a workspace tour.') && trajectoryText.includes('收起思考'))
 
   const outer = registration.Component({ close() {} })
   const tree = typeof outer.type === 'function' ? outer.type(outer.props) : outer

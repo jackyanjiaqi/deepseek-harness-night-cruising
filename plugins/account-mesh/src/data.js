@@ -27,6 +27,16 @@ function textOfContent(content, { toolCalls = true } = {}) {
   return parts.join('\n').trim()
 }
 
+/** Reasoning text kept separate so the UI can collapse it in the conversation tab. */
+function reasoningOfContent(content) {
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter(block => block?.type === 'reasoning' && typeof block.text === 'string')
+    .map(block => block.text)
+    .join('\n')
+    .trim()
+}
+
 /** One projected transcript item, or undefined for non-conversation events. */
 function projectEvent(event) {
   if (!SESSION_EVENT_KINDS.has(event.type)) return undefined
@@ -36,12 +46,22 @@ function projectEvent(event) {
     return text ? { seq: event.seq, time: event.time, role: 'user', text } : undefined
   }
   if (event.type === 'assistant/message') {
-    const text = textOfContent(data.message?.content, { toolCalls: false })
-    const calls = Array.isArray(data.message?.content)
-      ? data.message.content.filter(block => block?.type === 'tool-call').map(block => block.name)
+    const content = data.message?.content
+    const text = textOfContent(content, { toolCalls: false })
+    const reasoning = reasoningOfContent(content)
+    const calls = Array.isArray(content)
+      ? content.filter(block => block?.type === 'tool-call').map(block => ({ name: block.name, arguments: block.arguments }))
       : []
-    return text || calls.length > 0
-      ? { seq: event.seq, time: event.time, role: 'assistant', text, toolCalls: calls }
+    return text || reasoning || calls.length > 0
+      ? {
+          seq: event.seq,
+          time: event.time,
+          role: 'assistant',
+          text,
+          reasoning,
+          toolCalls: calls.map(call => call.name),
+          toolCallDetails: calls,
+        }
       : undefined
   }
   if (event.type === 'tool/call') {
@@ -50,7 +70,7 @@ function projectEvent(event) {
       time: event.time,
       role: 'tool-call',
       name: data.name,
-      text: typeof data.arguments === 'string' ? data.arguments.slice(0, 2000) : '',
+      text: typeof data.arguments === 'string' ? data.arguments : '',
     }
   }
   if (event.type === 'tool/result') {
@@ -60,7 +80,9 @@ function projectEvent(event) {
       time: event.time,
       role: 'tool-result',
       isError: Boolean(data.error) || data.message?.isError === true,
-      text: text.length > 2000 ? `${text.slice(0, 2000)}…` : text,
+      text,
+      errorName: data.error?.name ?? undefined,
+      errorCode: data.error?.code ?? undefined,
     }
   }
   return undefined

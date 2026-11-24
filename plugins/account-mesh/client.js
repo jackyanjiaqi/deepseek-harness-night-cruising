@@ -49,23 +49,101 @@ window.__ModuleLoader__.load({
         readOnly: '服务端只提供只读操作：没有写入、prompt、bash 或任意命令通道。',
         waiting: '读取中…',
         error: '读取失败',
-        lastSeen: '最近信任',
         signedOut: '账号未登录',
         starting: '正在启动',
         ready: '运行中',
         disabled: '已停用',
         tailnetOn: '可用',
         tailnetOff: '未检测到',
+        channels: '发现通道',
+        lanChannel: '局域网',
+        tailnetChannel: 'Tailscale',
+        testLan: '测试局域网',
+        testTailnet: '测试 Tailscale',
+        refreshNetwork: '刷新网络状态',
+        localTestPeer: '本机测试连接端',
+        localTestHint: '开启后，没有真实连接时用本机真实会话渲染远端工作区；一旦有真实对端认证成功，测试端自动隐藏。',
+        localTestHidden: '已隐藏：当前有真实对端连接',
+        localTestEnabled: '已开启',
+        localTestDisabled: '已关闭',
+        probeTarget: '目标地址',
+        probeTargetHint: '留空则测试已知对端；可填 IP:端口',
+        probeReplied: '收到应答',
+        probeNoReply: '无应答',
+        probeRunning: '测试中…',
+        lanMulticast: '组播',
+        lanBroadcast: '广播',
+        lanLocal: '本机地址',
+        tailnetPeersKnown: 'tailnet 设备',
+        channelPeers: '{n} 个对端',
+        channelAnnounces: '已发 {n} 次',
+        channelReplies: '收到 {n} 次',
         untitled: '(无标题)',
         live: '进行中',
+        justNow: '刚刚',
+        minutesAgo: '{n} 分钟',
+        hoursAgo: '{n} 小时',
+        daysAgo: '{n} 天',
+        peerDetails: '设备详情',
+        peerIdLabel: '设备 ID',
+        peerAddressLabel: '地址',
+        peerSourceLabel: '来源',
+        peerRttLabel: '延迟',
+        peerPairCodeLabel: '配对码',
+        peerTrustedAtLabel: '信任时间',
+        peerLastSeenLabel: '最后在线',
+        peerFingerprintLabel: '指纹',
+        peerOnlineLabel: '状态',
+        peerOnlineValue: '在线',
+        peerOfflineValue: '离线',
+        peerVerifiedValue: '已认证',
+        peerUnverifiedValue: '未认证',
+        peerSourceLan: '局域网',
+        peerSourceTailnet: 'Tailscale',
+        peerSourceLocal: '本机测试',
+        peerSourceTrusted: '信任表',
+        peerSessionsLabel: '会话数',
+        peerWorkspacesLabel: '工作区数',
+        sessionCreatedLabel: '创建时间',
+        sessionCwdLabel: '工作目录',
+        sessionLiveLabel: '状态',
+        sessionLiveValue: '进行中',
+        sessionIdLabelShort: '会话 ID',
         empty: '空',
-        openSession: '打开会话',
-        transcriptEmpty: '这个会话没有可显示的文本。',
         loadMore: '加载更多',
         sessionsCount: '{n} 个会话',
+        devicesCount: '{n} 台设备',
         workspaceUnknown: '未知工作区',
         readOnlyTag: '只读',
         noWorkspaces: '这个对端没有工作区。',
+        sessionsPane: '会话',
+        conversationTab: '对话',
+        trajectoryTab: '轨迹',
+        sessionIdLabel: '会话 ID',
+        copySessionId: '复制会话 ID',
+        copied: '已复制',
+        copyFailed: '复制失败',
+        messageEvent: '消息',
+        toolCallEvent: '工具调用',
+        toolResultEvent: '工具结果',
+        toolResultError: '工具结果 · 报错',
+        thinking: '思考过程',
+        expandThinking: '展开思考',
+        collapseThinking: '收起思考',
+        userRole: '用户',
+        assistantRole: '助手',
+        toolArguments: '参数',
+        errorName: '错误',
+        emptyConversation: '这个会话没有对话消息。',
+        emptyTrajectory: '这个会话没有轨迹事件。',
+        conversationHint: '对话只显示用户与助手消息，思考过程可折叠。',
+        trajectoryHint: '轨迹按事件顺序显示：消息、思考过程、工具调用与结果。',
+        processNote: '过程',
+        seeTrajectory: '可在轨迹中查看',
+        toolResultsCount: '{n} 个工具结果',
+        errorsCount: '{n} 个错误',
+        resizeTree: '调整会话树宽度',
+        selectSessionHint: '选择左侧会话，然后在右侧切换「对话」或「轨迹」。',
       },
       en: {
         title: 'Account mesh',
@@ -101,34 +179,128 @@ window.__ModuleLoader__.load({
         readOnly: 'The serving side exposes read-only operations only: no writes, prompts, shells or arbitrary commands.',
         waiting: 'Loading…',
         error: 'Load failed',
-        lastSeen: 'Trusted',
         signedOut: 'Signed out',
         starting: 'Starting',
         ready: 'Running',
         disabled: 'Disabled',
         tailnetOn: 'available',
         tailnetOff: 'not detected',
+        channels: 'Discovery channels',
+        lanChannel: 'LAN',
+        tailnetChannel: 'Tailscale',
+        testLan: 'Test LAN',
+        testTailnet: 'Test Tailscale',
+        refreshNetwork: 'Refresh network',
+        localTestPeer: 'Local test peer',
+        localTestHint: 'When enabled, the remote workspace renders this host\'s real sessions while no real peer is connected; it hides automatically once a real peer authenticates.',
+        localTestHidden: 'Hidden: a real peer is connected',
+        localTestEnabled: 'On',
+        localTestDisabled: 'Off',
+        probeTarget: 'Target address',
+        probeTargetHint: 'Leave empty to test known peers; or IP:port',
+        probeReplied: 'Replied',
+        probeNoReply: 'No reply',
+        probeRunning: 'Testing…',
+        lanMulticast: 'multicast',
+        lanBroadcast: 'broadcast',
+        lanLocal: 'Local addresses',
+        tailnetPeersKnown: 'tailnet devices',
+        channelPeers: '{n} peers',
+        channelAnnounces: '{n} sent',
+        channelReplies: '{n} received',
         untitled: '(untitled)',
         live: 'live',
+        justNow: 'just now',
+        minutesAgo: '{n} min',
+        hoursAgo: '{n} h',
+        daysAgo: '{n} d',
+        peerDetails: 'Device details',
+        peerIdLabel: 'Device ID',
+        peerAddressLabel: 'Address',
+        peerSourceLabel: 'Source',
+        peerRttLabel: 'Latency',
+        peerPairCodeLabel: 'Pair code',
+        peerTrustedAtLabel: 'Trusted at',
+        peerLastSeenLabel: 'Last seen',
+        peerFingerprintLabel: 'Fingerprint',
+        peerOnlineLabel: 'State',
+        peerOnlineValue: 'online',
+        peerOfflineValue: 'offline',
+        peerVerifiedValue: 'authenticated',
+        peerUnverifiedValue: 'not authenticated',
+        peerSourceLan: 'LAN',
+        peerSourceTailnet: 'Tailscale',
+        peerSourceLocal: 'local test',
+        peerSourceTrusted: 'trust table',
+        peerSessionsLabel: 'Sessions',
+        peerWorkspacesLabel: 'Workspaces',
+        sessionCreatedLabel: 'Created',
+        sessionCwdLabel: 'Working directory',
+        sessionLiveLabel: 'State',
+        sessionLiveValue: 'live',
+        sessionIdLabelShort: 'Session ID',
         empty: 'empty',
-        openSession: 'Open session',
-        transcriptEmpty: 'This session has no displayable text.',
         loadMore: 'Load more',
         sessionsCount: '{n} sessions',
+        devicesCount: '{n} device(s)',
         workspaceUnknown: 'Unknown workspace',
         readOnlyTag: 'read-only',
         noWorkspaces: 'This peer has no workspace.',
+        sessionsPane: 'Sessions',
+        conversationTab: 'Conversation',
+        trajectoryTab: 'Trajectory',
+        sessionIdLabel: 'Session ID',
+        copySessionId: 'Copy session ID',
+        copied: 'Copied',
+        copyFailed: 'Copy failed',
+        messageEvent: 'Message',
+        toolCallEvent: 'Tool call',
+        toolResultEvent: 'Tool result',
+        toolResultError: 'Tool result · error',
+        thinking: 'Thinking',
+        expandThinking: 'Show thinking',
+        collapseThinking: 'Hide thinking',
+        userRole: 'User',
+        assistantRole: 'Assistant',
+        toolArguments: 'Arguments',
+        errorName: 'Error',
+        emptyConversation: 'This session has no conversation messages.',
+        emptyTrajectory: 'This session has no trajectory events.',
+        conversationHint: 'Conversation shows user and assistant messages; thinking is collapsible.',
+        trajectoryHint: 'Trajectory events in seq order: messages, thinking, tool calls, and results.',
+        processNote: 'Process',
+        seeTrajectory: 'See Trajectory',
+        toolResultsCount: '{n} tool results',
+        errorsCount: '{n} errors',
+        resizeTree: 'Resize session tree',
+        selectSessionHint: 'Select a session on the left, then switch between Conversation and Trajectory.',
       },
     }
 
+    const monoStyle = {
+      fontFamily: 'var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace)',
+      fontSize: 'var(--dsh-code-font-size, 11px)',
+      color: 'var(--dsw-alias-label-secondary)',
+      wordBreak: 'break-all',
+    }
+    /**
+     * Marquee scroll velocity in px per second, tuned to a comfortable reading
+     * speed. Duration = overflow / velocity, so length changes time, not speed.
+     */
+    const MARQUEE_PX_PER_SECOND = 60
+    const contentFont = 'var(--dsh-content-font-size, 14px)'
+    const secondaryFont = 'var(--dsh-content-font-size-secondary, 13px)'
+    const contentLine = 'calc(22px + var(--dsh-content-font-delta, 0px))'
+    const contentLineTall = 'calc(24px + var(--dsh-content-font-delta, 0px))'
+    const secondaryLine = 'calc(20px + var(--dsh-content-font-delta-secondary, 0px))'
     const styles = {
       page: { padding: '4px 2px 24px', maxWidth: '760px', color: 'var(--dsw-alias-label-primary)', fontSize: '13px', lineHeight: 1.55 },
       title: { fontSize: '16px', fontWeight: 600, margin: '0 0 4px' },
       desc: { color: 'var(--dsw-alias-label-secondary)', margin: '0 0 16px', fontSize: '12px' },
       card: { border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)', borderRadius: '10px', padding: '12px 14px', marginBottom: '12px' },
-      row: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
+      row: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
       label: { color: 'var(--dsw-alias-label-secondary)', minWidth: '92px', fontSize: '12px' },
-      value: { fontFamily: 'var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace)', fontSize: '12px', wordBreak: 'break-all' },
+      value: { fontFamily: monoStyle.fontFamily, fontSize: '12px', wordBreak: 'break-all' },
       chip: (tone) => ({
         display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '1px 8px', borderRadius: '999px', fontSize: '11px',
         border: '1px solid var(--dsw-alias-border-l2)',
@@ -136,32 +308,108 @@ window.__ModuleLoader__.load({
         background: 'var(--dsw-alias-bg-layer-2)',
       }),
       peer: { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '10px', padding: '10px 12px', marginBottom: '8px', background: 'var(--dsw-alias-bg-layer-2)' },
-      peerHead: { display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' },
+      peerHead: { display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' },
       peerName: { fontWeight: 600, fontSize: '13px' },
-      mono: { fontFamily: 'var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace)', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', wordBreak: 'break-all' },
-      button: { font: 'inherit', fontSize: '12px', cursor: 'pointer', color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '7px', padding: '3px 10px' },
+      mono: monoStyle,
+      button: { font: 'inherit', fontSize: '12px', cursor: 'pointer', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '7px', padding: '3px 10px' },
       buttonPrimary: { font: 'inherit', fontSize: '12px', cursor: 'pointer', color: 'var(--dsw-alias-label-primary-foreground, #fff)', background: 'var(--dsw-alias-brand-primary)', border: '1px solid transparent', borderRadius: '7px', padding: '3px 10px' },
       hint: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11.5px', margin: '10px 0 0' },
       error: { color: 'var(--dsw-alias-state-error-primary, #d64545)', fontSize: '12px', margin: '8px 0 0' },
-      panel: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, color: 'var(--dsw-alias-label-primary)', fontSize: '13px' },
-      panelHead: { display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderBottom: '1px solid var(--dsw-alias-border-l2)', flexWrap: 'wrap' },
+      panel: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, color: 'var(--dsw-alias-label-primary)', fontSize: contentFont, lineHeight: contentLineTall },
+      panelHead: { display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 16px', borderBottom: '1px solid var(--dsw-alias-border-l2)', flexWrap: 'wrap' },
       panelBody: { display: 'flex', flex: 1, minHeight: 0 },
-      treePane: { width: '320px', flex: 'none', borderRight: '1px solid var(--dsw-alias-border-l2)', overflow: 'auto', padding: '8px 6px 24px' },
+      treePane: (width) => ({ width: `${width}px`, flex: 'none', overflow: 'auto', padding: '8px 8px 24px', minWidth: 0 }),
       transcriptPane: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 },
-      treeRow: (depth, active) => ({
-        display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 6px', paddingLeft: `${6 + depth * 14}px`,
-        borderRadius: '7px', cursor: 'pointer', fontSize: '12.5px',
-        background: active ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
+      splitter: { width: '8px', flex: 'none', cursor: 'col-resize', touchAction: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent' },
+      splitterLine: { width: '1px', height: '100%', background: 'var(--dsw-alias-border-l2)', transition: 'background 120ms ease, width 120ms ease' },
+      treeRow: (depth) => ({
+        display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 8px', paddingLeft: `${8 + depth * 16}px`,
+        borderRadius: 'var(--dsw-radius-sm, 6px)', fontSize: contentFont, minWidth: 0,
       }),
-      treeName: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-      treeMeta: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', flex: 'none' },
-      chevron: { width: '12px', flex: 'none', color: 'var(--dsw-alias-label-secondary)' },
-      msg: { padding: '8px 14px', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
-      msgRole: { fontSize: '10.5px', letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--dsw-alias-label-secondary)', marginBottom: '3px' },
-      msgText: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '12.5px', lineHeight: 1.55 },
-      toolbar: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
-      empty: { color: 'var(--dsw-alias-label-secondary)', padding: '24px 14px', fontSize: '12.5px' },
+      treeButton: { display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0, padding: 0, background: 'transparent', border: 'none', color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer' },
+      treeIcon: { display: 'inline-flex', alignItems: 'center', flex: 'none' },
+      treeName: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' },
+      treeMeta: { color: 'var(--dsw-alias-label-secondary)', fontSize: secondaryFont, flex: 'none' },
+      chevron: { width: 'calc(14px + var(--dsh-content-font-delta, 0px))', flex: 'none', color: 'var(--dsw-alias-label-secondary)' },
+      msg: { padding: '10px 16px', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
+      msgRole: { fontSize: secondaryFont, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--dsw-alias-label-secondary)', marginBottom: '4px' },
+      msgText: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: contentFont, lineHeight: contentLineTall },
+      userRow: { display: 'flex', justifyContent: 'flex-end', padding: '10px 16px' },
+      userBubble: { maxWidth: '82%', background: 'var(--dsw-specific-bubble, var(--dsw-alias-bg-layer-2))', borderRadius: 'var(--dsw-radius-xl, 14px)', padding: '10px 16px', fontSize: contentFont, lineHeight: contentLine, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+      assistantRow: { padding: '10px 16px', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
+      processNote: { color: 'var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary))', fontSize: secondaryFont, marginTop: '8px' },
+      mdParagraph: { margin: '0 0 10px', fontSize: contentFont, lineHeight: contentLineTall },
+      mdHeading: { margin: '14px 0 8px', fontSize: `calc(${contentFont} + 2px)`, fontWeight: 600, lineHeight: 'calc(28px + var(--dsh-content-font-delta, 0px))' },
+      mdList: { margin: '0 0 10px', paddingLeft: '24px', fontSize: contentFont, lineHeight: contentLineTall },
+      mdQuote: { margin: '0 0 10px', paddingLeft: '12px', borderLeft: '2px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)', fontSize: contentFont, lineHeight: contentLineTall },
+      mdRule: { border: 'none', borderTop: '1px solid var(--dsw-alias-border-l2)', margin: '12px 0' },
+      codeBlock: { margin: '0 0 10px', padding: '10px 12px', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: 'var(--dsw-radius-md, 6px)', overflow: 'auto', fontSize: 'var(--dsh-code-font-size, 11px)', lineHeight: 'calc(18px + var(--dsh-code-font-delta, 0px))' },
+      inlineCode: { fontFamily: monoStyle.fontFamily, fontSize: 'calc(var(--dsh-code-font-size, 11px) + 1px)', background: 'var(--dsw-alias-bg-layer-2)', padding: '0 4px', borderRadius: '4px' },
+      link: { color: 'var(--dsw-alias-brand-primary)' },
+      toolbar: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', padding: '10px 16px', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
+      toolbarTitle: { fontWeight: 600, fontSize: contentFont, minWidth: 0, maxWidth: '340px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      toolbarId: { ...monoStyle, fontSize: secondaryFont, userSelect: 'text', maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      empty: { color: 'var(--dsw-alias-label-secondary)', padding: '32px 16px', fontSize: contentFont, lineHeight: contentLineTall },
+      paneHead: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', padding: '8px 10px', borderBottom: '1px solid var(--dsw-alias-border-l2)', position: 'sticky', top: 0, background: 'var(--dsw-alias-bg-layer-1)', zIndex: 1 },
+      paneTitle: { fontSize: contentFont, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
+      paneSub: { color: 'var(--dsw-alias-label-secondary)', fontSize: secondaryFont, flex: 'none', minWidth: 0, padding: '4px 10px 8px', lineHeight: secondaryLine },
+      tabBar: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '8px 10px', borderBottom: '1px solid var(--dsw-alias-border-l2)', position: 'sticky', top: 0, background: 'var(--dsw-alias-bg-layer-1)', zIndex: 1 },
+      tab: (active) => ({
+        font: 'inherit', fontSize: secondaryFont, cursor: 'pointer', padding: '4px 14px', borderRadius: 'var(--dsw-radius-sm, 6px)',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        color: active ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
+        fontWeight: active ? 600 : 400,
+        lineHeight: secondaryLine,
+      }),
+      reasoning: { marginTop: '8px' },
+      reasoningToggle: { font: 'inherit', fontSize: secondaryFont, cursor: 'pointer', color: 'var(--dsw-alias-label-secondary)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 'var(--dsw-radius-sm, 6px)', padding: '2px 10px', lineHeight: secondaryLine },
+      reasoningText: { marginTop: '6px', padding: '8px 12px', borderLeft: '2px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: secondaryFont, lineHeight: secondaryLine },
+      errorMeta: { color: 'var(--dsw-alias-state-error-primary, #d64545)', fontSize: secondaryFont, marginTop: '4px' },
+      copyButton: { font: 'inherit', fontSize: secondaryFont, cursor: 'pointer', color: 'var(--dsw-alias-label-secondary)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 'var(--dsw-radius-sm, 6px)', padding: '3px 10px', lineHeight: secondaryLine, minWidth: '48px' },
+      copyIconButton: { padding: '0 6px', fontSize: contentFont, minWidth: '26px', opacity: 0, transition: 'opacity 120ms ease' },
+      copyFailed: { color: 'var(--dsw-alias-state-error-primary, #d64545)', borderColor: 'var(--dsw-alias-state-error-primary, #d64545)' },
+      input: { font: 'inherit', fontSize: '12px', color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '7px', padding: '3px 10px', minWidth: '220px' },
     }
+
+    /** Hover/focus affordances the inline style objects cannot express. */
+    const PANEL_CSS = `
+      .am-button { background: var(--dsw-alias-bg-layer-1); }
+      .am-copy { background: var(--dsw-alias-bg-layer-1); }
+      .am-tab { background: var(--dsw-alias-bg-layer-1); }
+      .am-tab-active, .am-tree-row-active { background: var(--dsw-alias-interactive-bg-hover); }
+      .am-tree-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
+      .am-tree-row:has(.am-tree-button:focus-visible) { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+      .am-tree-button:focus-visible { outline: none; }
+      .am-button:hover, .am-tab:hover, .am-copy:hover, .am-reasoning-toggle:hover { background: var(--dsw-alias-interactive-bg-hover); }
+      .am-button-primary:hover { filter: brightness(1.08); }
+      .am-button:focus-visible, .am-tab:focus-visible, .am-copy:focus-visible, .am-reasoning-toggle:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+      .am-splitter:hover { background: var(--dsw-alias-interactive-bg-hover); }
+      .am-splitter:hover .am-splitter-line, .am-splitter[data-dragging] .am-splitter-line { background: var(--dsw-alias-brand-primary); width: 2px; }
+      .am-splitter:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+      /* The copy button only appears while its row is hovered or focused, so the
+         title keeps the full width the rest of the time. */
+      .am-tree-row:hover .am-copy, .am-tree-row:focus-within .am-copy { opacity: 1; }
+      /* Only a label wider than its box scrolls: the inner text keeps its full
+         width (no ellipsis) and slides left until its end is visible. The
+         overflow flag is measured on hover, so short labels never animate.
+         The travel distance is written inline per row (--am-marquee-travel, px)
+         and the duration is travel / MARQUEE_PX_PER_SECOND, so every label moves
+         at the same velocity no matter how long it is. */
+      .am-tree-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .am-tree-name > .am-tree-text { display: inline-block; white-space: nowrap; }
+      .am-tree-row:hover .am-tree-name[data-overflow] { text-overflow: clip; }
+      .am-tree-row:hover .am-tree-name[data-overflow] > .am-tree-text {
+        animation: am-marquee-text var(--am-marquee-duration, 6s) linear infinite alternate;
+      }
+      @keyframes am-marquee-text {
+        from { transform: translateX(0); }
+        to { transform: translateX(calc(-1 * var(--am-marquee-travel, 0px))); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .am-tree-row:hover .am-tree-name[data-overflow],
+        .am-tree-row:hover .am-tree-name[data-overflow] > .am-tree-text { animation: none; }
+      }
+    `
 
     function useMeshState() {
       const [state, setState] = React.useState({ data: null, error: null })
@@ -226,8 +474,228 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Compact age like DSH: just now / N min / N h / N d. Full date stays in the hover tooltip. */
+    function formatRelative(ms, t) {
+      if (!ms) return ''
+      const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000))
+      if (seconds < 60) return t('justNow')
+      const minutes = Math.floor(seconds / 60)
+      if (minutes < 60) return fill(t('minutesAgo'), { n: minutes })
+      const hours = Math.floor(minutes / 60)
+      if (hours < 24) return fill(t('hoursAgo'), { n: hours })
+      return fill(t('daysAgo'), { n: Math.floor(hours / 24) })
+    }
+
+    /** Last path segment for display; the full path stays in the hover tooltip. */
+    function lastSegment(pathText) {
+      const text = String(pathText ?? '').replace(/[\\/]+$/, '')
+      const parts = text.split(/[\\/]/)
+      return parts[parts.length - 1] || text
+    }
+
+    /** Multi-line hover tooltip: one label/value pair per line. */
+    function detailText(pairs) {
+      return pairs.filter(([, value]) => value !== undefined && value !== null && value !== '').map(([label, value]) => `${label}: ${value}`).join('\n')
+    }
+
+    /** Peer hover details, mirroring the settings page peer card. */
+    function peerDetail(peer, t) {
+      const source = peer.source === 'tailnet' ? t('peerSourceTailnet') : peer.source === 'local' ? t('peerSourceLocal') : peer.source === 'trusted' ? t('peerSourceTrusted') : t('peerSourceLan')
+      return detailText([
+        [t('peerDetails'), peer.name || peer.shortId],
+        [t('peerIdLabel'), peer.deviceId],
+        [t('peerOnlineLabel'), peer.online ? `${t('peerOnlineValue')}${peer.verified ? ` · ${t('peerVerifiedValue')}` : ''}` : t('peerOfflineValue')],
+        [t('peerSourceLabel'), source],
+        [t('peerAddressLabel'), peer.address],
+        [t('peerRttLabel'), peer.rttMs != null ? `${peer.rttMs} ms` : null],
+        [t('peerFingerprintLabel'), peer.fingerprint],
+        [t('peerPairCodeLabel'), peer.pairCode],
+        [t('peerTrustedAtLabel'), peer.trustedAt ? formatTime(peer.trustedAt) : null],
+        [t('peerLastSeenLabel'), peer.lastSeenAt ? formatTime(peer.lastSeenAt) : null],
+        [t('peerWorkspacesLabel'), (peer.workspaces ?? []).length],
+        [t('peerSessionsLabel'), (peer.workspaces ?? []).reduce((sum, workspace) => sum + (workspace.sessions?.length ?? 0), 0)],
+      ])
+    }
+
+    /** Workspace hover details: full path, session count. */
+    function workspaceDetail(workspace, t) {
+      return detailText([
+        [t('sessionCwdLabel'), workspace.path ?? workspace.title],
+        [t('peerSessionsLabel'), workspace.sessions?.length ?? 0],
+      ])
+    }
+
+    /** Session hover details: full title, id, cwd, created time, live state. */
+    function sessionDetail(session, t) {
+      return detailText([
+        [t('untitled'), session.title || t('untitled')],
+        [t('sessionIdLabelShort'), session.id],
+        [t('sessionCwdLabel'), session.cwd],
+        [t('sessionCreatedLabel'), session.createdAt ? formatTime(session.createdAt) : null],
+        [t('sessionLiveLabel'), session.live ? t('sessionLiveValue') : null],
+      ])
+    }
+
     function fill(template, values) {
       return String(template).replace(/\{(\w+)\}/g, (match, key) => (values[key] === undefined ? match : String(values[key])))
+    }
+
+    /** Compact display form for an opaque session id; the copy action keeps the full value. */
+    function shortSessionId(id) {
+      const text = String(id ?? '')
+      return text.length > 18 ? `${text.slice(0, 10)}…${text.slice(-6)}` : text
+    }
+
+    /** Inline markdown: bold, italic, inline code and links. */
+    function inlineNodes(text) {
+      const nodes = []
+      const pattern = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g
+      let last = 0
+      let match
+      while ((match = pattern.exec(text))) {
+        if (match.index > last) nodes.push(text.slice(last, match.index))
+        const token = match[0]
+        if (token.startsWith('**')) nodes.push(h('strong', { key: `b-${match.index}` }, token.slice(2, -2)))
+        else if (token.startsWith('*')) nodes.push(h('em', { key: `i-${match.index}` }, token.slice(1, -1)))
+        else if (token.startsWith('`')) nodes.push(h('code', { key: `c-${match.index}`, style: styles.inlineCode }, token.slice(1, -1)))
+        else {
+          const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+          if (link) nodes.push(h('a', { key: `a-${match.index}`, href: link[2], target: '_blank', rel: 'noreferrer', style: styles.link }, link[1]))
+          else nodes.push(token)
+        }
+        last = match.index + token.length
+      }
+      if (last < text.length) nodes.push(text.slice(last))
+      return nodes
+    }
+
+    function isBlockStart(line) {
+      return /^\s*```/.test(line) || /^#{1,6}\s+/.test(line) || /^\s*[-*]\s+/.test(line) ||
+        /^\s*\d+\.\s+/.test(line) || /^\s*>\s?/.test(line) || /^\s*---+\s*$/.test(line)
+    }
+
+    /** Minimal markdown renderer for assistant text: headings, lists, code, quotes, links. */
+    function renderMarkdown(text) {
+      const lines = String(text ?? '').split('\n')
+      const blocks = []
+      let index = 0
+      while (index < lines.length) {
+        const line = lines[index]
+        if (!line.trim()) {
+          index += 1
+          continue
+        }
+        if (line.trim().startsWith('```')) {
+          const code = []
+          index += 1
+          while (index < lines.length && !lines[index].trim().startsWith('```')) {
+            code.push(lines[index])
+            index += 1
+          }
+          index += 1
+          blocks.push(h('pre', { key: `code-${blocks.length}`, style: styles.codeBlock }, h('code', null, code.join('\n'))))
+          continue
+        }
+        const heading = line.match(/^(#{1,6})\s+(.*)$/)
+        if (heading) {
+          const level = Math.min(6, heading[1].length)
+          blocks.push(h(`h${level}`, { key: `h-${blocks.length}`, style: styles.mdHeading }, inlineNodes(heading[2])))
+          index += 1
+          continue
+        }
+        if (/^\s*[-*]\s+/.test(line)) {
+          const items = []
+          while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
+            items.push(h('li', { key: `li-${items.length}` }, inlineNodes(lines[index].replace(/^\s*[-*]\s+/, ''))))
+            index += 1
+          }
+          blocks.push(h('ul', { key: `ul-${blocks.length}`, style: styles.mdList }, items))
+          continue
+        }
+        if (/^\s*\d+\.\s+/.test(line)) {
+          const items = []
+          while (index < lines.length && /^\s*\d+\.\s+/.test(lines[index])) {
+            items.push(h('li', { key: `li-${items.length}` }, inlineNodes(lines[index].replace(/^\s*\d+\.\s+/, ''))))
+            index += 1
+          }
+          blocks.push(h('ol', { key: `ol-${blocks.length}`, style: styles.mdList }, items))
+          continue
+        }
+        if (/^\s*>\s?/.test(line)) {
+          const quote = []
+          while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+            quote.push(lines[index].replace(/^\s*>\s?/, ''))
+            index += 1
+          }
+          blocks.push(h('blockquote', { key: `quote-${blocks.length}`, style: styles.mdQuote }, inlineNodes(quote.join('\n'))))
+          continue
+        }
+        if (/^\s*---+\s*$/.test(line)) {
+          blocks.push(h('hr', { key: `hr-${blocks.length}`, style: styles.mdRule }))
+          index += 1
+          continue
+        }
+        const paragraph = []
+        while (index < lines.length && lines[index].trim() && !isBlockStart(lines[index])) {
+          paragraph.push(lines[index])
+          index += 1
+        }
+        blocks.push(h('p', { key: `p-${blocks.length}`, style: styles.mdParagraph }, inlineNodes(paragraph.join('\n'))))
+      }
+      return blocks
+    }
+
+    /** Clipboard write with a legacy fallback for browsers without the async API. */
+    async function copyText(text) {
+      try {
+        await navigator.clipboard.writeText(text)
+        return true
+      } catch {
+        let area
+        try {
+          area = document.createElement('textarea')
+          area.value = text
+          area.style.position = 'fixed'
+          area.style.opacity = '0'
+          document.body.appendChild(area)
+          area.select()
+          return document.execCommand('copy')
+        } catch {
+          return false
+        } finally {
+          try {
+            if (area) document.body.removeChild(area)
+          } catch {
+            // the textarea may never have been attached
+          }
+        }
+      }
+    }
+
+    /** Small copy affordance; shows a short confirmation or failure after a click. */
+    function CopyButton({ text, label, t, compact = false }) {
+      const [status, setStatus] = React.useState('idle')
+      React.useEffect(() => {
+        if (status === 'idle') return
+        const timer = setTimeout(() => setStatus('idle'), 1500)
+        return () => clearTimeout(timer)
+      }, [status])
+      const shown = status === 'copied' ? t('copied') : status === 'failed' ? t('copyFailed') : (compact ? '⧉' : label)
+      return h('button', {
+        style: {
+          ...styles.copyButton,
+          ...(compact ? styles.copyIconButton : null),
+          ...(status === 'failed' ? styles.copyFailed : null),
+        },
+        className: 'am-copy',
+        title: `${label}: ${text}`,
+        'aria-label': `${label}: ${text}`,
+        'aria-live': 'polite',
+        onClick: async event => {
+          event.stopPropagation()
+          setStatus(await copyText(text) ? 'copied' : 'failed')
+        },
+      }, shown)
     }
 
     function PeerCard({ peer, t, onAction, pending }) {
@@ -251,14 +719,15 @@ window.__ModuleLoader__.load({
         peer.online && peer.address ? h('div', { style: styles.mono }, peer.address) : null,
         h('div', { style: { ...styles.row, marginTop: '8px' } },
           !peer.trusted
-            ? h('button', { style: styles.buttonPrimary, disabled: pending, onClick: () => onAction('pair', peer.deviceId) }, t('trust'))
+            ? h('button', { style: styles.buttonPrimary, className: 'am-button am-button-primary', disabled: pending, onClick: () => onAction('pair', peer.deviceId) }, t('trust'))
             : null,
           peer.trusted
-            ? h('button', { style: styles.button, disabled: pending, onClick: () => onAction('reconnect', peer.deviceId) }, t('reconnect'))
+            ? h('button', { style: styles.button, className: 'am-button', disabled: pending, onClick: () => onAction('reconnect', peer.deviceId) }, t('reconnect'))
             : null,
           peer.trusted
             ? h('button', {
                 style: confirming ? styles.buttonPrimary : styles.button,
+                className: confirming ? 'am-button am-button-primary' : 'am-button',
                 disabled: pending,
                 onClick: () => {
                   if (!confirming) return setConfirming(true)
@@ -274,6 +743,63 @@ window.__ModuleLoader__.load({
       const { data, error } = useMeshState()
       const [pending, setPending] = React.useState(false)
       const [actionError, setActionError] = React.useState(null)
+      const [probeTarget, setProbeTarget] = React.useState('')
+      const [probeResult, setProbeResult] = React.useState(null)
+      const [probing, setProbing] = React.useState(false)
+
+      /** Probe one channel; an empty target means "every known peer on that channel". */
+      const runProbe = async channel => {
+        setProbing(true)
+        setProbeResult(null)
+        try {
+          const targets = probeTarget.trim()
+            ? [probeTarget.trim()]
+            : channel === 'lan'
+              ? (data?.peers ?? []).filter(peer => peer.online && peer.address).map(peer => `${peer.address}:${peer.port ?? 47831}`)
+              : ((data?.channels?.tailnet?.addresses ?? []).map(address => `${address}:47831`))
+          if (targets.length === 0) {
+            setProbeResult({ channel, target: '—', replied: false, elapsedMs: 0 })
+            return
+          }
+          const results = []
+          for (const target of targets) results.push(await post('probe', { target, channel }))
+          const replied = results.filter(result => result.replied)
+          setProbeResult({
+            channel,
+            target: targets.join(', '),
+            replied: replied.length > 0,
+            elapsedMs: Math.max(...results.map(result => result.elapsedMs ?? 0)),
+          })
+        } catch (failure) {
+          setActionError(failure.message)
+        } finally {
+          setProbing(false)
+        }
+      }
+
+      const refreshNetwork = async () => {
+        setProbing(true)
+        try {
+          await post('refresh-network', {})
+          setProbeResult(null)
+        } catch (failure) {
+          setActionError(failure.message)
+        } finally {
+          setProbing(false)
+        }
+      }
+
+      /** Toggle the local test peer; the tree hides it automatically while a real peer is connected. */
+      const toggleLocalTest = async enabled => {
+        setProbing(true)
+        try {
+          await post('local-test', { enabled })
+        } catch (failure) {
+          setActionError(failure.message)
+        } finally {
+          setProbing(false)
+        }
+      }
 
       const run = async (action, deviceId) => {
         setPending(true)
@@ -292,6 +818,55 @@ window.__ModuleLoader__.load({
       const discovery = state.discovery ?? null
       const device = state.device ?? {}
       const account = state.account ?? {}
+
+      const channelCard = () => {
+        const channels = state.channels
+        if (!channels) return null
+        const lan = channels.lan ?? {}
+        const tailnet = channels.tailnet ?? {}
+        const localTest = state.localTest ?? {}
+        const localTestOn = localTest.enabled === true
+        return h('div', { style: styles.card },
+          h('div', { style: styles.row },
+            h('span', { style: styles.label }, t('channels')),
+            h(Chip, { tone: lan.replies > 0 ? 'on' : 'off' }, `${t('lanChannel')} · ${fill(t('channelReplies'), { n: lan.replies ?? 0 })}`),
+            h(Chip, { tone: tailnet.available ? (tailnet.replies > 0 ? 'on' : 'warn') : 'off' },
+              `${t('tailnetChannel')} · ${tailnet.available ? fill(t('channelReplies'), { n: tailnet.replies ?? 0 }) : t('tailnetOff')}`)),
+          h(Field, { label: t('lanChannel') },
+            `${t('lanMulticast')} ${lan.multicastGroup ?? '—'} · ${t('lanBroadcast')} ${lan.broadcast ?? '—'} · ${fill(t('channelAnnounces'), { n: lan.announces ?? 0 })} · ${fill(t('channelPeers'), { n: lan.peers ?? 0 })}`),
+          h(Field, { label: t('lanLocal') }, (lan.localAddresses ?? []).join(', ') || '—'),
+          h(Field, { label: t('tailnetChannel') },
+            `${t('tailnetPeersKnown')} ${tailnet.peersKnown ?? 0} · ${fill(t('channelPeers'), { n: tailnet.peers ?? 0 })} · ${(tailnet.addresses ?? []).join(', ') || '—'}`),
+          h('div', { style: { ...styles.row, marginTop: '10px' } },
+            h('input', {
+              style: styles.input,
+              placeholder: t('probeTargetHint'),
+              value: probeTarget,
+              onChange: event => setProbeTarget(event.target.value),
+              'aria-label': t('probeTarget'),
+            }),
+            h('button', { style: styles.button, className: 'am-button', disabled: probing, onClick: () => runProbe('lan') }, t('testLan')),
+            h('button', { style: styles.button, className: 'am-button', disabled: probing, onClick: () => runProbe('tailnet') }, t('testTailnet')),
+            h('button', { style: styles.button, className: 'am-button', disabled: probing, onClick: refreshNetwork }, t('refreshNetwork'))),
+          probing ? h('p', { style: styles.hint }, t('probeRunning')) : null,
+          probeResult
+            ? h('p', { style: probeResult.replied ? styles.hint : styles.error },
+                `${t('probeReplied')}: ${probeResult.channel} ${probeResult.target} · ${probeResult.elapsedMs} ms${probeResult.replied ? '' : ` · ${t('probeNoReply')}`}`)
+            : null,
+          h('div', { style: { ...styles.row, marginTop: '12px' } },
+            h('span', { style: styles.label }, t('localTestPeer')),
+            h('button', {
+              style: localTestOn ? styles.buttonPrimary : styles.button,
+              className: localTestOn ? 'am-button am-button-primary' : 'am-button',
+              disabled: probing,
+              onClick: () => toggleLocalTest(!localTestOn),
+            }, localTestOn ? t('localTestEnabled') : t('localTestDisabled')),
+            localTestOn
+              ? h(Chip, { tone: localTest.hiddenByRealPeer ? 'warn' : 'on' },
+                  localTest.hiddenByRealPeer ? t('localTestHidden') : t('localTestEnabled'))
+              : null),
+          h('p', { style: styles.hint }, t('localTestHint')))
+      }
 
       return h('section', { style: styles.page },
         h('h2', { style: styles.title }, t('title')),
@@ -313,9 +888,10 @@ window.__ModuleLoader__.load({
           h(Field, { label: t('tailscale') },
             state.tailscale?.available ? h(Chip, { tone: 'on' }, `${t('tailnetOn')} · ${state.tailscale.peers} peer(s)`) : h(Chip, { tone: 'off' }, t('tailnetOff'))),
           state.lastError ? h('p', { style: styles.error }, state.lastError.message) : null),
+        channelCard(),
         h('div', { style: { ...styles.row, justifyContent: 'space-between', margin: '14px 0 8px' } },
           h('h3', { style: { ...styles.title, fontSize: '13px', margin: 0 } }, t('peers')),
-          h('button', { style: styles.button, onClick: () => window.location.reload() }, t('refresh'))),
+          h('button', { style: styles.button, className: 'am-button', onClick: () => window.location.reload() }, t('refresh'))),
         peers.length === 0
           ? h('p', { style: styles.hint }, t('noPeers'))
           : peers.map(peer => h(PeerCard, { key: peer.deviceId, peer, t, pending, onAction: run })),
@@ -323,29 +899,153 @@ window.__ModuleLoader__.load({
         h('p', { style: styles.hint }, t('readOnly')))
     }
 
-    /** One message row in the read-only transcript. */
-    function TranscriptItem({ item }) {
-      const role = item.role === 'tool-call'
-        ? `${item.name ?? 'tool'}`
-        : item.role === 'tool-result'
-          ? (item.isError ? 'tool · error' : 'tool')
-          : item.role
-      const tone = item.isError ? 'var(--dsw-alias-state-error-primary, #d64545)' : 'var(--dsw-alias-label-secondary)'
-      return h('div', { style: styles.msg },
-        h('div', { style: { ...styles.msgRole, color: tone } }, `${role} · ${formatTime(item.time)}`),
-        item.text ? h('div', { style: styles.msgText }, item.text) : null)
+    /** Collapsible reasoning block shared by the conversation and trajectory tabs. */
+    function ReasoningBlock({ text, t, defaultOpen = false }) {
+      const [open, setOpen] = React.useState(defaultOpen)
+      return h('div', { style: styles.reasoning },
+        h('button', {
+          style: styles.reasoningToggle,
+          className: 'am-reasoning-toggle',
+          onClick: () => setOpen(current => !current),
+          'aria-expanded': open,
+        }, `${t('thinking')} · ${open ? t('collapseThinking') : t('expandThinking')}`),
+        open ? h('div', { style: styles.reasoningText }, text) : null)
     }
 
-    function TreeRow({ depth, label, meta, active, expandable, expanded, onClick }) {
-      return h('div', {
-        style: styles.treeRow(depth, active),
-        onClick,
-        role: expandable ? 'button' : 'button',
-        title: label,
-      },
-        h('span', { style: styles.chevron }, expandable ? (expanded ? '▾' : '▸') : ''),
-        h('span', { style: styles.treeName }, label),
-        meta ? h('span', { style: styles.treeMeta }, meta) : null)
+    /** System reminders are injected user messages; the chat view hides them. */
+    function isSystemReminder(item) {
+      if (item.role !== 'user' || typeof item.text !== 'string') return false
+      return item.text.includes('<system-reminder>') || item.text.startsWith('Time sampled while preparing')
+    }
+
+    /** Collapsed process summary for a run of tool results; details live in the trajectory tab. */
+    function ProcessGroup({ items, t }) {
+      const errors = items.filter(item => item.isError).length
+      return h('div', { style: styles.assistantRow },
+        h('div', { style: styles.processNote },
+          `${t('processNote')} · ${fill(t('toolResultsCount'), { n: items.length })}${errors ? ` · ${fill(t('errorsCount'), { n: errors })}` : ''} · ${t('seeTrajectory')}`))
+    }
+
+    /** Conversation tab: chat-like view with user bubbles, rendered assistant markdown and collapsed process. */
+    function ConversationItem({ item, t }) {
+      if (item.role === 'user') {
+        return h('div', { style: styles.userRow },
+          h('div', { style: styles.userBubble }, item.text ?? ''))
+      }
+      return h('div', { style: styles.assistantRow },
+        h('div', { style: styles.msgRole }, `${t('assistantRole')} · ${formatTime(item.time)}`),
+        item.reasoning ? h(ReasoningBlock, { text: item.reasoning, t }) : null,
+        item.text ? h('div', null, renderMarkdown(item.text)) : null,
+        item.toolCalls?.length
+          ? h('div', { style: styles.processNote },
+              `${t('processNote')} · ${item.toolCalls.join(', ')} · ${t('seeTrajectory')}`)
+          : null)
+    }
+
+    /** Build the conversation list: messages plus one collapsed summary per tool-result run. */
+    function conversationNodes(items, t) {
+      const nodes = []
+      let results = []
+      const flush = () => {
+        if (results.length === 0) return
+        nodes.push(h(ProcessGroup, { key: `process-${results[0].seq}`, items: results, t }))
+        results = []
+      }
+      for (const item of items) {
+        if (isSystemReminder(item)) continue
+        if (item.role === 'tool-result') {
+          results.push(item)
+          continue
+        }
+        flush()
+        if (item.role === 'user' || item.role === 'assistant') nodes.push(h(ConversationItem, { key: item.seq, item, t }))
+      }
+      flush()
+      return nodes
+    }
+
+    /** Trajectory tab: every event in seq order, including thinking, calls and errors. */
+    function TrajectoryItem({ item, t }) {
+      const kind = item.role === 'user' || item.role === 'assistant'
+        ? t('messageEvent')
+        : item.role === 'tool-call'
+          ? t('toolCallEvent')
+          : item.isError ? t('toolResultError') : t('toolResultEvent')
+      const tone = item.isError ? 'var(--dsw-alias-state-error-primary, #d64545)' : 'var(--dsw-alias-label-secondary)'
+      const meta = item.role === 'tool-call' && item.name ? item.name : item.role
+      const body = item.text
+        ? item.role === 'assistant'
+          ? h('div', null, renderMarkdown(item.text))
+          : h('div', { style: styles.msgText }, item.role === 'tool-call' ? `${t('toolArguments')}: ${item.text}` : item.text)
+        : null
+      return h('div', { style: styles.msg },
+        h('div', { style: { ...styles.msgRole, color: tone } }, `${kind} · ${meta} · ${formatTime(item.time)}`),
+        body,
+        item.reasoning ? h(ReasoningBlock, { text: item.reasoning, t, defaultOpen: true }) : null,
+        item.isError && (item.errorName || item.errorCode)
+          ? h('div', { style: styles.errorMeta }, `${t('errorName')}: ${item.errorName ?? ''}${item.errorCode ? ` (${item.errorCode})` : ''}`)
+          : null)
+    }
+
+    /** Folder icon: closed and open variants, colored when its workspace is selected. */
+    function FolderIcon({ open, selected }) {
+      const color = selected ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-secondary)'
+      return h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: color, strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+        open
+          ? h('path', { d: 'M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v1H6.5a2 2 0 0 0-1.9 1.4L3 18z' })
+          : h('path', { d: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' }))
+    }
+
+    /** Device icon: monitor with a stand, colored when one of its workspaces is selected. */
+    function DeviceIcon({ selected }) {
+      const color = selected ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-secondary)'
+      return h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: color, strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+        h('rect', { x: 3, y: 4, width: 18, height: 12, rx: 2 }),
+        h('path', { d: 'M9 20h6' }),
+        h('path', { d: 'M12 16v4' }))
+    }
+
+    /** One tree row: hover tooltip carries full details, overflowing labels marquee on hover. */
+    function TreeRow({ depth, label, meta, active, expandable, expanded, onClick, actions, detail, icon }) {
+      const nameRef = React.useRef(null)
+      const textRef = React.useRef(null)
+      // Measure on hover: only a label wider than its box scrolls, so short
+      // titles never animate and never carry an ellipsis into the marquee.
+      const onEnter = () => {
+        const name = nameRef.current
+        const text = textRef.current
+        if (!name || !text) return
+        const overflow = text.scrollWidth - name.clientWidth
+        if (overflow > 1) {
+          name.setAttribute('data-overflow', '')
+          name.style.setProperty('--am-marquee-view', `${name.clientWidth}px`)
+          name.style.setProperty('--am-marquee-travel', `${overflow}px`)
+          // Fixed reading speed: velocity stays constant, so a longer label
+          // takes proportionally longer to scroll instead of moving faster.
+          const seconds = Math.max(1.5, overflow / MARQUEE_PX_PER_SECOND)
+          name.style.setProperty('--am-marquee-duration', `${seconds.toFixed(2)}s`)
+        } else {
+          name.removeAttribute('data-overflow')
+          name.style.removeProperty('--am-marquee-view')
+          name.style.removeProperty('--am-marquee-travel')
+          name.style.removeProperty('--am-marquee-duration')
+        }
+      }
+      return h('div', { style: styles.treeRow(depth), className: active ? 'am-tree-row am-tree-row-active' : 'am-tree-row', onMouseEnter: onEnter },
+        h('button', {
+          style: styles.treeButton,
+          className: 'am-tree-button',
+          onClick,
+          title: detail ?? label,
+          'aria-expanded': expandable ? expanded : undefined,
+          'aria-current': active ? 'true' : undefined,
+        },
+          h('span', { style: styles.chevron }, expandable ? (expanded ? '▾' : '▸') : ''),
+          icon ? h('span', { style: styles.treeIcon }, icon) : null,
+          h('span', { ref: nameRef, style: styles.treeName, className: 'am-tree-name' },
+            h('span', { ref: textRef, className: 'am-tree-text' }, label)),
+          meta ? h('span', { style: styles.treeMeta }, meta) : null),
+        actions ?? null)
     }
 
     const MeshPanel = props => {
@@ -357,6 +1057,30 @@ window.__ModuleLoader__.load({
       const [transcript, setTranscript] = React.useState(null)
       const [transcriptError, setTranscriptError] = React.useState(null)
       const [loadingMore, setLoadingMore] = React.useState(false)
+      const [view, setView] = React.useState('conversation')
+      const [treeWidth, setTreeWidth] = React.useState(360)
+      const [dragging, setDragging] = React.useState(false)
+      const resizeRef = React.useRef(null)
+
+      const onSplitterDown = event => {
+        if (event.button !== 0) return
+        event.preventDefault()
+        event.currentTarget.setPointerCapture(event.pointerId)
+        resizeRef.current = { id: event.pointerId, startX: event.clientX, startWidth: treeWidth }
+        setDragging(true)
+      }
+      const onSplitterMove = event => {
+        const drag = resizeRef.current
+        if (!drag || drag.id !== event.pointerId) return
+        setTreeWidth(Math.max(240, Math.min(560, drag.startWidth + event.clientX - drag.startX)))
+      }
+      const onSplitterUp = event => {
+        const drag = resizeRef.current
+        if (!drag || drag.id !== event.pointerId) return
+        resizeRef.current = null
+        setDragging(false)
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+      }
 
       const loadTree = React.useCallback(async () => {
         try {
@@ -413,6 +1137,10 @@ window.__ModuleLoader__.load({
       const peers = tree?.peers ?? []
       const offlinePeers = peers.filter(peer => !peer.online)
       const verifiedPeers = peers.filter(peer => peer.online === true && !peer.error)
+      const totalSessions = verifiedPeers.reduce(
+        (sum, peer) => sum + peer.workspaces.reduce((count, workspace) => count + workspace.sessions.length, 0),
+        0,
+      )
       const retry = async deviceId => {
         try {
           await post('reconnect', { deviceId })
@@ -423,18 +1151,24 @@ window.__ModuleLoader__.load({
       }
 
       const transcriptBody = () => {
-        if (!selection) return h('div', { style: styles.empty }, t('panelHint'))
+        if (!selection) return h('div', { style: styles.empty }, t('selectSessionHint'))
         if (transcriptError) return h('div', { style: styles.empty }, `${t('error')}: ${transcriptError}`)
         if (!transcript) return h('div', { style: styles.empty }, t('waiting'))
         const items = transcript.items ?? []
+        const content = view === 'conversation'
+          ? conversationNodes(items, t)
+          : items.map(item => h(TrajectoryItem, { key: item.seq, item, t }))
         return h(React.Fragment, null,
           h('div', { style: { flex: 1, overflow: 'auto' } },
-            items.length === 0 ? h('div', { style: styles.empty }, t('transcriptEmpty')) : null,
-            items.map(item => h(TranscriptItem, { key: item.seq, item: item }))),
+            content.length === 0
+              ? h('div', { style: styles.empty }, view === 'conversation' ? t('emptyConversation') : t('emptyTrajectory'))
+              : null,
+            content),
           transcript.hasMore
             ? h('div', { style: { padding: '8px 14px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
                 h('button', {
                   style: styles.button,
+                  className: 'am-button',
                   disabled: loadingMore,
                   onClick: async () => {
                     setLoadingMore(true)
@@ -446,15 +1180,21 @@ window.__ModuleLoader__.load({
       }
 
       return h('section', { style: styles.panel },
+        h('style', null, PANEL_CSS),
         h('div', { style: styles.panelHead },
           h('span', { style: { ...styles.title, margin: 0 } }, t('panelTitle')),
           h(Chip, { tone: 'off' }, t('readOnlyTag')),
-          h('span', { style: styles.treeMeta }, `${verifiedPeers.length} device(s)`),
+          h('span', { style: styles.treeMeta }, fill(t('devicesCount'), { n: verifiedPeers.length })),
           h('span', { style: { flex: 1 } }),
           error ? h('span', { style: styles.treeMeta }, `${t('error')}: ${error}`) : null,
-          h('button', { style: styles.button, onClick: () => loadTree() }, t('refresh'))),
+          h('button', { style: styles.button, className: 'am-button', onClick: () => loadTree() }, t('refresh'))),
         h('div', { style: styles.panelBody },
-          h('div', { style: styles.treePane },
+          h('div', { style: styles.treePane(treeWidth) },
+            h('div', { style: styles.paneHead },
+              h('span', { style: styles.paneTitle }, t('sessionsPane')),
+              h('span', { style: styles.treeMeta, title: fill(t('sessionsCount'), { n: totalSessions }) },
+                tree === null ? t('waiting') : String(totalSessions))),
+            h('div', { style: styles.paneSub }, t('panelHint')),
             verifiedPeers.length === 0 && tree !== null
               ? h('div', { style: styles.empty }, t('noPeersOnline'))
               : null,
@@ -464,9 +1204,9 @@ window.__ModuleLoader__.load({
                 h('span', { style: { ...styles.treeName, color: 'var(--dsw-alias-label-secondary)' } }, peer.name || peer.shortId),
                 h(Chip, { tone: 'off' }, t('offlineTag'))),
               h('div', { style: { ...styles.treeMeta, paddingLeft: '18px' } },
-                peer.lastSeenAt ? `${t('lastSeen')} ${formatTime(peer.lastSeenAt)}` : `${t('neverSeen')} · ${peer.shortId}`),
+                peer.lastSeenAt ? `${t('lastSeen')} ${formatRelative(peer.lastSeenAt, t)}` : `${t('neverSeen')} · ${peer.shortId}`),
               h('div', { style: { paddingLeft: '18px', marginTop: '4px' } },
-                h('button', { style: styles.button, onClick: () => retry(peer.deviceId) }, t('retry'))))),
+                h('button', { style: styles.button, className: 'am-button', onClick: () => retry(peer.deviceId) }, t('retry'))))),
             verifiedPeers.map(peer => {
               const peerKey = peer.deviceId
               const peerOpen = isOpen(peerKey)
@@ -475,6 +1215,8 @@ window.__ModuleLoader__.load({
                   depth: 0,
                   label: peer.name || peer.shortId,
                   meta: peer.source === 'tailnet' ? `tailscale · ${peer.rttMs != null ? `${peer.rttMs}ms` : peer.shortId}` : peer.shortId,
+                  detail: peerDetail(peer, t),
+                  icon: h(DeviceIcon, { selected: selection?.peer === peerKey }),
                   expandable: true,
                   expanded: peerOpen,
                   onClick: () => toggle(peerKey),
@@ -489,8 +1231,10 @@ window.__ModuleLoader__.load({
                           return h('div', { key: workspaceKey },
                             h(TreeRow, {
                               depth: 1,
-                              label: workspace.title || t('workspaceUnknown'),
-                              meta: `${workspace.sessions.length}`,
+                              label: workspace.name || workspace.title || t('workspaceUnknown'),
+                              meta: fill(t('sessionsCount'), { n: workspace.sessions.length }),
+                              detail: workspaceDetail(workspace, t),
+                              icon: h(FolderIcon, { open: workspaceOpen, selected: selection?.workspaceKey === workspaceKey }),
                               expandable: true,
                               expanded: workspaceOpen,
                               onClick: () => toggle(workspaceKey),
@@ -502,23 +1246,61 @@ window.__ModuleLoader__.load({
                                     key: session.id,
                                     depth: 2,
                                     label: session.title || t('untitled'),
-                                    meta: session.live ? t('live') : formatTime(session.createdAt),
+                                    meta: session.live ? t('live') : formatRelative(session.createdAt, t),
+                                    detail: sessionDetail(session, t),
                                     active,
-                                    onClick: () => setSelection({ peer: peerKey, sessionId: session.id, title: session.title }),
+                                    onClick: () => setSelection({ peer: peerKey, sessionId: session.id, title: session.title, workspaceKey }),
+                                    actions: h(CopyButton, { text: session.id, label: t('copySessionId'), t, compact: true }),
                                   })
                                 })
                               : null)
                         }))
                   : null)
             })),
+          h('div', {
+            style: styles.splitter,
+            className: 'am-splitter',
+            role: 'separator',
+            'aria-orientation': 'vertical',
+            'aria-label': t('resizeTree'),
+            tabIndex: 0,
+            'data-dragging': dragging || undefined,
+            onPointerDown: onSplitterDown,
+            onPointerMove: onSplitterMove,
+            onPointerUp: onSplitterUp,
+            onPointerCancel: onSplitterUp,
+            onLostPointerCapture: onSplitterUp,
+            onKeyDown: event => {
+              if (event.key === 'ArrowLeft') setTreeWidth(width => Math.max(240, width - 16))
+              if (event.key === 'ArrowRight') setTreeWidth(width => Math.min(560, width + 16))
+            },
+          },
+            h('div', { style: styles.splitterLine, className: 'am-splitter-line' })),
           h('div', { style: styles.transcriptPane },
+            h('div', { style: styles.tabBar },
+              h('button', {
+                style: styles.tab(view === 'conversation'),
+                className: view === 'conversation' ? 'am-tab am-tab-active' : 'am-tab',
+                onClick: () => setView('conversation'),
+                'aria-pressed': view === 'conversation',
+              }, t('conversationTab')),
+              h('button', {
+                style: styles.tab(view === 'trajectory'),
+                className: view === 'trajectory' ? 'am-tab am-tab-active' : 'am-tab',
+                onClick: () => setView('trajectory'),
+                'aria-pressed': view === 'trajectory',
+              }, t('trajectoryTab')),
+              h(Chip, { tone: 'off' }, t('readOnlyTag'))),
+            h('div', { style: styles.paneSub }, view === 'conversation' ? t('conversationHint') : t('trajectoryHint')),
             selection
               ? h('div', { style: styles.toolbar },
-                  h('span', { style: { fontWeight: 600, fontSize: '12.5px' } }, selection.title || t('untitled')),
-                  h('span', { style: styles.treeMeta }, selection.sessionId),
-                  h(Chip, { tone: 'off' }, t('readOnlyTag')),
+                  h('span', { style: styles.toolbarTitle, title: selection.title || t('untitled') },
+                    selection.title || t('untitled')),
+                  h('span', { style: styles.toolbarId, title: selection.sessionId },
+                    `${t('sessionIdLabel')}: ${shortSessionId(selection.sessionId)}`),
+                  h(CopyButton, { text: selection.sessionId, label: t('copySessionId'), t }),
                   h('span', { style: { flex: 1 } }),
-                  h('button', { style: styles.button, onClick: () => setSelection(null) }, '×'))
+                  h('button', { style: styles.button, className: 'am-button', onClick: () => setSelection(null) }, '×'))
               : null,
             transcriptBody())))
     }

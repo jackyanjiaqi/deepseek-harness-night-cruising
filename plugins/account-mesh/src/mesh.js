@@ -51,6 +51,15 @@ export const DEFAULT_CONFIG = {
   // Last-resort transport for networks that block UDP: ICE-TCP candidates.
   iceTcp: false,
   dataDir: '',
+  // Test-only: expose this Host's own sessions as a synthetic "local-test"
+  // peer in the panel tree, so the remote-workspace UI can be rendered against
+  // real session data without a WebRTC peer. Off by default.
+  localSessionTest: false,
+  // Optional MCP endpoint (streamable HTTP) that exposes the read-only mesh
+  // operations to external MCP clients. Unset disables it.
+  mcpPort: null,
+  mcpPath: '/mcp',
+  mcpToken: '',
 }
 
 export class Mesh {
@@ -735,6 +744,26 @@ export class Mesh {
   async tailscaleStatus() {
     const status = await tailscalePeers()
     return { available: status.available, bin: status.bin ?? null, peers: status.peers.length }
+  }
+
+  /** Per-channel discovery counters (LAN multicast/broadcast vs tailnet unicast). */
+  channels() {
+    if (!this.discovery) return null
+    return this.discovery.channelState()
+  }
+
+  /** Manual probe of one target on one channel, from the panel buttons. */
+  async probe(target, channel = 'lan') {
+    if (!this.discovery) throw rpcError('discovery-off', 'discovery is not running')
+    if (channel !== 'lan' && channel !== 'tailnet') throw rpcError('bad-request', `unknown channel: ${channel}`)
+    return this.discovery.probe(target, channel)
+  }
+
+  /** Rebuild discovery from the current OS network state (routes, interfaces, tailnet). */
+  async refreshNetwork() {
+    this.log?.info?.('account-mesh: refreshing network state')
+    await this.restartDiscovery()
+    return this.channels()
   }
 }
 

@@ -19,6 +19,8 @@ import { PROTOCOL_VERSION, PRODUCT, b64u, now, parseJson } from './util.js'
 const run = promisify(execFile)
 const MULTICAST_GROUP = '239.255.42.99'
 const TAILNET_V4 = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./
+/** How long a manual probe waits for a reply before reporting "no reply". */
+const PROBE_WAIT_MS = 3000
 
 /** IPv4 addresses of this host, tailnet addresses included. */
 export function localAddresses() {
@@ -104,6 +106,14 @@ export class Discovery {
     this.socket = undefined
     this.timers = []
     this.started = false
+    // Per-channel state: LAN uses multicast/broadcast, tailnet uses unicast
+    // probes because multicast never crosses a tailnet. Both run at once so a
+    // device reachable on only one path is still discovered.
+    this.channels = {
+      lan: { announces: 0, replies: 0, lastAnnounceAt: 0, lastReplyAt: 0, peers: 0 },
+      tailnet: { probes: 0, replies: 0, lastProbeAt: 0, lastReplyAt: 0, peers: 0 },
+    }
+    this.probeResults = new Map()
   }
 
   start() {
@@ -197,15 +207,22 @@ export class Discovery {
   announce() {
     if (!this.socket) return
     const message = Buffer.from(JSON.stringify(this.announceMessage()))
+    let sent = false
     try {
       this.socket.send(message, this.port, MULTICAST_GROUP)
+      sent = true
     } catch {
       // ignore
     }
     try {
       this.socket.send(message, this.port, '255.255.255.255')
+      sent = true
     } catch {
       // ignore
+    }
+    if (sent) {
+      this.channels.lan.announces += 1
+      this.channels.lan.lastAnnounceAt = now()
     }
   }
 
@@ -241,7 +258,11 @@ export class Discovery {
     const local = localAddresses()
     this.tailnet = await tailscalePeers()
     if (!this.tailnet.available && !local.some(info => info.tailnet)) return
-    for (const peer of this.tailnet.peers) this.query(peer.address)
+    for (const peer of this.tailnet.peers) {
+      this.channels.tailnet.probes += 1
+      this.channels.tailnet.lastProbeAt = now()
+      this.query(peer.address)
+    }
   }
 
   probeStatic() {
@@ -255,6 +276,64 @@ export class Discovery {
     for (const peer of this.knownPeers()) {
       if (!peer?.address) continue
       this.query(peer.address, Number(peer.port) || this.port)
+    }
+  }
+
+  /** Probe one target on one channel; returns a diagnostic result (no timeouts abort work). */
+  async probe(target, channel = 'lan') {
+    const host = String(target ?? '').trim()
+    if (!host) throw new Error('target is required')
+    const [address, portText] = host.split(':')
+    const port = Number(portText) || this.port
+    const started = now()
+    const before = this.channels[channel].replies
+    this.query(address, port)
+    if (channel === 'tailnet') {
+      this.channels.tailnet.probes += 1
+      this.channels.tailnet.lastProbeAt = started
+    }
+    let repliedAt = 0
+    while (now() - started < PROBE_WAIT_MS) {
+      if (this.channels[channel].replies > before) {
+        repliedAt = now()
+        break
+      }
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    const replied = repliedAt > 0
+    const result = {
+      channel,
+      target: `${address}:${port}`,
+      replied,
+      elapsedMs: replied ? repliedAt - started : now() - started,
+      peer: this.peers.get(this.deviceIdFromAddress(address))?.name ?? null,
+    }
+    this.probeResults.set(`${channel}:${result.target}`, { ...result, at: now() })
+    this.log?.info?.(`account-mesh: ${channel} probe ${result.target} ${replied ? 'replied' : 'no reply'} in ${result.elapsedMs}ms`)
+    return result
+  }
+
+  /** Channel counters for the panel: which discovery path is actually working. */
+  channelState() {
+    const tailnetAddresses = this.tailnet.peers.map(peer => peer.address)
+    const lanPeers = [...this.peers.values()].filter(peer => peer.source === 'lan').length
+    const tailnetPeers = [...this.peers.values()].filter(peer => peer.source === 'tailnet').length
+    return {
+      lan: {
+        ...this.channels.lan,
+        peers: lanPeers,
+        multicastGroup: MULTICAST_GROUP,
+        broadcast: '255.255.255.255',
+        localAddresses: localAddresses().filter(info => !info.tailnet).map(info => info.address),
+      },
+      tailnet: {
+        ...this.channels.tailnet,
+        peers: tailnetPeers,
+        available: this.tailnet.available,
+        peersKnown: tailnetAddresses.length,
+        addresses: tailnetAddresses,
+      },
+      probes: [...this.probeResults.values()],
     }
   }
 
@@ -291,6 +370,7 @@ export class Discovery {
     if (frame.t !== 'announce' && frame.t !== 'query') return
     if (!frame.dev || !frame.pk) return
     const isNew = !this.peers.has(frame.dev)
+    const tailnet = TAILNET_V4.test(remote.address)
     const peer = {
       deviceId: frame.dev,
       name: typeof frame.name === 'string' && frame.name ? frame.name : frame.dev,
@@ -300,11 +380,26 @@ export class Discovery {
       addrs: Array.isArray(frame.addrs) ? frame.addrs.filter(entry => typeof entry === 'string') : [],
       version: frame.ver,
       lastSeen: now(),
-      source: TAILNET_V4.test(remote.address) ? 'tailnet' : 'lan',
+      source: tailnet ? 'tailnet' : 'lan',
     }
     this.peers.set(peer.deviceId, peer)
+    if (tailnet) {
+      this.channels.tailnet.replies += 1
+      this.channels.tailnet.lastReplyAt = now()
+    } else {
+      this.channels.lan.replies += 1
+      this.channels.lan.lastReplyAt = now()
+    }
     if (frame.t === 'query') this.replyTo(remote)
     this.options.onPeer?.(peer, isNew)
+  }
+
+  /** Resolve the device id that last announced from an address, for probe results. */
+  deviceIdFromAddress(address) {
+    for (const peer of this.peers.values()) {
+      if (peer.address === address) return peer.deviceId
+    }
+    return undefined
   }
 
   replyTo(remote) {

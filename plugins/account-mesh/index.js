@@ -16,6 +16,7 @@ import { Mesh } from './src/mesh.js'
 import { createLog } from './src/log.js'
 import { registerTools } from './src/tools.js'
 import { registerRoutes } from './src/routes.js'
+import { registerMcp } from './src/mcp.js'
 
 export const name = 'account-mesh'
 export const inject = []
@@ -43,6 +44,13 @@ export function apply(ctx, config = {}) {
   ctx.inject(['webServer'], child => {
     child.effect(() => registerRoutes(child, mesh, log), 'account-mesh: panel routes')
   })
+  // Optional MCP endpoint: exposes the same read-only operations to external
+  // MCP clients (streamable HTTP). Off unless `mcpPort` is configured.
+  if (config.mcpPort) {
+    ctx.inject(['webServer'], child => {
+      child.effect(() => registerMcp(child, mesh, log, config), 'account-mesh: mcp endpoint')
+    })
+  }
   // Resolve the account as soon as its service mounts instead of waiting for
   // the first periodic refresh.
   ctx.inject(['deepseekAccount'], () => {

@@ -24,7 +24,12 @@ export function registerRoutes(ctx, mesh, log) {
         const url = new URL(req.url ?? '/', 'http://mesh.local')
         const route = url.pathname.slice(BASE.length) || '/'
         if (route === '/api/state' && req.method === 'GET') {
-          return json(res, 200, { ...mesh.state(), tailscale: await mesh.tailscaleStatus() })
+          return json(res, 200, {
+            ...mesh.state(),
+            tailscale: await mesh.tailscaleStatus(),
+            channels: mesh.channels(),
+            localTest: localTestStatus(mesh),
+          })
         }
         if (route === '/api/tree' && req.method === 'GET') {
           return json(res, 200, await buildTree(mesh, log))
@@ -36,10 +41,45 @@ export function registerRoutes(ctx, mesh, log) {
           const fromSeq = Number(url.searchParams.get('fromSeq') ?? 0) || 0
           const limit = Number(url.searchParams.get('limit') ?? 200) || 200
           try {
+            if (peer === 'local-test' && mesh.config.localSessionTest && !hasRealVerifiedPeer(mesh)) {
+              return json(res, 200, await mesh.data.sessionEvents({ sessionId, fromSeq, limit }))
+            }
+            if (peer === 'local-test') return json(res, 404, { error: 'local test peer is hidden while a real peer is connected' })
             return json(res, 200, await mesh.call(peer, 'sessions/events', { sessionId, fromSeq, limit }))
           } catch (error) {
             return json(res, 502, { error: error.message, code: error.code ?? 'remote-failed' })
           }
+        }
+        if (route === '/api/channels' && req.method === 'GET') {
+          return json(res, 200, { channels: mesh.channels() })
+        }
+        if (route === '/api/probe' && req.method === 'POST') {
+          const body = await readBody(req)
+          const target = String(body.target ?? '')
+          const channel = String(body.channel ?? 'lan')
+          if (!target) return json(res, 400, { error: 'target is required' })
+          try {
+            return json(res, 200, await mesh.probe(target, channel))
+          } catch (error) {
+            return json(res, 502, { error: error.message, code: error.code ?? 'probe-failed' })
+          }
+        }
+        if (route === '/api/refresh-network' && req.method === 'POST') {
+          try {
+            return json(res, 200, { ok: true, channels: await mesh.refreshNetwork() })
+          } catch (error) {
+            return json(res, 502, { error: error.message, code: error.code ?? 'refresh-failed' })
+          }
+        }
+        if (route === '/api/local-test' && req.method === 'GET') {
+          return json(res, 200, localTestStatus(mesh))
+        }
+        if (route === '/api/local-test' && req.method === 'POST') {
+          const body = await readBody(req)
+          if (typeof body.enabled !== 'boolean') return json(res, 400, { error: 'enabled must be a boolean' })
+          mesh.config.localSessionTest = body.enabled
+          log.info(`account-mesh: local test peer ${body.enabled ? 'enabled' : 'disabled'} from the panel`)
+          return json(res, 200, localTestStatus(mesh))
         }
         if (route === '/api/pair' && req.method === 'POST') {
           const body = await readBody(req)
@@ -109,37 +149,94 @@ async function buildTree(mesh, log) {
         mesh.call(peer.deviceId, 'workspaces/list', {}),
         mesh.call(peer.deviceId, 'sessions/list', { limit: 500 }),
       ])
-      const groups = new Map()
-      for (const workspace of workspaces?.workspaces ?? []) {
-        const key = String(workspace.path ?? workspace.id ?? workspace.title ?? '').toLowerCase()
-        groups.set(key, {
-          id: workspace.id ?? key,
-          title: workspace.title ?? workspace.path ?? key,
-          path: workspace.path ?? null,
-          sessions: [],
-        })
-      }
-      for (const session of sessions?.sessions ?? []) {
-        const key = String(session.cwd ?? '').toLowerCase()
-        let group = groups.get(key)
-        if (!group) {
-          group = { id: `cwd:${key}`, title: session.cwd ?? '', path: session.cwd ?? null, sessions: [] }
-          groups.set(key, group)
-        }
-        group.sessions.push(session)
-      }
-      node.workspaces = [...groups.values()]
-      for (const workspace of node.workspaces) {
-        workspace.sessions.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
-      }
-      node.workspaces.sort((a, b) => String(a.title).localeCompare(String(b.title)))
+      node.workspaces = groupSessions(workspaces?.workspaces ?? [], sessions?.sessions ?? [])
     } catch (error) {
       node.error = error.message
       log.warn(`tree for ${peer.shortId} failed: ${error.message}`)
     }
     nodes.push(node)
   }
+  // Test-only local peer: serve this Host's own sessions through the same tree
+  // shape, so the panel UI can be rendered against real session data without
+  // a WebRTC peer. Hidden as soon as a real peer is verified, so test rows never
+  // mix with live remote data.
+  if (mesh.config.localSessionTest && !hasRealVerifiedPeer(mesh)) {
+    try {
+      const [workspaces, sessions] = await Promise.all([
+        mesh.data.listWorkspaces(),
+        mesh.data.listSessions({ limit: 500 }),
+      ])
+      nodes.push({
+        online: true,
+        verified: true,
+        deviceId: 'local-test',
+        shortId: 'local-test',
+        name: 'local-test',
+        source: 'local',
+        address: null,
+        rttMs: 0,
+        workspaces: groupSessions(workspaces?.workspaces ?? [], sessions?.sessions ?? []),
+        error: null,
+        lastSeenAt: Date.now(),
+      })
+    } catch (error) {
+      log.warn(`local test tree failed: ${error.message}`)
+    }
+  }
   return { peers: nodes, generatedAt: Date.now() }
+}
+
+/** A real peer is online and authenticated; while one exists the local test peer stays hidden. */
+function hasRealVerifiedPeer(mesh) {
+  return mesh.peerViews().some(peer => peer.deviceId !== 'local-test' && peer.online === true && peer.verified === true)
+}
+
+/** Local test peer status for the settings toggle. */
+function localTestStatus(mesh) {
+  const hiddenByRealPeer = hasRealVerifiedPeer(mesh)
+  return {
+    enabled: mesh.config.localSessionTest === true,
+    visible: mesh.config.localSessionTest === true && !hiddenByRealPeer,
+    hiddenByRealPeer,
+  }
+}
+
+/** Group sessions under their workspace (or their cwd when no workspace matches). */
+/** Last path segment for display; the full path stays available for hover details. */
+function lastSegment(pathText) {
+  const text = String(pathText ?? '').replace(/[\\/]+$/, '')
+  const parts = text.split(/[\\/]/)
+  return parts[parts.length - 1] || text
+}
+
+function groupSessions(workspaces, sessions) {
+  const groups = new Map()
+  for (const workspace of workspaces) {
+    const key = String(workspace.path ?? workspace.id ?? workspace.title ?? '').toLowerCase()
+    groups.set(key, {
+      id: workspace.id ?? key,
+      title: workspace.title ?? workspace.path ?? key,
+      // Display name: the last path segment; the full path stays in `path` for the hover tooltip.
+      name: lastSegment(workspace.path ?? workspace.title ?? key),
+      path: workspace.path ?? null,
+      sessions: [],
+    })
+  }
+  for (const session of sessions) {
+    const key = String(session.cwd ?? '').toLowerCase()
+    let group = groups.get(key)
+    if (!group) {
+      group = { id: `cwd:${key}`, title: session.cwd ?? '', name: lastSegment(session.cwd ?? ''), path: session.cwd ?? null, sessions: [] }
+      groups.set(key, group)
+    }
+    group.sessions.push(session)
+  }
+  const result = [...groups.values()]
+  for (const workspace of result) {
+    workspace.sessions.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+  }
+  result.sort((a, b) => String(a.title).localeCompare(String(b.title)))
+  return result
 }
 
 function json(res, status, body) {
