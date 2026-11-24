@@ -3,10 +3,13 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+// Electron-builder target names and the file extensions they leave in unsigned-artifacts.
+const outputExtension = { nsis: 'exe' }
+
 export function nativeTarget(platform, arch) {
-  if (platform === 'linux' && arch === 'x64') return { flag: '--linux', format: 'tar.gz' }
-  if (platform === 'darwin' && ['arm64', 'x64'].includes(arch)) return { flag: '--mac', format: 'dmg' }
-  if (platform === 'win32' && arch === 'x64') return { flag: '--win', format: 'nsis' }
+  if (platform === 'linux' && arch === 'x64') return { flag: '--linux', formats: ['tar.gz', 'deb', 'AppImage'] }
+  if (platform === 'darwin' && ['arm64', 'x64'].includes(arch)) return { flag: '--mac', formats: ['dmg'] }
+  if (platform === 'win32' && arch === 'x64') return { flag: '--win', formats: ['nsis'] }
   throw Error('Unsupported native desktop target ' + platform + '-' + arch)
 }
 
@@ -18,7 +21,7 @@ export async function checksum(file) {
 
 export async function packageDesktop({ work, desktop, dist, releaseVersion, pnpm }) {
   const { platform, arch } = process
-  const { flag, format } = nativeTarget(platform, arch)
+  const { flag, formats } = nativeTarget(platform, arch)
   const env = {
     DSH_DESKTOP_TARGET_PLATFORM: platform,
     DSH_DESKTOP_TARGET_ARCH: arch,
@@ -37,15 +40,17 @@ export async function packageDesktop({ work, desktop, dist, releaseVersion, pnpm
   run('--dir', 'native/system/packages/entry', 'pack', '--pack-destination', paths.packedLandlock)
   if (platform !== 'win32') run('--dir', 'native/system/packages/' + platform + '-' + arch, 'pack', '--pack-destination', paths.packedLandlock)
   for (const stage of ['prepare:runtime', 'prepare:packages', 'prepare:dsh']) prepare(stage)
-  pnpm(desktop, ['exec', 'electron-builder', flag, format, '--' + arch, '--config', 'electron-builder.config.mjs', '--publish', 'never'], env)
+  pnpm(desktop, ['exec', 'electron-builder', flag, ...formats, '--' + arch, '--config', 'electron-builder.config.mjs', '--publish', 'never'], env)
   pnpm(desktop, ['exec', 'tsx', 'scripts/smoke-packaged-runtime.ts', '--unsigned'], env)
-  const ext = platform === 'win32' ? 'exe' : format
-  const files = readdirSync(paths.unsignedArtifacts).filter(file => file.endsWith('.' + ext))
-  if (files.length !== 1) throw Error('Expected one installer in ' + paths.unsignedArtifacts)
   mkdirSync(dist, { recursive: true })
-  const filename = 'night-cruising-' + releaseVersion + '-' + platform + '-' + arch + '.' + ext
-  const destination = join(dist, filename)
-  copyFileSync(join(paths.unsignedArtifacts, files[0]), destination)
-  writeFileSync(destination + '.sha256', (await checksum(destination)) + '  ' + filename + '\n')
-  console.log(destination)
+  for (const format of formats) {
+    const ext = outputExtension[format] ?? format
+    const files = readdirSync(paths.unsignedArtifacts).filter(file => file.endsWith('.' + ext))
+    if (files.length !== 1) throw Error('Expected one ' + ext + ' installer in ' + paths.unsignedArtifacts)
+    const filename = 'night-cruising-' + releaseVersion + '-' + platform + '-' + arch + '.' + ext
+    const destination = join(dist, filename)
+    copyFileSync(join(paths.unsignedArtifacts, files[0]), destination)
+    writeFileSync(destination + '.sha256', (await checksum(destination)) + '  ' + filename + '\n')
+    console.log(destination)
+  }
 }

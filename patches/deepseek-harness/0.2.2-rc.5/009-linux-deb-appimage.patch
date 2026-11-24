@@ -1,0 +1,27 @@
+diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
+index e4775ee7b4f273d9cb9ebc5ec6ee74be4579a79a..5847045ab8d21b5d54e0b053ee46c9d535f4cb0e 100644
+--- a/apps/desktop/scripts/electron-builder-config.mjs
++++ b/apps/desktop/scripts/electron-builder-config.mjs
+@@ -110,6 +110,8 @@ export function createElectronBuilderConfig(
+     appId,
+     protocols: [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
+     extraMetadata: {
++      // Debian metadata has no other source for the project URL.
++      homepage: 'https://deepseek-harness.partyplay.top',
+       dshDesktopAppId: appId,
+       dshDesktopUpdateChannel: update?.channel ?? 'nightly',
+       ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),
+@@ -257,7 +259,12 @@ export function createElectronBuilderConfig(
+     linux: {
+       category: 'Development',
+       executableName: 'night-cruising',
+-      target: ['tar.gz'],
++      target: ['tar.gz', 'deb', 'AppImage'],
++      icon: fileURLToPath(new URL('../resources/icon-linux-512.png', import.meta.url)),
++      // Debian packages require a maintainer address; override it without repatching.
++      maintainer: env.DSH_DESKTOP_LINUX_MAINTAINER
++        ?? 'Night Cruising <night-cruising@deepseek-harness.partyplay.top>',
++      synopsis: 'DeepSeek Harness 深夜巡航版',
+     },
+     nsis: {
+       uninstallDisplayName: '${productName}',

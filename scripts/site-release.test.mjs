@@ -154,3 +154,20 @@ test('source archives are excluded from scanning and existing release catalogs',
   assert.deepEqual(next.releases[0].files.map((file) => file.platform), ['darwin'])
   assert.equal(previous.releases[0].files.length, 2)
 })
+
+test('extra Linux installers are checksum-validated but stay out of the catalog', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'night-site-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const artifact = async (name, body) => {
+    const { sha256 } = await kodoHash([Buffer.from(body)])
+    await writeFile(join(dir, name), body)
+    await writeFile(join(dir, name + '.sha256'), sha256 + '  ' + name + '\n')
+  }
+  await artifact('night-cruising-1.0.0-linux-x64.tar.gz', 'tar')
+  await artifact('night-cruising-1.0.0-linux-x64.deb', 'deb')
+  await artifact('night-cruising-1.0.0-linux-x64.AppImage', 'appimage')
+  const files = await scanArtifacts('1.0.0', dir)
+  assert.deepEqual(files.map((file) => file.file.format), ['tar.gz'])
+  await writeFile(join(dir, 'night-cruising-1.0.0-linux-x64.deb'), 'tampered')
+  await assert.rejects(scanArtifacts('1.0.0', dir), /校验失败/)
+})
