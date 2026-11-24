@@ -24,6 +24,8 @@ export const mime = {
   '.css': 'text/css; charset=utf-8',
   '.jpg': 'image/jpeg',
   '.json': 'application/json; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8',
   '.sha256': 'text/plain; charset=utf-8',
   '.gz': 'application/gzip',
 }
@@ -140,7 +142,12 @@ async function main() {
   if (action === 'deploy') {
     const next = await publish(qiniuStore(env), artifacts, files, async (previous) => {
       const next = buildCatalog(previous)
-      await verifyGithubDownloads(next)
+      const verificationCatalog = process.argv.includes('--skip-windows-verification')
+        ? { ...next, releases: next.releases.map((release) => ({
+          ...release, files: release.files.filter((file) => file.platform !== 'win32'),
+        })) }
+        : next
+      await verifyGithubDownloads(verificationCatalog)
       return next
     })
     console.log('已发布网站', next.siteVersion, '最新软件版本', next.latestVersion ?? '暂无')

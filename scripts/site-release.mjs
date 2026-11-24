@@ -62,9 +62,7 @@ export async function kodoHash(stream) {
   return { size, sha256: digest.digest('hex'), etag }
 }
 const unlistedVersion = '0.1.0'
-// The site catalog keeps one download per platform; extra Linux installers ship beside tar.gz.
-const publishedFormats = { src: 'tar.gz', linux: 'tar.gz', darwin: 'dmg', win32: 'exe' }
-const extraFormats = { linux: new Set(['deb', 'AppImage']) }
+const publishedFormats = { linux: ['tar.gz', 'deb', 'AppImage'], darwin: ['dmg'], win32: ['exe'] }
 
 export async function scanArtifacts(packageVersion, directory = dist) {
   if (!semver.valid(packageVersion)) throw Error('package.json version 必须是有效的语义版本号')
@@ -86,14 +84,12 @@ export async function scanArtifacts(packageVersion, directory = dist) {
     const [, version, target, format] = match
     if (version !== packageVersion || version === unlistedVersion || target === 'src') continue
     const [platform, arch = ''] = target.split('-')
-    const published = format === publishedFormats[platform]
-    if (!published && !extraFormats[platform]?.has(format))
+    if (!publishedFormats[platform]?.includes(format))
       throw Error('平台和扩展名不匹配 ' + entry.name)
     const path = join(directory, entry.name)
     const { sha256, size, etag } = await kodoHash(createReadStream(path))
     const sidecar = (await readFile(path + '.sha256', 'utf8')).trim()
     if (!size || sidecar !== sha256 + '  ' + entry.name) throw Error('校验失败 ' + entry.name)
-    if (!published) continue
     artifacts.push({ version, path, etag, file: { name: entry.name, platform, arch, format, size, sha256 } })
   }
   return artifacts
@@ -119,7 +115,9 @@ export function catalog(previous, artifacts, packageVersion, icp, date = new Dat
   for (const { version, file } of artifacts) {
     if (file.platform === 'src') continue
     const release = releases.get(version) ?? { version, date: today, files: [] }
-    const at = release.files.findIndex((f) => f.platform === file.platform && f.arch === file.arch)
+    const at = release.files.findIndex(
+      (f) => f.platform === file.platform && f.arch === file.arch && f.format === file.format,
+    )
     const backupUrl = '/' + downloadKey(version, file)
     const item = { ...file, backupUrl, checksumUrl: backupUrl + '.sha256' }
     if (at === -1) release.files.push(item)
@@ -138,7 +136,8 @@ export function catalog(previous, artifacts, packageVersion, icp, date = new Dat
       file.url = `https://github.com/${githubRepository}/releases/download/${encodeURIComponent(release.version)}/${encodeURIComponent(file.name)}`
     }
     release.files.sort(
-      (a, b) => order.indexOf(a.platform) - order.indexOf(b.platform) || a.arch.localeCompare(b.arch),
+      (a, b) => order.indexOf(a.platform) - order.indexOf(b.platform) || a.arch.localeCompare(b.arch)
+        || publishedFormats[a.platform].indexOf(a.format) - publishedFormats[b.platform].indexOf(b.format),
     )
   }
   const sorted = [...releases.values()].sort((a, b) => semver.rcompare(a.version, b.version))

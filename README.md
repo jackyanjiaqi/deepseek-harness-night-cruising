@@ -42,7 +42,7 @@ npm run release         # 生成当前平台的桌面安装包
 | macOS arm64 或 x64 | dmg | 挂载镜像，将应用拖入 Applications |
 | Windows x64 | exe | 运行 NSIS 安装器 |
 
-Linux 的 `deb` 需要维护者地址，默认写入 `Night Cruising <night-cruising@deepseek-harness.partyplay.top>`；打包前可用 `DSH_DESKTOP_LINUX_MAINTAINER="名称 <邮箱>"` 覆盖。官网下载页仍只登记每个平台一个安装包（Linux 为 tar.gz），`deb` 与 `AppImage` 随 `dist/` 一起生成并附带 `.sha256`，适合从 GitHub Release 分发。
+Linux 的 `deb` 需要维护者地址，默认写入 `Night Cruising <night-cruising@deepseek-harness.partyplay.top>`；打包前可用 `DSH_DESKTOP_LINUX_MAINTAINER="名称 <邮箱>"` 覆盖。官网下载页同时登记 Linux 的 `tar.gz`、`deb` 与 `AppImage`；三种产物随 `dist/` 一起生成并附带 `.sha256`，主下载入口指向 GitHub Release。
 
 当前使用无发行证书的打包配置。CI 工作流支持手动触发和 `v*` 标签，在 Linux、macOS 和 Windows 各自构建并保留产物。上传 GitHub Release 可使用已通过成品验证的文件及同名校验文件。源码压缩包内含应用补丁后的完整上游树。重新制作桌面发行包时，使用本仓库和固定子模块。
 

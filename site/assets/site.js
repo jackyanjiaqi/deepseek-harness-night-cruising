@@ -18,7 +18,7 @@ function releaseCard(release) {
   for (const file of release.files.filter((file) => file.platform !== 'src')) {
     const row = el('div', undefined, 'file-row')
     const desc = el('div')
-    const title = platforms[file.platform] + (file.arch ? ' · ' + file.arch : '')
+    const title = platforms[file.platform] + (file.arch ? ' · ' + file.arch : '') + ' · ' + file.format
     desc.append(
       el('strong', title),
       el('span', file.format + '  /  ' + (file.size / 1048576).toFixed(1) + ' MiB', 'meta'),
