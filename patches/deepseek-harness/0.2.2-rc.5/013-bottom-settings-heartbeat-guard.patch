@@ -1,0 +1,1273 @@
+diff --git a/apps/web/src/night-cruising.ts b/apps/web/src/night-cruising.ts
+index 43f6945a64f2c1a31b2abe23fc3affb6ca63914f..f6bfd2170a1d0ca7383feeb6f6d7c7f711356021 100644
+--- a/apps/web/src/night-cruising.ts
++++ b/apps/web/src/night-cruising.ts
+@@ -8,6 +8,8 @@ interface TimeoutEntry {
+   defaultMs: number
+   minMs: number
+   maxMs: number
++  /** Display/input unit; absent means milliseconds. */
++  unit?: 'ms' | 'count'
+   locked?: boolean
+ }
+ 
+@@ -66,6 +68,8 @@ const footer = document.querySelector<HTMLElement>('.night-cruise')
+ 
+ /** Rows currently rendered, keyed by settings key. */
+ const inputs = new Map<string, HTMLInputElement>()
++/** Catalog rows by settings key, for unit-aware form conversion. */
++const entriesByKey = new Map<string, TimeoutEntry>()
+ /** Catalog returned by the Host; empty until the first successful load. */
+ let groups: readonly TimeoutGroup[] = []
+ /** Last persisted milliseconds, keyed by settings key. */
+@@ -83,6 +87,27 @@ function formatDuration(ms: number | undefined): string {
+   return `${Math.round(ms / 3_600_000)} 小时`
+ }
+ 
++/**
++ * Convert a stored number to the value shown in an input: milliseconds become
++ * seconds, counts stay whole numbers.
++ * @param entry - catalog row that owns the value.
++ * @param value - stored milliseconds or count.
++ * @returns the input text.
++ */
++function toInput(entry: TimeoutEntry, value: number): string {
++  return entry.unit === 'count' ? String(Math.round(value)) : String(Math.round(value / 1000))
++}
++
++/**
++ * Convert an input's number back to the stored unit.
++ * @param entry - catalog row that owns the value.
++ * @param value - input number in seconds or count.
++ * @returns stored milliseconds or count.
++ */
++function fromInput(entry: TimeoutEntry, value: number): number {
++  return entry.unit === 'count' ? Math.round(value) : Math.round(value * 1000)
++}
++
+ /**
+  * Project the primary wait value into the collapsed bar's one-line summary.
+  * The line stays minimal: the first value users tune, plus its cap when it
+@@ -114,7 +139,9 @@ function markDirty(): void {
+   let dirty = false
+   for (const [key, input] of inputs) {
+     if (input.disabled) continue
+-    if (Math.round(Number(input.value) * 1000) !== (values[key] ?? 0)) { dirty = true; break }
++    const entry = entriesByKey.get(key)
++    if (entry === undefined) continue
++    if (fromInput(entry, Number(input.value)) !== (values[key] ?? 0)) { dirty = true; break }
+   }
+   saveButton.dataset.dirty = dirty ? 'true' : 'false'
+   saveButton.disabled = !dirty
+@@ -128,6 +155,7 @@ function renderGroups(): void {
+   if (groupsHost === null) return
+   groupsHost.replaceChildren()
+   inputs.clear()
++  entriesByKey.clear()
+   for (const group of groups) {
+     const section = document.createElement('section')
+     section.className = 'night-timeouts-group'
+@@ -162,21 +190,23 @@ function renderGroups(): void {
+       input.type = 'number'
+       input.inputMode = 'numeric'
+       input.step = '1'
+-      input.min = String(Math.round(entry.minMs / 1000))
+-      input.max = String(Math.round(entry.maxMs / 1000))
+-      input.value = String(Math.round((values[entry.key] ?? entry.defaultMs) / 1000))
+-      input.setAttribute('aria-label', `${entry.label}（秒）`)
++      input.min = toInput(entry, entry.minMs)
++      input.max = toInput(entry, entry.maxMs)
++      input.value = toInput(entry, values[entry.key] ?? entry.defaultMs)
++      input.dataset.unit = entry.unit ?? 'ms'
++      input.setAttribute('aria-label', `${entry.label}（${entry.unit === 'count' ? '次' : '秒'}）`)
+       if (entry.locked) {
+         input.disabled = true
+         input.value = '0'
+       }
+       input.addEventListener('input', markDirty)
+       const unit = document.createElement('span')
+-      unit.textContent = entry.locked ? '不限' : '秒'
++      unit.textContent = entry.locked ? '不限' : entry.unit === 'count' ? '次' : '秒'
+       field.append(input, unit)
+       row.append(copy, field)
+       grid.append(row)
+       inputs.set(entry.key, input)
++      entriesByKey.set(entry.key, entry)
+     }
+     section.append(grid)
+     groupsHost.append(section)
+@@ -237,15 +267,15 @@ async function save(): Promise<void> {
+   if (groups.length === 0) return
+   const next: Record<string, number> = { ...values }
+   for (const [key, input] of inputs) {
+-    const entry = groups.flatMap(group => group.entries).find(candidate => candidate.key === key)
++    const entry = entriesByKey.get(key)
+     if (entry === undefined || entry.locked) continue
+-    const seconds = Number(input.value)
+-    if (!Number.isFinite(seconds) || seconds < 0) {
+-      setStatus(`${entry.label} 需要一个不小于 0 的秒数`, 'error')
++    const entered = Number(input.value)
++    if (!Number.isFinite(entered) || entered < 0) {
++      setStatus(`${entry.label} 需要一个不小于 0 的${entry.unit === 'count' ? '整数' : '秒数'}`, 'error')
+       input.focus()
+       return
+     }
+-    next[key] = Math.round(seconds * 1000)
++    next[key] = fromInput(entry, entered)
+   }
+   if (saveButton !== null) saveButton.disabled = true
+   try {
+@@ -286,35 +316,69 @@ function resetToDefaults(): void {
+     for (const entry of group.entries) {
+       const input = inputs.get(entry.key)
+       if (input === undefined || entry.locked) continue
+-      input.value = String(Math.round(entry.defaultMs / 1000))
++      input.value = toInput(entry, entry.defaultMs)
+     }
+   }
+   setStatus('已填入默认值，点击保存生效')
+   markDirty()
+ }
+ 
++/** One pending bootstrap retry; a Host route may register just after the page mounts. */
++let loadRetry: ReturnType<typeof setTimeout> | undefined
++
++/**
++ * Retry the settings bootstrap after the Host has had time to mount its route.
++ * A standalone page that never serves the route gives up after ~20 seconds.
++ * @param attempt - zero-based attempt count.
++ */
++function retryLoad(attempt: number): void {
++  if (loadRetry !== undefined || attempt >= 20) return
++  loadRetry = setTimeout(() => {
++    loadRetry = undefined
++    void load(attempt + 1)
++  }, 1_000)
++}
++
+ /**
+  * Load the catalog and persisted values, then reveal the timeout seat.
+- * A failed load (standalone page without the Host route, or no admission)
+- * leaves the bar in its music-only form.
++ * The route can register a moment after the page mounts, so a failed first
++ * read is retried instead of permanently hiding the seat. A standalone page
++ * that never serves the route stays a music player after the retry window.
++ * @param attempt - zero-based attempt count.
+  */
+-async function load(): Promise<void> {
++async function load(attempt = 0): Promise<void> {
+   try {
+     const response = await fetch(ROUTE, { headers: { accept: 'application/json' } })
+-    if (!response.ok) return
++    if (!response.ok) {
++      retryLoad(attempt)
++      return
++    }
+     const payload: unknown = await response.json()
+-    if (typeof payload !== 'object' || payload === null || !('groups' in payload) || !('values' in payload)) return
++    if (typeof payload !== 'object' || payload === null || !('groups' in payload) || !('values' in payload)) {
++      retryLoad(attempt)
++      return
++    }
+     const candidate = payload as { groups?: unknown; values?: unknown }
+-    if (!Array.isArray(candidate.groups) || typeof candidate.values !== 'object' || candidate.values === null) return
++    if (!Array.isArray(candidate.groups) || typeof candidate.values !== 'object' || candidate.values === null) {
++      retryLoad(attempt)
++      return
++    }
+     groups = candidate.groups as TimeoutGroup[]
+     values = candidate.values as Record<string, number>
+-    if (groups.length === 0) return
++    if (groups.length === 0) {
++      retryLoad(attempt)
++      return
++    }
++    if (loadRetry !== undefined) {
++      clearTimeout(loadRetry)
++      loadRetry = undefined
++    }
+     renderGroups()
+     refreshSummary()
+     if (openButton !== null) openButton.hidden = false
+     document.documentElement.dataset.ncTimeouts = 'ready'
+   } catch {
+-    // The footer stays a music player when the settings route is unavailable.
++    retryLoad(attempt)
+   }
+ }
+ 
+diff --git a/packages/bundle/web-app/src/night-timeouts.ts b/packages/bundle/web-app/src/night-timeouts.ts
+index 930aa5b045ae762f1030be54ba2e66950a295bb4..d6c9f3307d4f59f4d40c16f90e0f74e2aa53cbe5 100644
+--- a/packages/bundle/web-app/src/night-timeouts.ts
++++ b/packages/bundle/web-app/src/night-timeouts.ts
+@@ -43,6 +43,8 @@ export interface TimeoutEntry {
+   minMs: number
+   /** Highest accepted value, at or below Node's timer ceiling. */
+   maxMs: number
++  /** Display/input unit; absent means milliseconds. */
++  unit?: 'ms' | 'count'
+   /** `true` renders the row read-only (policy-owned values). */
+   locked?: boolean
+ }
+@@ -98,6 +100,28 @@ export const NIGHT_TIMEOUT_GROUPS: readonly TimeoutGroup[] = [
+       { key: 'lsp.grace', label: 'LSP 取消宽限', defaultMs: 5_000, minMs: 1_000, maxMs: 600_000 },
+     ],
+   },
++  {
++    id: 'observability',
++    label: '运行观测',
++    hint: '长跑任务的可见性阈值；0 表示立即可见。',
++    entries: [
++      { key: 'job.status.afterMs', label: '状态时长阈值', hint: '作业运行/静默超过该时长后，状态行附带 running / idle。', defaultMs: 300_000, minMs: 0, maxMs: DAY_MS },
++      { key: 'workflow.progress.interval', label: '子智能体心跳', hint: 'workflow 子智能体刷新 job progress 的最小间隔。', defaultMs: 60_000, minMs: 1_000, maxMs: 600_000 },
++    ],
++  },
++  {
++    id: 'guard',
++    label: '重复调用守卫',
++    hint: '窗口计数覆盖 A/B 交替；阻断默认关闭。',
++    entries: [
++      { key: 'guard.repeat.enabled', label: '启用守卫', hint: '0 关闭，1 启用。', defaultMs: 1, minMs: 0, maxMs: 1, unit: 'count' },
++      { key: 'guard.repeat.window', label: '观察窗口', hint: '最近 N 次跟踪调用。', defaultMs: 24, minMs: 4, maxMs: 10_000, unit: 'count' },
++      { key: 'guard.repeat.windowThreshold', label: '窗口阈值', hint: '同签名在窗口内出现 N 次时提醒；后续按 N×2、N×4 升级。', defaultMs: 8, minMs: 2, maxMs: 10_000, unit: 'count' },
++      { key: 'guard.repeat.every', label: '重复提醒间隔', hint: '超过最大阈值后，每 +N 次再提醒。', defaultMs: 20, minMs: 1, maxMs: 10_000, unit: 'count' },
++      { key: 'guard.repeat.block', label: '重复阻断', hint: '0 仅提醒，1 在达到阻断阈值时拒绝该次调用。', defaultMs: 0, minMs: 0, maxMs: 1, unit: 'count' },
++      { key: 'guard.repeat.blockAfter', label: '阻断阈值', hint: '窗口/连续计数达到 N 时阻断（仅在重复阻断启用时生效）。', defaultMs: 40, minMs: 1, maxMs: 100_000, unit: 'count' },
++    ],
++  },
+   {
+     id: 'policy',
+     label: '模型请求',
+@@ -290,6 +314,10 @@ export async function handleNightTimeoutsRequest(
+     }
+     values[entry.key] = value
+   }
++  if ((values['guard.repeat.windowThreshold'] ?? 0) > (values['guard.repeat.window'] ?? 0)) {
++    sendJson(res, 400, { error: '重复守卫的窗口阈值不能大于观察窗口' })
++    return
++  }
+   await writeNightTimeouts(values)
+   configureTimeouts(values)
+   sendJson(res, 200, { ok: true, groups: NIGHT_TIMEOUT_GROUPS, values })
+diff --git a/packages/bundle/web-app/tests/night-timeouts.spec.ts b/packages/bundle/web-app/tests/night-timeouts.spec.ts
+index ffdad9746a171993552e2d6c39364d96b9b65b8c..bfa532fd97b1a455b3bedf71dfb93ad269175665 100644
+--- a/packages/bundle/web-app/tests/night-timeouts.spec.ts
++++ b/packages/bundle/web-app/tests/night-timeouts.spec.ts
+@@ -10,7 +10,7 @@ import type { Server } from 'node:http'
+ import { tmpdir } from 'node:os'
+ import { join } from 'node:path'
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+-import { configureTimeouts, timeoutSetting } from '@deepseek-ai/dsh-timeout'
++import { configureTimeouts, settingNumber, timeoutSetting } from '@deepseek-ai/dsh-timeout'
+ import {
+   handleNightTimeoutsRequest,
+   NIGHT_TIMEOUT_DEFAULTS,
+@@ -71,6 +71,8 @@ describe('night timeout settings route', () => {
+     expect(status).toBe(200)
+     expect(valueOf(json, 'wait.job.default')).toBe(30_000)
+     expect(valueOf(json, 'tool.bash')).toBe(0)
++    expect(valueOf(json, 'guard.repeat.window')).toBe(24)
++    expect(valueOf(json, 'job.status.afterMs')).toBe(300_000)
+     expect(Array.isArray((json as { groups?: unknown }).groups)).toBe(true)
+   })
+ 
+@@ -91,6 +93,19 @@ describe('night timeout settings route', () => {
+     expect(await readNightTimeouts()).toMatchObject({ 'wait.job.default': NIGHT_TIMEOUT_DEFAULTS['wait.job.default'] })
+   })
+ 
++  it('persists count settings and publishes them through settingNumber', async () => {
++    const { status } = await request('PUT', { values: { 'guard.repeat.window': 16, 'guard.repeat.windowThreshold': 8 } })
++    expect(status).toBe(200)
++    expect(settingNumber('guard.repeat.window', 24)).toBe(16)
++    expect(settingNumber('guard.repeat.windowThreshold', 8)).toBe(8)
++    expect(await readNightTimeouts()).toMatchObject({ 'guard.repeat.window': 16 })
++  })
++
++  it('rejects a window threshold larger than the window', async () => {
++    const { status } = await request('PUT', { values: { 'guard.repeat.window': 8, 'guard.repeat.windowThreshold': 9 } })
++    expect(status).toBe(400)
++  })
++
+   it('rejects a write to a policy-owned row', async () => {
+     const { status } = await request('PUT', { values: { 'llm.request': 1_000 } })
+     expect(status).toBe(400)
+diff --git a/packages/guard/repeat-tool-reminder/package.json b/packages/guard/repeat-tool-reminder/package.json
+index dbbf05b9815a59a58f2d2e7a13d6525718d6f4ff..8365f216f03d42487d47a45f95362a2a93db1bdf 100644
+--- a/packages/guard/repeat-tool-reminder/package.json
++++ b/packages/guard/repeat-tool-reminder/package.json
+@@ -35,19 +35,21 @@
+     "@deepseek-ai/schemastery": "workspace:~"
+   },
+   "peerDependencies": {
++    "@deepseek-ai/cordis": "workspace:~",
+     "@deepseek-ai/dsh-agent": "workspace:*",
+-    "@deepseek-ai/dsh-tools": "workspace:*",
+-    "@deepseek-ai/cordis": "workspace:~"
++    "@deepseek-ai/dsh-timeout": "workspace:*",
++    "@deepseek-ai/dsh-tools": "workspace:*"
+   },
+   "devDependencies": {
++    "@deepseek-ai/cordis": "workspace:~",
+     "@deepseek-ai/dsh-agent": "workspace:*",
+     "@deepseek-ai/dsh-agent-loop": "workspace:*",
+     "@deepseek-ai/dsh-agent-loop-testkit": "workspace:*",
+     "@deepseek-ai/dsh-llm": "workspace:*",
+     "@deepseek-ai/dsh-session": "workspace:*",
++    "@deepseek-ai/dsh-session-projection": "workspace:*",
++    "@deepseek-ai/dsh-timeout": "workspace:*",
+     "@deepseek-ai/dsh-tool-testkit": "workspace:*",
+-    "@deepseek-ai/dsh-tools": "workspace:*",
+-    "@deepseek-ai/cordis": "workspace:~",
+-    "@deepseek-ai/dsh-session-projection": "workspace:*"
++    "@deepseek-ai/dsh-tools": "workspace:*"
+   }
+ }
+diff --git a/packages/guard/repeat-tool-reminder/src/index.ts b/packages/guard/repeat-tool-reminder/src/index.ts
+index 97a6766888f85541fb800d8b2476095398aaa6fa..37da50a49b22ed596c17134b123b9f4c465470d7 100644
+--- a/packages/guard/repeat-tool-reminder/src/index.ts
++++ b/packages/guard/repeat-tool-reminder/src/index.ts
+@@ -7,6 +7,7 @@
+  */
+ 
+ import type { Context } from '@deepseek-ai/cordis'
++import { settingNumber } from '@deepseek-ai/dsh-timeout'
+ import z from '@deepseek-ai/schemastery'
+ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+ import { createUserMessage } from '@deepseek-ai/dsh-llm'
+@@ -47,6 +48,16 @@ export interface Config {
+    * always compares the FULL canonical string).
+    */
+   argumentsPreviewChars?: number
++  /** Window of recent tracked calls used for non-consecutive repetition (default 24). */
++  windowSize?: number
++  /** Window occurrence counts that trigger a window reminder (default `[8, 16, 32]`). */
++  windowThresholds?: number[]
++  /** After the largest threshold, remind again every N calls (default 20). */
++  repeatEvery?: number
++  /** `advisory` keeps reminders only; `block` also rejects a call at `blockAfter` (default `advisory`). */
++  escalation?: 'advisory' | 'block'
++  /** Window occurrence count that turns a call into a block when escalation is `block` (default 40). */
++  blockAfter?: number
+ }
+ 
+ export const Config: z<Config> = z.object({
+@@ -54,6 +65,11 @@ export const Config: z<Config> = z.object({
+   include: z.array(z.string()).default([]),
+   exclude: z.array(z.string()).default([]),
+   argumentsPreviewChars: z.number().default(500),
++  windowSize: z.number().default(24),
++  windowThresholds: z.array(z.number()).default([8, 16, 32]),
++  repeatEvery: z.number().default(20),
++  escalation: z.union(['advisory', 'block'] as const).default('advisory'),
++  blockAfter: z.number().default(40),
+ })
+ 
+ /**
+@@ -127,6 +143,22 @@ function previewArguments(canonical: string, cap: number): string {
+   return `${canonical.slice(0, cap)}… (+${canonical.length - cap} more chars)`
+ }
+ 
++/** Validate one positive integer count and return it. */
++function validateCount(value: number, name: string, minimum: number): number {
++  if (!Number.isInteger(value) || value < minimum) {
++    throw new Error(`repeat-tool-reminder: invalid ${name} ${value} — must be an integer >= ${minimum}`)
++  }
++  return value
++}
++
++/** Validate a window threshold list: non-empty, unique, integers >= 2, ascending. */
++function validateWindowThresholds(values: number[]): number[] {
++  if (values.length === 0) throw new Error('repeat-tool-reminder: `windowThresholds` must not be empty')
++  for (const value of values) validateCount(value, 'window threshold', 2)
++  if (new Set(values).size !== values.length) throw new Error('repeat-tool-reminder: `windowThresholds` must not contain duplicates')
++  return [...values].sort((a, b) => a - b)
++}
++
+ /**
+  * Validate `thresholds` per the fail-loud contract and return them sorted
+  * ascending (the escalation rule reads `thresholds[0]` as the gentle tier, so
+@@ -155,21 +187,65 @@ function prependContext(ours: UserMessage, theirs: UserMessage[] | undefined): U
+   return [ours, ...theirs ?? []]
+ }
+ 
+-/** One agent's consecutive-repeat chain: the last tracked call's identity key and its run length. */
++/** One agent's repeat state: the consecutive run plus a sliding window over recent calls. */
+ interface Chain {
++  /** Last tracked call's identity key. */
+   key: string
++  /** Consecutive run length for {@link key}. */
+   count: number
++  /** Recent identity keys, oldest first; length is capped by the window size. */
++  ring: string[]
++  /** Identity key to its occurrence count inside {@link ring}. */
++  window: Map<string, number>
++}
++
++/** The reminder and whether this attempt must also reject the call. */
++interface Observation {
++  readonly reminder: UserMessage
++  readonly block: boolean
++  /** Model-facing block text; present when {@link block} is true. */
++  readonly feedback?: string
++}
++
++/** The window-repeat reminder: same signature seen repeatedly, not necessarily consecutively. */
++function windowReminder(toolName: string, count: number, canonicalArguments: string): string {
++  return 'Repeated tool call detected in the observation window:\n'
++    + `- tool: ${toolName}\n`
++    + `- calls_in_window: ${count}\n`
++    + `- arguments: ${canonicalArguments}\n`
++    + 'The same call keeps appearing without new information. Do not repeat it; '
++    + 'inspect the latest result and choose a different action or finish the task.'
++}
++
++/** The periodic "still repeating" reminder after every threshold has been passed. */
++function stillReminder(toolName: string, count: number): string {
++  return `Still repeating ${toolName}: ${count} tracked calls in the observation window. `
++    + 'The loop has not produced new information. Change the arguments, change the approach, or finish.'
++}
++
++/** The model-facing text substituted for a blocked repeated call. */
++function blockFeedback(toolName: string, count: number): string {
++  return `Blocked repeated tool call: ${toolName} reached ${count} calls in the observation window. `
++    + 'This call was not executed. Inspect the previous results and choose a different action, '
++    + 'different arguments, or finish the task.'
+ }
+ 
+ /**
+  * Install the guard's listeners.
+  * @param ctx - plugin context; listeners are scoped to it and disposed with it.
+- * @param config - validated {@link Config}; `thresholds` is re-checked fail-loud here.
++ * @param config - validated {@link Config}; thresholds are re-checked fail-loud here.
+  */
+ export function apply(ctx: Context, config: Config): void {
+   // schemastery's .default() guarantees the fields are set after validation.
+   const thresholds = validateThresholds(config.thresholds as number[])
+   const thresholdSet = new Set(thresholds)
++  const maxConsecutive = thresholds[thresholds.length - 1] as number
++  const configuredWindowThresholds = validateWindowThresholds(config.windowThresholds as number[])
++  const maxConfiguredWindow = configuredWindowThresholds[configuredWindowThresholds.length - 1] as number
++  const configuredWindowSize = validateCount(config.windowSize as number, 'windowSize', 4)
++  const configuredRepeatEvery = validateCount(config.repeatEvery as number, 'repeatEvery', 1)
++  const configuredBlockAfter = validateCount(config.blockAfter as number, 'blockAfter', 1)
++  const configuredEscalation = config.escalation as 'advisory' | 'block'
+   const includePatterns = (config.include as string[]).map(wildcardToRegExp)
+   const excludePatterns = (config.exclude as string[]).map(wildcardToRegExp)
+   const argumentsPreviewChars = config.argumentsPreviewChars as number
+@@ -186,42 +262,103 @@ export function apply(ctx: Context, config: Config): void {
+   }
+ 
+   /**
+-   * Advance the calling agent's chain for one attempt and return the reminder
+-   * to deliver, if this attempt's run length hits a configured threshold.
+-   * Counting happens here — in post-execute — because denied calls also flow
+-   * through this waterfall (`ToolRuntime.execute` routes a deny through the
+-   * same pipeline), and a model hammering a denied call is exactly the loop
+-   * worth breaking.
++   * Read the live window policy. The bottom settings bar owns these values, so
++   * a save applies to the next call without restarting the Host.
++   */
++  function policy(): {
++    enabled: boolean
++    windowSize: number
++    windowThresholds: number[]
++    windowThresholdSet: Set<number>
++    repeatEvery: number
++    blockAfter: number
++    blockEnabled: boolean
++  } {
++    const enabled = settingNumber('guard.repeat.enabled', 1) !== 0
++    const windowSize = Math.max(4, Math.floor(settingNumber('guard.repeat.window', configuredWindowSize)))
++    const windowThreshold = Math.floor(settingNumber('guard.repeat.windowThreshold', 0))
++    const windowThresholds = windowThreshold >= 2
++      ? [windowThreshold, windowThreshold * 2, windowThreshold * 4]
++      : configuredWindowThresholds
++    const repeatEvery = Math.max(1, Math.floor(settingNumber('guard.repeat.every', configuredRepeatEvery)))
++    const blockAfter = Math.max(1, Math.floor(settingNumber('guard.repeat.blockAfter', configuredBlockAfter)))
++    const blockEnabled = configuredEscalation === 'block' || settingNumber('guard.repeat.block', 0) !== 0
++    return { enabled, windowSize, windowThresholds, windowThresholdSet: new Set(windowThresholds), repeatEvery, blockAfter, blockEnabled }
++  }
++
++  /**
++   * Advance the calling agent's chain and window for one attempt, then return
++   * the reminder and block decision. Counting happens in post-execute because
++   * denied calls also flow through this waterfall, and a model hammering a
++   * denied call is exactly the loop worth breaking.
+    */
+-  function observe(exec: ToolExecution): UserMessage | undefined {
++  function observe(exec: ToolExecution): Observation | undefined {
+     // A direct `ctx.tools.execute()` caller has no model to remind and no id
+     // to key on; only agent-loop calls participate.
+-    if (!exec.agent) return undefined
++    const agent = exec.agent
++    if (!agent) return undefined
+     if (!tracked(exec.name)) return undefined
++    const live = policy()
++    if (!live.enabled) return undefined
+     const canonical = canonicalize(exec.arguments)
+     const key = JSON.stringify([exec.name, canonical])
+-    const chain = chains.get(exec.agent)
+-    const count = chain !== undefined && chain.key === key ? chain.count + 1 : 1
+-    chains.set(exec.agent, { key, count })
+-    if (!thresholdSet.has(count)) return undefined
+-    const text = count === thresholds[0]
+-      ? GENTLE_REMINDER
+-      : detailedReminder(exec.name, count, previewArguments(canonical, argumentsPreviewChars))
+-    return createUserMessage({
++    const chain = chains.get(agent) ?? { key: '', count: 0, ring: [], window: new Map<string, number>() }
++    const count = chain.key === key ? chain.count + 1 : 1
++    chain.key = key
++    chain.count = count
++    chain.ring.push(key)
++    chain.window.set(key, (chain.window.get(key) ?? 0) + 1)
++    while (chain.ring.length > live.windowSize) {
++      const dropped = chain.ring.shift() as string
++      const left = (chain.window.get(dropped) ?? 1) - 1
++      if (left <= 0) chain.window.delete(dropped)
++      else chain.window.set(dropped, left)
++    }
++    chains.set(agent, chain)
++
++    const windowCount = chain.window.get(key) ?? 1
++    const escalationCount = Math.max(count, windowCount)
++    let text: string | undefined
++    let block = false
++    if (thresholdSet.has(count)) {
++      text = count === thresholds[0]
++        ? GENTLE_REMINDER
++        : detailedReminder(exec.name, count, previewArguments(canonical, argumentsPreviewChars))
++    } else if (live.windowThresholdSet.has(windowCount) && windowCount > count) {
++      text = windowReminder(exec.name, windowCount, previewArguments(canonical, argumentsPreviewChars))
++    } else if (count > maxConsecutive && (count - maxConsecutive) % live.repeatEvery === 0) {
++      text = stillReminder(exec.name, count)
++    } else if (windowCount > maxConfiguredWindow && (windowCount - maxConfiguredWindow) % live.repeatEvery === 0) {
++      text = stillReminder(exec.name, windowCount)
++    } else if (live.blockEnabled && escalationCount >= live.blockAfter) {
++      text = blockFeedback(exec.name, escalationCount)
++      block = true
++    }
++    if (text === undefined) return undefined
++    const reminder = createUserMessage({
+       content: [{ type: 'text', text }],
+-      source: { ...REMINDER_SOURCE, form: 'notice', summary: `${exec.name} × ${count}` },
++      source: { ...REMINDER_SOURCE, form: 'notice', summary: `${exec.name} × ${escalationCount}` },
+     })
++    return { reminder, block, ...block ? { feedback: text } : {} }
+   }
+ 
+-  // Observe-and-enrich, never veto: count first (state advances regardless of
+-  // the downstream outcome), DELEGATE so a later listener can still block or
+-  // replace, then fold the reminder onto whatever came back — additionalContexts
+-  // rides both decision variants, so a blocked call still gets the nudge.
++  // Observe-and-enrich, never veto by default: count first (state advances
++  // regardless of the downstream outcome), DELEGATE so a later listener can
++  // still block or replace, then fold the reminder onto whatever came back.
++  // An explicitly enabled block replaces an accepted call with a rejection
++  // while still attaching the reminder as context.
+   ctx.on('tools/post-execute', async (exec, _result, next): Promise<PostToolDecision> => {
+-    const reminder = observe(exec)
++    const observation = observe(exec)
+     const downstream = await next()
+-    if (!reminder) return downstream
+-    return { ...downstream, additionalContexts: prependContext(reminder, downstream.additionalContexts) }
++    if (observation === undefined) return downstream
++    if (observation.block && downstream.kind === 'accept') {
++      return {
++        kind: 'block',
++        feedback: [{ type: 'text', text: observation.feedback ?? 'Repeated tool call blocked' }],
++        additionalContexts: prependContext(observation.reminder, downstream.additionalContexts),
++      }
++    }
++    return { ...downstream, additionalContexts: prependContext(observation.reminder, downstream.additionalContexts) }
+   })
+ 
+   // A user interjection changes the context; repetition across it is not a
+diff --git a/packages/guard/repeat-tool-reminder/tests/repeat-tool-reminder.spec.ts b/packages/guard/repeat-tool-reminder/tests/repeat-tool-reminder.spec.ts
+index b21e0bf7d04b5da318d43a4973000f15bfba42d4..04ddb06e74104d193a5ea64518ea4a1a085c9216 100644
+--- a/packages/guard/repeat-tool-reminder/tests/repeat-tool-reminder.spec.ts
++++ b/packages/guard/repeat-tool-reminder/tests/repeat-tool-reminder.spec.ts
+@@ -1,5 +1,5 @@
+ import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+-import { describe, expect, it } from 'vitest'
++import { afterEach, describe, expect, it } from 'vitest'
+ import { Context } from '@deepseek-ai/cordis'
+ import { createUserMessage, ToolCallId  } from '@deepseek-ai/dsh-llm'
+ import type { ContextFormed } from '@deepseek-ai/dsh-llm'
+@@ -8,6 +8,7 @@ import { defineContentToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+ import type { Agent } from '@deepseek-ai/dsh-agent'
+ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
++import { configureTimeouts } from '@deepseek-ai/dsh-timeout'
+ import * as RepeatToolGuard from '@deepseek-ai/dsh-repeat-tool-reminder'
+ import type { Config } from '@deepseek-ai/dsh-repeat-tool-reminder'
+ import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
+@@ -20,6 +21,8 @@ declare module '@deepseek-ai/dsh-llm' {
+ 
+ const testToolSignal = new AbortController().signal
+ 
++afterEach(() => { configureTimeouts({}) })
++
+ /**
+  * Behavior suite for the repeat-tool-call guard: chain semantics (identical /
+  * different-tracked / untracked-transparent / per-agent / resets), threshold
+@@ -101,6 +104,55 @@ describe('threshold escalation', () => {
+   })
+ })
+ 
++describe('window and escalation', () => {
++  it('catches A/B alternation that never forms a consecutive chain', async () => {
++    const ctx = await harness()
++    const adapter = new MockAdapter([
++      ...Array.from({ length: 20 }, (_, i) => toolCallResponse(`c${i}`, 'probe', { q: i % 2 })),
++      textResponse('done'),
++    ])
++    ctx.llm.registerAdapter(['mock'], adapter)
++    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
++    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
++    await waitForIdle(ctx, agent)
++
++    const found = reminders(agent)
++    expect(found.some(entry => entry.text.includes('calls_in_window'))).toBe(true)
++    expect(found.some(entry => entry.text.includes('consecutive_calls'))).toBe(false)
++  })
++
++  it('keeps reminding after the largest consecutive threshold instead of going silent', async () => {
++    const ctx = await harness()
++    const adapter = new MockAdapter([
++      ...Array.from({ length: 30 }, (_, i) => toolCallResponse(`c${i}`, 'probe', { q: 'same' })),
++      textResponse('done'),
++    ])
++    ctx.llm.registerAdapter(['mock'], adapter)
++    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
++    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
++    await waitForIdle(ctx, agent)
++
++    const found = reminders(agent)
++    expect(found.some(entry => entry.text.includes('Still repeating'))).toBe(true)
++  })
++
++  it('blocks a repeated call only when the bottom bar enables it', async () => {
++    configureTimeouts({ 'guard.repeat.block': 1, 'guard.repeat.blockAfter': 12 })
++    const ctx = await harness()
++    const adapter = new MockAdapter([
++      ...Array.from({ length: 12 }, (_, i) => toolCallResponse(`c${i}`, 'probe', { q: 'same' })),
++      textResponse('done'),
++    ])
++    ctx.llm.registerAdapter(['mock'], adapter)
++    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
++    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
++    await waitForIdle(ctx, agent)
++
++    const found = reminders(agent)
++    expect(found.some(entry => entry.text.includes('Blocked repeated tool call'))).toBe(true)
++  })
++})
++
+ describe('chain semantics', () => {
+   it('caps the detailed reminder arguments at argumentsPreviewChars (detection still keys on the full string)', async () => {
+     const ctx = await harness({ thresholds: [2, 3], argumentsPreviewChars: 24 })
+diff --git a/packages/guard/repeat-tool-reminder/tsconfig.json b/packages/guard/repeat-tool-reminder/tsconfig.json
+index 66439bcd5f404cf0fba436e59a7d42eb37be6b39..cd8cecc7d76154258decf748878b423425d513a2 100644
+--- a/packages/guard/repeat-tool-reminder/tsconfig.json
++++ b/packages/guard/repeat-tool-reminder/tsconfig.json
+@@ -25,6 +25,9 @@
+     },
+     {
+       "path": "../../llm/llm"
++    },
++    {
++      "path": "../../util/timeout"
+     }
+   ]
+ }
+diff --git a/packages/jobs/jobs-local/src/index.ts b/packages/jobs/jobs-local/src/index.ts
+index 987ce507d3fe61cdfda662063437b6e7f5543682..9d97bd24e8feaf8a22310719bc47693cf9f8beb9 100644
+--- a/packages/jobs/jobs-local/src/index.ts
++++ b/packages/jobs/jobs-local/src/index.ts
+@@ -95,6 +95,8 @@ interface TrackedJob {
+   detail: string | undefined
+   result: string | undefined
+   startedAt: number
++  /** Last time the producer wrote output, advanced progress, or settled. */
++  updatedAt: number
+   finishedAt: number | undefined
+   /** Reason recorded by {@link JobRegistry.kill}, merged into a `killed` settlement's detail. */
+   killReason: string | undefined
+@@ -253,6 +255,7 @@ export class LocalJobRegistry extends JobRegistry {
+ 
+     let markSettled!: () => void
+     const settled = new Promise<void>((resolve) => { markSettled = resolve })
++    const startedAt = Date.now()
+     const job: TrackedJob = {
+       id,
+       toolCall,
+@@ -268,7 +271,8 @@ export class LocalJobRegistry extends JobRegistry {
+       state,
+       detail: undefined,
+       result: undefined,
+-      startedAt: Date.now(),
++      startedAt,
++      updatedAt: startedAt,
+       finishedAt: undefined,
+       killReason: undefined,
+       settleCause: undefined,
+@@ -438,6 +442,7 @@ export class LocalJobRegistry extends JobRegistry {
+       ...job.state.progress !== undefined ? { progress: job.state.progress } : {},
+       ...job.detail !== undefined ? { detail: job.detail } : {},
+       startedAt: job.startedAt,
++      updatedAt: job.updatedAt,
+       ...job.finishedAt !== undefined ? { finishedAt: job.finishedAt } : {},
+       output: {
+         total: job.ring.total,
+@@ -559,7 +564,10 @@ export class LocalJobRegistry extends JobRegistry {
+       return
+     }
+     if (!ring.append(text, options, this.retainBytes)) return
+-    if (job !== undefined) this.emitOutput(job)
++    if (job !== undefined) {
++      job.updatedAt = Date.now()
++      this.emitOutput(job)
++    }
+   }
+ 
+   /**
+@@ -602,7 +610,10 @@ export class LocalJobRegistry extends JobRegistry {
+       return
+     }
+     state.progress = line
+-    if (job !== undefined) this.emit({ type: 'progress', job: this.view(job) }, job.owner)
++    if (job !== undefined) {
++      job.updatedAt = Date.now()
++      this.emit({ type: 'progress', job: this.view(job) }, job.owner)
++    }
+   }
+ 
+   /**
+@@ -629,6 +640,7 @@ export class LocalJobRegistry extends JobRegistry {
+     job.state.progress = undefined
+     job.result = outcome.result
+     job.finishedAt = Date.now()
++    job.updatedAt = job.finishedAt
+     this.recordSessionEvent(job, {
+       finishedAt: job.finishedAt, status: outcome.status, cause, producerReported,
+       ...job.detail !== undefined ? { detail: job.detail } : {},
+diff --git a/packages/jobs/jobs/src/view.ts b/packages/jobs/jobs/src/view.ts
+index ad778954ab27e35250a19a39b8389146c78f9d4e..de9e8f3ca35c0992b470cc99bce305c73ce018e9 100644
+--- a/packages/jobs/jobs/src/view.ts
++++ b/packages/jobs/jobs/src/view.ts
+@@ -84,6 +84,8 @@ export interface JobView {
+   readonly detail?: string
+   /** Epoch ms when the job was registered. */
+   readonly startedAt: number
++  /** Epoch ms of the last output append, progress update, or settlement. */
++  readonly updatedAt?: number
+   /** Epoch ms when the job settled; absent while live. */
+   readonly finishedAt?: number
+   /**
+diff --git a/packages/jobs/tool-jobs/src/index.ts b/packages/jobs/tool-jobs/src/index.ts
+index 0100e7ca061c4492179e26a3e82cb3d57c40ece6..ebcd945c3cb990a70e110b8693f454d3abd8cab9 100644
+--- a/packages/jobs/tool-jobs/src/index.ts
++++ b/packages/jobs/tool-jobs/src/index.ts
+@@ -42,18 +42,6 @@ export type CompletionDelivery = 'quiet' | 'wakeup'
+ 
+ /** Configures bounded `job_output` waits and completion-notice delivery. */
+ export interface Config {
+-  /**
+-   * Wait duration applied when `job_output` sets `wait` without `timeout_ms`.
+-   * `0` (the default) reads `wait.job.default` from the Night Cruising
+-   * settings; a positive value pins this deployment and overrides the bar.
+-   */
+-  waitTimeoutMs?: number
+-  /**
+-   * Hard cap on any single wait; a larger model-supplied `timeout_ms` is
+-   * clamped down to it. `0` (the default) reads `wait.job.max` from the Night
+-   * Cruising settings.
+-   */
+-  maxWaitTimeoutMs?: number
+   /** Whether a completion opens a turn on an idle owner (default `wakeup`). */
+   completionDelivery?: CompletionDelivery
+   /**
+@@ -75,8 +63,6 @@ export interface Config {
+ }
+ 
+ export const Config: z<Config> = z.object({
+-  waitTimeoutMs: z.number().min(0).default(0),
+-  maxWaitTimeoutMs: z.number().min(0).default(0),
+   completionDelivery: z.union(['quiet', 'wakeup'] as const).default('wakeup'),
+   maxConsecutiveWakes: z.number().min(1),
+   inlineOutputBytes: z.natural().default(2048),
+@@ -97,6 +83,7 @@ const PUBLIC_JOB_SCHEMA = {
+     },
+     detail: { type: 'string' },
+     startedAt: { type: 'integer', required: true },
++    updatedAt: { type: 'integer' },
+     finishedAt: { type: 'integer' },
+   },
+ } as const
+@@ -258,11 +245,6 @@ export function apply(ctx: Context, config: Config): void {
+   // human input. Keyed by the exact Agent, so a same-session replacement
+   // starts with a full budget.
+   const spentWakes = new WeakMap<Agent, number>()
+-  const pinnedWait = config.waitTimeoutMs ?? 0
+-  const pinnedCap = config.maxWaitTimeoutMs ?? 0
+-  if (pinnedWait > 0 && pinnedCap > 0 && pinnedWait > pinnedCap) {
+-    throw new Error(`tool-jobs: waitTimeoutMs (${pinnedWait}) exceeds maxWaitTimeoutMs (${pinnedCap})`)
+-  }
+   // A budget is a count of turns: a fraction never names a turn, and
+   // `Infinity` would spell an "unbounded" that omitting the field already means.
+   if (wakeBudget !== undefined && !Number.isSafeInteger(wakeBudget)) {
+@@ -474,12 +456,11 @@ export function apply(ctx: Context, config: Config): void {
+       }
+       const jobs = ctx.jobs
+       const agent = exec.agent
+-      const waitDefault = config.waitTimeoutMs !== undefined && config.waitTimeoutMs > 0
+-        ? config.waitTimeoutMs
+-        : timeoutSetting('wait.job.default', 30_000)
+-      const waitCap = config.maxWaitTimeoutMs !== undefined && config.maxWaitTimeoutMs > 0
+-        ? config.maxWaitTimeoutMs
+-        : timeoutSetting('wait.job.max', 600_000)
++      // The Night Cruising bar is the only source; no deployment config can
++      // pin a different wait. Values are resolved per call so a save applies
++      // without restarting the Host.
++      const waitDefault = timeoutSetting('wait.job.default', 30_000)
++      const waitCap = timeoutSetting('wait.job.max', 600_000)
+       const boundedDefault = Math.min(waitDefault, waitCap)
+       // A wait this execution ends on next-step input claims the read that
+       // follows it: the claim stays open until that read commits, so a
+diff --git a/packages/jobs/tool-jobs/src/render.ts b/packages/jobs/tool-jobs/src/render.ts
+index b95eb4393b8765d849c98fd666f72b1f29e29d18..80fefcbea2a2e60ea48e3c5a06ed79775a454bb1 100644
+--- a/packages/jobs/tool-jobs/src/render.ts
++++ b/packages/jobs/tool-jobs/src/render.ts
+@@ -7,6 +7,7 @@
+  */
+ 
+ import type { JobChunk, JobView } from '@deepseek-ai/dsh-jobs/view'
++import { settingNumber } from '@deepseek-ai/dsh-timeout'
+ 
+ /** Job state safe for model-authored programs; ownership and offsets are omitted. */
+ export interface PublicJobSnapshot {
+@@ -17,6 +18,8 @@ export interface PublicJobSnapshot {
+   /** The live progress line while running, the terminal reason once settled. */
+   detail?: string
+   startedAt: number
++  /** Last output/progress/settlement time; absent on older projections. */
++  updatedAt?: number
+   finishedAt?: number
+ }
+ 
+@@ -44,19 +47,54 @@ export function publicJob(job: JobView): PublicJobSnapshot {
+     status: job.status,
+     ...detail !== undefined ? { detail } : {},
+     startedAt: job.startedAt,
++    ...job.updatedAt !== undefined ? { updatedAt: job.updatedAt } : {},
+     ...job.finishedAt !== undefined ? { finishedAt: job.finishedAt } : {},
+   }
+ }
+ 
+ /**
+- * Render generic status with optional detail.
++ * Render a compact elapsed duration: `45s`, `2h05m`, `3d2h`.
++ * @param ms - non-negative elapsed milliseconds.
++ * @returns the model-facing duration.
++ */
++function elapsed(ms: number): string {
++  const seconds = Math.max(0, Math.floor(ms / 1000))
++  if (seconds < 60) return `${seconds}s`
++  const minutes = Math.floor(seconds / 60)
++  if (minutes < 60) return `${minutes}m`
++  const hours = Math.floor(minutes / 60)
++  if (hours < 24) return `${hours}h${String(minutes % 60).padStart(2, '0')}m`
++  return `${Math.floor(hours / 24)}d${hours % 24}h`
++}
++
++/**
++ * Render generic status with optional detail and, for a long-running live job,
++ * its elapsed and idle durations. Fast jobs keep the original short line; the
++ * timing appears only after the configured `job.status.afterMs` threshold
++ * (default 5 minutes), so a loop that silently spins for hours becomes
++ * visible on the very read that used to say only `running`.
++ *
+  * @param snapshot - job state to render.
++ * @param now - current epoch ms; injectable for tests.
+  * @returns a bracketed status line.
+  */
+-export function statusLine(snapshot: Pick<PublicJobSnapshot, 'status' | 'detail'>): string {
+-  return snapshot.detail !== undefined
++export function statusLine(
++  snapshot: Pick<PublicJobSnapshot, 'status' | 'detail'> & Partial<Pick<PublicJobSnapshot, 'startedAt' | 'updatedAt'>>,
++  now = Date.now(),
++): string {
++  const base = snapshot.detail !== undefined
+     ? `[status: ${snapshot.status}, ${snapshot.detail}]`
+     : `[status: ${snapshot.status}]`
++  if (snapshot.status !== 'running' && snapshot.status !== 'stopping') return base
++  if (snapshot.startedAt === undefined) return base
++  const threshold = Math.max(0, settingNumber('job.status.afterMs', 300_000))
++  const running = Math.max(0, now - snapshot.startedAt)
++  const idle = snapshot.updatedAt === undefined ? 0 : Math.max(0, now - snapshot.updatedAt)
++  if (running < threshold && idle < threshold) return base
++  const timing = `${elapsed(running)}, idle ${elapsed(idle)}`
++  return snapshot.detail !== undefined
++    ? `[status: ${snapshot.status} ${timing}, ${snapshot.detail}]`
++    : `[status: ${snapshot.status} ${timing}]`
+ }
+ 
+ /**
+diff --git a/packages/jobs/tool-jobs/tests/tool-jobs.spec.ts b/packages/jobs/tool-jobs/tests/tool-jobs.spec.ts
+index 1de8436b2848496b5704171294a17a404b2565c1..292fa11d7a7d3601c616017dd155a5a64ae6c960 100644
+--- a/packages/jobs/tool-jobs/tests/tool-jobs.spec.ts
++++ b/packages/jobs/tool-jobs/tests/tool-jobs.spec.ts
+@@ -1,6 +1,6 @@
+ import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+ import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+-import { describe, expect, it, vi } from 'vitest'
++import { afterEach, describe, expect, it, vi } from 'vitest'
+ import { Context } from '@deepseek-ai/cordis'
+ import { ToolCallId } from '@deepseek-ai/dsh-llm'
+ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+@@ -14,6 +14,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
+ import { SessionId } from '@deepseek-ai/dsh-session'
+ import { bindScopeParent, createScope, scopeOf } from '@deepseek-ai/dsh-scope'
+ import { JobId } from '@deepseek-ai/dsh-jobs'
++import { configureTimeouts } from '@deepseek-ai/dsh-timeout'
+ import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
+ import type { JobAppendOptions, JobHandle, JobHooks, JobOutcome, JobOutputSource, JobSpec, JobView } from '@deepseek-ai/dsh-jobs'
+ import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs'
+@@ -27,6 +28,8 @@ declare module '@deepseek-ai/dsh-jobs' {
+ 
+ const testToolSignal = new AbortController().signal
+ 
++afterEach(() => { configureTimeouts({}) })
++
+ const agentRegistryDisposers = new WeakMap<Agent, () => Promise<void>>()
+ const agentScopeFibers = new WeakMap<Agent, { dispose: () => Promise<void> }>()
+ /** Mutable fake next-step inbox per agent, so a spec can queue input without an unknown assertion. */
+@@ -212,18 +215,6 @@ describe('tool-jobs setup', () => {
+     expect(text(await call(ctx, 'job_list', {}))).toBe(`${id} [bash] completed — sleep 60`)
+   })
+ 
+-  it('rejects a config whose default wait exceeds the cap', async () => {
+-    const ctx = new Context()
+-    await ctx.plugin(SystemPrompt)
+-    await ctx.plugin(ToolRuntime)
+-    await ctx.plugin(SessionProjectionRegistry)
+-    await ctx.plugin(NativeToolExecutor)
+-    await ctx.plugin(AgentRegistry)
+-    await ctx.plugin(LocalJobRegistry)
+-    await expect(ctx.plugin(ToolJobs, { waitTimeoutMs: 100, maxWaitTimeoutMs: 50 }))
+-      .rejects.toThrow('waitTimeoutMs (100) exceeds maxWaitTimeoutMs (50)')
+-  })
+-
+   it('defaults delivery to unbounded wakeup and rejects an unknown lane', () => {
+     expect(ToolJobs.Config({}).completionDelivery).toBe('wakeup')
+     expect(ToolJobs.Config({}).maxConsecutiveWakes).toBeUndefined()
+@@ -261,6 +252,16 @@ describe('tool-jobs setup', () => {
+     expect(statusLine({ status: 'completed', detail: 'exit code: 0' })).toBe('[status: completed, exit code: 0]')
+   })
+ 
++  it('adds running and idle timing to a long live job only', () => {
++    const now = 1_000_000_000
++    expect(statusLine({ status: 'running', startedAt: now - 2 * 3_600_000, updatedAt: now - 3_600_000 }, now))
++      .toBe('[status: running 2h00m, idle 1h00m]')
++    expect(statusLine({ status: 'running', startedAt: now - 60_000, updatedAt: now - 60_000 }, now))
++      .toBe('[status: running]')
++    expect(statusLine({ status: 'completed', detail: 'exit code: 0', startedAt: now - 2 * 3_600_000, updatedAt: now - 3_600_000 }, now))
++      .toBe('[status: completed, exit code: 0]')
++  })
++
+   it('projects the public job: live progress or terminal detail, never ownership or offsets', () => {
+     const live: JobView = {
+       id: JobId('bash-1'), kind: 'bash', label: 'x', owner: SessionId('sess-1'), outputLimitBytes: 8,
+@@ -558,7 +559,8 @@ describe('job_output', () => {
+   })
+ 
+   it('wait: true times out against the configured cap and leaves the job alive', async () => {
+-    const { ctx } = await setup({ waitTimeoutMs: 10, maxWaitTimeoutMs: 20 })
++    configureTimeouts({ 'wait.job.default': 10, 'wait.job.max': 20 })
++    const { ctx } = await setup()
+     ctx.jobs.start(producer().spec)
+ 
+     // A model-supplied timeout far above the cap is clamped: this returns
+@@ -1124,7 +1126,8 @@ describe('completion notices', () => {
+   })
+ 
+   it('a timed-out wait withdraws only its own claim; a concurrent wait keeps the settlement covered', async () => {
+-    const { ctx } = await setup({ waitTimeoutMs: 10, maxWaitTimeoutMs: 1000 })
++    configureTimeouts({ 'wait.job.default': 10, 'wait.job.max': 1000 })
++    const { ctx } = await setup()
+     const inject = vi.fn()
+     const owner = await fakeAgent(ctx, 'sess-1', { inject })
+     const p = producer({ owner: owner.id })
+@@ -1139,7 +1142,8 @@ describe('completion notices', () => {
+   })
+ 
+   it('withdraws the wait claim when the wait times out, so the later settlement still notifies', async () => {
+-    const { ctx } = await setup({ waitTimeoutMs: 10, maxWaitTimeoutMs: 20 })
++    configureTimeouts({ 'wait.job.default': 10, 'wait.job.max': 20 })
++    const { ctx } = await setup()
+     const inject = vi.fn()
+     const owner = await fakeAgent(ctx, 'sess-1', { inject })
+     const p = producer({ owner: owner.id })
+diff --git a/packages/util/timeout/src/index.ts b/packages/util/timeout/src/index.ts
+index 1e0609381dd48bbb028c716a1f3640cba622bae0..ab5169721136a15078592db31426f027e0b1097d 100644
+--- a/packages/util/timeout/src/index.ts
++++ b/packages/util/timeout/src/index.ts
+@@ -65,6 +65,28 @@ export function timeoutSetting(key: string, fallback: number): number {
+   return value === undefined ? fallback : value
+ }
+ 
++/**
++ * Publish the complete Night Cruising settings map. A numeric setting may be a
++ * duration or a count; both are non-negative numbers validated by the settings
++ * surface. This is the general spelling of {@link configureTimeouts}.
++ *
++ * @param values - Settings key to numeric value.
++ */
++export function configureSettings(values: Readonly<Record<string, number>>): void {
++  configureTimeouts(values)
++}
++
++/**
++ * Read one configured numeric setting that is not necessarily a duration.
++ *
++ * @param key - Settings key (for example `guard.repeat.window`).
++ * @param fallback - Value used when the key is absent.
++ * @returns The configured number, or `fallback`.
++ */
++export function settingNumber(key: string, fallback: number): number {
++  return timeoutSetting(key, fallback)
++}
++
+ /**
+  * Capability codes whose local deadline follows a settings entry. Model
+  * request codes are deliberately absent: the desktop policy keeps model
+diff --git a/packages/workflow/tool-workflow/src/record.ts b/packages/workflow/tool-workflow/src/record.ts
+index 48c5e6ba68c5ca02e289412492a6e09c1088fe03..9a78a07b494c288ddb84f1ebc138d7f80baba681 100644
+--- a/packages/workflow/tool-workflow/src/record.ts
++++ b/packages/workflow/tool-workflow/src/record.ts
+@@ -49,6 +49,12 @@ export function createWorkflowRecordMirror(ctx: Context): WorkflowRecordMirror {
+   ctx.on('workflow/agent-start', (info, agent) => {
+     active.get(info.id)?.append(`agent #${agent.seq} ${agent.label} started\n`, { channel: 'log' })
+   })
++  ctx.on('workflow/agent-progress', (info, agent) => {
++    const job = active.get(info.id)
++    if (job === undefined) return
++    const prefix = agent.phase === undefined ? '' : `${agent.phase} · `
++    job.updateProgress(`${prefix}step ${agent.step}`)
++  })
+   ctx.on('workflow/agent-end', (info, agent) => {
+     active.get(info.id)?.append(`agent #${agent.seq} ${agent.outcome}\n`, { channel: 'log' })
+   })
+diff --git a/packages/workflow/tool-workflow/tests/tool-workflow.spec.ts b/packages/workflow/tool-workflow/tests/tool-workflow.spec.ts
+index 1502b428cd3e25021da6071bfdfd466855921b8b..ef2d2a81be4808bff9b1292488edd2cde0a7c718 100644
+--- a/packages/workflow/tool-workflow/tests/tool-workflow.spec.ts
++++ b/packages/workflow/tool-workflow/tests/tool-workflow.spec.ts
+@@ -78,6 +78,13 @@ class StubEngine extends WorkflowEngine {
+     }, agent)
+   }
+ 
++  agentProgress(id: WorkflowRunIdType, agent: WorkflowAgentInfo & { step: number }): void {
++    this.emitWorkflowEvent('workflow/agent-progress', {
++      id,
++      meta: this.requests[Number(String(id).slice(4)) - 1]!.meta,
++    }, agent)
++  }
++
+   agentEnd(id: WorkflowRunIdType, agent: WorkflowAgentEndInfo): void {
+     this.emitWorkflowEvent('workflow/agent-end', {
+       id,
+@@ -497,9 +504,11 @@ describe('dsh-tool-workflow', () => {
+       engine.phase(runId, 'Scan')
+       engine.logLine(runId, '3/10 found')
+       engine.agentStart(runId, { seq: 1, label: 'scan a.ts', phase: 'Scan', childId: SessionId('child-1') })
++      engine.agentProgress(runId, { seq: 1, label: 'scan a.ts', phase: 'Scan', childId: SessionId('child-1'), step: 12 })
++      expect(jobs.get(job.id, parent.id).progress).toBe('Scan · step 12')
+       engine.agentEnd(runId, { seq: 1, label: 'scan a.ts', phase: 'Scan', childId: SessionId('child-1'), outcome: 'completed' })
+       expect(retained(ctx, job.id, parent)).toBe('▸ Scan\n3/10 found\nagent #1 scan a.ts started\nagent #1 completed\n')
+-      expect(jobs.get(job.id, parent.id).progress).toBe('Scan')
++      expect(jobs.get(job.id, parent.id).progress).toBe('Scan · step 12')
+       // Narration is observer-only: every chunk rides the log channel, so the
+       // model's job_output before settlement sees status only.
+       expect(jobs.readAt(job.id, 0, parent.id).chunks.map(chunk => chunk.channel)).toEqual(['log', 'log', 'log', 'log'])
+@@ -510,7 +519,7 @@ describe('dsh-tool-workflow', () => {
+         arguments: { job_id: jobId },
+         agent: parent,
+       })
+-      expect((early.content[0] as { text: string }).text).toBe('(no new output)\n[status: running, Scan]')
++      expect((early.content[0] as { text: string }).text).toBe('(no new output)\n[status: running, Scan · step 12]')
+ 
+       engine.settleRun(runId, { value: { findings: 2 }, stopReason: 'completed', agentsStarted: 4 })
+       await vi.waitFor(() => { expect(jobs.get(job.id, parent.id).status).toBe('completed') })
+diff --git a/packages/workflow/workflow-ptc/package.json b/packages/workflow/workflow-ptc/package.json
+index 02effec21ed831e1931d101b487ee71b40cbf374..8b9d4cbe859e5bc713bef1c49d656c59378f596a 100644
+--- a/packages/workflow/workflow-ptc/package.json
++++ b/packages/workflow/workflow-ptc/package.json
+@@ -46,6 +46,7 @@
+   },
+   "dependencies": {
+     "@deepseek-ai/dsh-brand": "workspace:*",
++    "@deepseek-ai/dsh-timeout": "workspace:*",
+     "@deepseek-ai/dsh-util-values": "workspace:*",
+     "@deepseek-ai/schemastery": "workspace:~"
+   },
+diff --git a/packages/workflow/workflow-ptc/src/index.ts b/packages/workflow/workflow-ptc/src/index.ts
+index 631862542ff459b183fcfa9044c740968241cc86..494ea54e1766d85d40f6220fe921f9a9584c97ea 100644
+--- a/packages/workflow/workflow-ptc/src/index.ts
++++ b/packages/workflow/workflow-ptc/src/index.ts
+@@ -12,6 +12,7 @@ import type {} from '@deepseek-ai/dsh-ptc-runtime'
+ import type {} from '@deepseek-ai/dsh-sandbox-policy'
+ import type {} from '@deepseek-ai/dsh-working-directory'
+ import z from '@deepseek-ai/schemastery'
++import { settingNumber } from '@deepseek-ai/dsh-timeout'
+ import WorkflowEngine, { WorkflowError, WorkflowRunId } from '@deepseek-ai/dsh-workflow'
+ import type { WorkflowRun, WorkflowRunInfo, WorkflowStartRequest } from '@deepseek-ai/dsh-workflow'
+ import { PtcWorkflowRun } from './host.ts'
+@@ -155,6 +156,7 @@ class PtcWorkflowEngine extends WorkflowEngine {
+     // Captured service handles keep a holder-owned run usable after engine unload.
+     const runCtx = this.ctx
+     const subagents = runCtx.subagents
++    const progressWatchers = new Map<number, () => void>()
+     const run = new PtcWorkflowRun(
+       runCtx,
+       subagents,
+@@ -168,8 +170,30 @@ class PtcWorkflowEngine extends WorkflowEngine {
+       {
+         phase: (title) => { this.emitWorkflowEvent('workflow/phase', info, title) },
+         log: (message) => { this.emitWorkflowEvent('workflow/log', info, message) },
+-        agentStart: (agent) => { this.emitWorkflowEvent('workflow/agent-start', info, agent) },
+-        agentEnd: (agent) => { this.emitWorkflowEvent('workflow/agent-end', info, agent) },
++        agentStart: (agent) => {
++          this.emitWorkflowEvent('workflow/agent-start', info, agent)
++          // One child heartbeat per agent. The first step always reports;
++          // later steps are throttled by the Night Cruising setting so a long
++          // child refreshes the job's progress line without flooding the ring.
++          let last = 0
++          const off = runCtx.on('agent/pre-step', ({ agent: child, step }, next) => {
++            if (child.id === agent.childId) {
++              const interval = Math.max(1_000, Math.floor(settingNumber('workflow.progress.interval', 60_000)))
++              const now = Date.now()
++              if (step === 1 || now - last >= interval) {
++                last = now
++                this.emitWorkflowEvent('workflow/agent-progress', info, { ...agent, step })
++              }
++            }
++            return next()
++          })
++          progressWatchers.set(agent.seq, off)
++        },
++        agentEnd: (agent) => {
++          progressWatchers.get(agent.seq)?.()
++          progressWatchers.delete(agent.seq)
++          this.emitWorkflowEvent('workflow/agent-end', info, agent)
++        },
+       },
+       request.signal,
+     )
+@@ -178,6 +202,8 @@ class PtcWorkflowEngine extends WorkflowEngine {
+     // `workflow/end` fires as the (never-rejecting) result settles, with the
+     // outcome DATA only — the value stays with the run's holder.
+     void run.result.then((settled) => {
++      for (const off of progressWatchers.values()) off()
++      progressWatchers.clear()
+       this.emitWorkflowEvent('workflow/end', info, {
+         stopReason: settled.stopReason,
+         ...settled.error !== undefined ? { error: settled.error } : {},
+diff --git a/packages/workflow/workflow-ptc/tsconfig.json b/packages/workflow/workflow-ptc/tsconfig.json
+index aaaa816004774cca74aa0de1ce1cb686cef7730e..890743aef167d4d2622872928416c708819e8270 100644
+--- a/packages/workflow/workflow-ptc/tsconfig.json
++++ b/packages/workflow/workflow-ptc/tsconfig.json
+@@ -52,6 +52,9 @@
+     },
+     {
+       "path": "../../session/working-directory"
++    },
++    {
++      "path": "../../util/timeout"
+     }
+   ]
+ }
+diff --git a/packages/workflow/workflow/src/index.ts b/packages/workflow/workflow/src/index.ts
+index b78a9729770f3a68cf57877209e8b5d33291d0c0..d191ab12421d866f8b2d02cc48ec69527c4df380 100644
+--- a/packages/workflow/workflow/src/index.ts
++++ b/packages/workflow/workflow/src/index.ts
+@@ -9,6 +9,7 @@ import { HarnessError } from '@deepseek-ai/dsh-llm'
+ import type {
+   WorkflowAgentEndInfo,
+   WorkflowAgentInfo,
++  WorkflowAgentProgressInfo,
+   WorkflowResultInfo,
+   WorkflowRunInfo,
+ } from './types.ts'
+@@ -19,6 +20,7 @@ export type {
+   WorkflowAgentEndInfo,
+   WorkflowAgentInfo,
+   WorkflowAgentOutcome,
++  WorkflowAgentProgressInfo,
+   WorkflowMeta,
+   WorkflowPhase,
+   WorkflowResult,
+@@ -66,6 +68,15 @@ declare module '@deepseek-ai/cordis' {
+      * @mode emit
+      */
+     'workflow/agent-start'(info: WorkflowRunInfo, agent: WorkflowAgentInfo): void
++    /**
++     * One running `agent()` child reached another step. Throttled by the
++     * `workflow.progress.interval` setting; observer-only, no execution
++     * semantics.
++     * @param info - the run's identity snapshot.
++     * @param agent - the call identity plus its current step.
++     * @mode emit
++     */
++    'workflow/agent-progress'(info: WorkflowRunInfo, agent: WorkflowAgentProgressInfo): void
+     /**
+      * One `agent()` call settled (clean result, child failure, or run
+      * cancellation). Paired with {@link Events['workflow/agent-start']} by
+@@ -96,6 +107,7 @@ export type WorkflowEventName =
+   | 'workflow/phase'
+   | 'workflow/log'
+   | 'workflow/agent-start'
++  | 'workflow/agent-progress'
+   | 'workflow/agent-end'
+   | 'workflow/end'
+ 
+diff --git a/packages/workflow/workflow/src/types.ts b/packages/workflow/workflow/src/types.ts
+index a08d3bbeeb4097e623bb0f06fc732267255ebbff..c517b4d5d5dd69c0d2624110c4c949410def3e6a 100644
+--- a/packages/workflow/workflow/src/types.ts
++++ b/packages/workflow/workflow/src/types.ts
+@@ -106,6 +106,12 @@ export interface WorkflowAgentInfo {
+   childId: SessionId
+ }
+ 
++/** Live step heartbeat for one running `agent()` child (the `workflow/agent-progress` payload). */
++export interface WorkflowAgentProgressInfo extends WorkflowAgentInfo {
++  /** The child's current agent-loop step, 1-based. */
++  step: number
++}
++
+ /** How one `agent()` call settled: clean result, child failure (script sees `null`), or run cancellation. */
+ export type WorkflowAgentOutcome = 'completed' | 'failed' | 'cancelled'
+ 
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 4a1cbc1ee672c0c56f3e3f570d29b9a25439097e..c60049f8d36ac7187d33fa9081d4f052d752564f 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -12833,6 +12833,9 @@ importers:
+       '@deepseek-ai/dsh-session-projection':
+         specifier: workspace:*
+         version: link:../../session/session-projection
++      '@deepseek-ai/dsh-timeout':
++        specifier: workspace:*
++        version: link:../../util/timeout
+       '@deepseek-ai/dsh-tool-testkit':
+         specifier: workspace:*
+         version: link:../../test-support/tool-testkit
+@@ -18395,6 +18398,9 @@ importers:
+       '@deepseek-ai/dsh-brand':
+         specifier: workspace:*
+         version: link:../../util/brand
++      '@deepseek-ai/dsh-timeout':
++        specifier: workspace:*
++        version: link:../../util/timeout
+       '@deepseek-ai/dsh-util-values':
+         specifier: workspace:*
+         version: link:../../util/values

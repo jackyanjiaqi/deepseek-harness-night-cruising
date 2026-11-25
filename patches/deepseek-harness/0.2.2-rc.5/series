@@ -10,3 +10,5 @@
 009-linux-deb-appimage.patch
 010-linux-icon.dir.patch
 011-view-selection.patch
+012-night-cruising-timeouts.dir.patch
+013-bottom-settings-heartbeat-guard.patch

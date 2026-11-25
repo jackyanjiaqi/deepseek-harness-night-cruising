@@ -7,26 +7,14 @@ __pycache__/
 /site/data/releases.json
 /site/data/*.tmp
 /site/assets/night-ride.jpg
-# BEGIN sync-agents
-# source "../shared-agent-config"
-/.agents/interview
-/.agents/sdd-brainstorming
-/.agents/sdd-executing-plans
-/.agents/sdd-fixing-bugs
-/.agents/sdd-global-change
-/.agents/sdd-global-read
-/.agents/sdd-plan-human-verify
-/.agents/sdd-product-prd
-/.agents/sdd-skeleton
-/.agents/sdd-start-human-verify
-/.agents/sdd-test-cases
-/.agents/sdd-writing-plans
-/.agents/strict-file-targets
-/AGENTS.md
-/docs/AGENTS.md
-/docs/daily/YYYYMM月归档说明.md
-# END sync-agents
 /plugins/*/node_modules/
 /plugins/*/.tmp/
 /plugins/*/spike/.tmp/
 /plugins/*/*.tgz
+# BEGIN sync-agents
+# source "../shared-agent-config"
+/.agents
+/AGENTS.md
+/docs/AGENTS.md
+/docs/daily/YYYYMM月归档说明.md
+# END sync-agents

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="DSH" />
+    <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" media="(prefers-color-scheme: light)" />
+    <title>DSH Local Build</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <footer class="night-cruise" aria-label="夜间巡航控制栏">
+      <section class="night-timeouts" id="night-timeouts" hidden aria-label="超时设置">
+        <header class="night-timeouts-head">
+          <div class="night-timeouts-title">
+            <strong>超时设置</strong>
+            <span id="night-timeouts-note">修改立即生效 · 0 表示不限制</span>
+          </div>
+          <label class="night-timeouts-filter">
+            <span class="night-timeouts-sr">筛选超时项</span>
+            <input id="night-timeouts-filter" type="search" placeholder="筛选超时项…" autocomplete="off" />
+          </label>
+          <button id="night-timeouts-close" class="night-timeouts-close" type="button">收起</button>
+        </header>
+        <div class="night-timeouts-groups" id="night-timeouts-groups"></div>
+        <footer class="night-timeouts-foot">
+          <span id="night-timeouts-status" role="status" aria-live="polite"></span>
+          <div class="night-timeouts-actions">
+            <button id="night-timeouts-reset" type="button">恢复默认</button>
+            <button id="night-timeouts-save" class="night-timeouts-save" type="button">保存</button>
+          </div>
+        </footer>
+      </section>
+      <div class="night-cruise-bar">
+        <strong lang="zh-CN">夜间巡航</strong>
+        <button id="night-play" type="button" aria-label="播放或暂停夜间巡航" aria-pressed="false">播放音乐</button>
+        <span class="night-cruise-spacer"></span>
+        <button
+          id="night-timeouts-toggle"
+          class="night-timeouts-toggle"
+          type="button"
+          aria-expanded="false"
+          aria-controls="night-timeouts"
+          hidden
+        >
+          <span class="night-timeouts-dot" aria-hidden="true"></span>
+          <span id="night-timeouts-summary">超时</span>
+        </button>
+        <audio id="night-track" loop preload="none"></audio>
+      </div>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

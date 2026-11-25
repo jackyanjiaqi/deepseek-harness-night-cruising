@@ -1,6 +1,7 @@
 // All mutations target the disposable checkout, never the submodule.
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { applyPatch } from './dir-patch.mjs'
 import { checksum } from './release.mjs'
@@ -23,6 +24,50 @@ function pnpm(cwd, args, env) {
   // The installed pnpm CLI provides a native shim on Windows.
   if (process.platform === 'win32') run(cwd, 'cmd.exe', ['/d', '/c', 'pnpm', ...args], env)
   else run(cwd, 'pnpm', args, env)
+}
+
+/**
+ * Runtime payloads shipped by an installed DeepSeek Harness app, nearest first.
+ * A development launch can reuse one instead of downloading Node, Python and
+ * every wheel again.
+ * @returns Candidate `primary-runtime` directories for this platform.
+ */
+function installedRuntimeCandidates() {
+  const home = homedir()
+  if (process.platform === 'darwin') return [
+    '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime',
+    join(home, 'Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime'),
+  ]
+  if (process.platform === 'win32') return [
+    join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'Programs', 'DeepSeek Harness', 'resources', 'runtime', 'primary-runtime'),
+    join(process.env.ProgramFiles ?? 'C:\\Program Files', 'DeepSeek Harness', 'resources', 'runtime', 'primary-runtime'),
+  ]
+  return [
+    '/opt/DeepSeek Harness/resources/runtime/primary-runtime',
+    '/usr/lib/deepseek-harness/resources/runtime/primary-runtime',
+  ]
+}
+
+/**
+ * Environment defaults for an unpackaged launch: reuse the installed app's
+ * runtime when the caller did not select one, and keep the development
+ * instance on its own Electron userData so it does not fight the installed
+ * app's single-instance lock or browser cookies.
+ * @returns Overrides merged over the current process environment.
+ */
+function developmentEnvironment() {
+  const env = {}
+  if (!process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR) {
+    const runtime = installedRuntimeCandidates().find(path => existsSync(join(path, 'runtime.json')))
+    if (runtime !== undefined) {
+      env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR = runtime
+      console.log('start: reusing installed primary runtime ' + runtime)
+    }
+  }
+  if (!process.env.DSH_DESKTOP_USER_DATA_DIR) {
+    env.DSH_DESKTOP_USER_DATA_DIR = join(homedir(), '.dsh', 'dev-desktop-user-data')
+  }
+  return env
 }
 function prepare() {
   if (upstream === join(root, settings.library) && git(upstream, 'rev-parse', 'HEAD') !== base)
@@ -75,7 +120,7 @@ if (action === 'source') {
   }
   if (['dev','start'].includes(action)) {
     delete process.env.ELECTRON_RUN_AS_NODE
-    pnpm(desktop, ['run','start'])
+    pnpm(desktop, ['run','start'], developmentEnvironment())
   }
   if (action === 'release') {
     if (git(work, 'ls-files', '--others', '--exclude-standard') || git(work, 'diff', '--name-only') || git(work, 'write-tree') !== readFileSync(join(work, '.git/night-tree'),'utf8'))

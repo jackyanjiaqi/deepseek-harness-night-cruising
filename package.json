@@ -1,10 +1,14 @@
 {
   "name": "deepseek-harness-night-cruising",
-  "version": "0.2.2-rc.5",
+  "version": "0.2.2-rc.5-20261126v2",
   "private": false,
-  "submodule-paths":{
-    "deepseek-harness": [ "../deepseek-harness" ],
-    "shared-agent-config": [ "../shared-agent-config" ]
+  "submodule-paths": {
+    "deepseek-harness": [
+      "../deepseek-harness"
+    ],
+    "shared-agent-config": [
+      "../shared-agent-config"
+    ]
   },
   "scripts": {
     "site:test": "node --test scripts/site-release.test.mjs",

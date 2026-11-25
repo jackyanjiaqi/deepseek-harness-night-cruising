@@ -1,7 +1,8 @@
 import {
-  closeSync, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync,
-  renameSync, symlinkSync, unlinkSync, writeFileSync,
+  closeSync, cpSync, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync,
+  renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { root, submodulePath } from '../patches/tools/series.mjs'
 
@@ -12,6 +13,8 @@ const begin = '# BEGIN sync-agents'
 const end = '# END sync-agents'
 const sourcePrefix = '# source '
 const reserved = new Set(['.gitignore', '.linkignore', '.gitignore.sync-agents.lock'])
+const partsBegin = '<!-- BEGIN sync-agents parts -->'
+const partsEnd = '<!-- END sync-agents parts -->'
 
 function portable(path) {
   return path.split(sep).join('/')
@@ -127,7 +130,99 @@ function sync(links) {
     }
   }
   visit(source, project)
+  mergeParts(links)
   console.log('新建 ' + created + ' 个软链接，共登记 ' + links.size + ' 个。')
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function numberedParts(target) {
+  const name = target.split(sep).at(-1)
+  const dot = name.lastIndexOf('.')
+  const extension = dot > 0 ? name.slice(dot) : ''
+  const stem = extension ? name.slice(0, -extension.length) : name
+  const pattern = new RegExp('^' + escapeRegExp(stem) + '\\.part\\.(\\d+)' + escapeRegExp(extension) + '$')
+  const parts = readdirSync(dirname(target), { withFileTypes: true }).flatMap(entry => {
+    const match = pattern.exec(entry.name)
+    if (!match) return []
+    const start = BigInt(match[1])
+    return [{ path: join(dirname(target), entry.name), entry, start, name: entry.name }]
+  }).sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.name.localeCompare(b.name))
+  for (let index = 0; index < parts.length; index++) {
+    if (parts[index].start !== BigInt(index)) throw Error('agent 配置分段必须从 0 开始连续编号：' + parts[index].name)
+  }
+  return parts
+}
+
+function overlayDirectory(from, to) {
+  mkdirSync(to, { recursive: true })
+  for (const entry of readdirSync(from, { withFileTypes: true })) {
+    if (entry.name.toLowerCase() === '.git') continue
+    const input = join(from, entry.name)
+    const output = join(to, entry.name)
+    const existing = lstatSync(output, { throwIfNoEntry: false })
+    if (entry.isDirectory()) {
+      if (existing && !existing.isDirectory()) rmSync(output, { recursive: true, force: true })
+      overlayDirectory(input, output)
+    } else if (entry.isFile()) {
+      mkdirSync(dirname(output), { recursive: true })
+      if (existing?.isDirectory()) rmSync(output, { recursive: true, force: true })
+      cpSync(input, output, { force: true })
+    }
+  }
+}
+
+function mergeParts(links) {
+  for (const path of links.keys()) {
+    if (!sameLink(path, links.get(path))) continue
+    const target = join(project, path)
+    const stat = lstatSync(target, { throwIfNoEntry: false })
+    if (!stat?.isSymbolicLink()) continue
+    const parts = numberedParts(target)
+    const resolved = resolve(dirname(target), readlinkSync(target))
+    const sourceStat = lstatSync(resolved)
+    if (sourceStat.isDirectory()) {
+      for (const part of parts) {
+        if (!part.entry.isDirectory()) throw Error('agent 配置目录分段必须是目录：' + part.name)
+        overlayDirectory(part.path, resolved)
+      }
+      continue
+    }
+    if (!sourceStat.isFile()) continue
+    if (parts.some(part => !part.entry.isFile())) throw Error('agent 配置文件分段必须是普通文件：' + path)
+    const existing = readFileSync(resolved, 'utf8')
+    const cleanBase = existing.replace(new RegExp('(?:\\r?\\n)?' + escapeRegExp(partsBegin) + '[\\s\\S]*?' + escapeRegExp(partsEnd) + '(?:\\r?\\n)?$'), '')
+    if (!parts.length) {
+      if (cleanBase !== existing) writeFileSync(resolved, cleanBase)
+      continue
+    }
+    let body = ''
+    for (const part of parts) {
+      const content = readFileSync(part.path, 'utf8')
+      if (body && !body.endsWith('\n') && content) body += '\n'
+      body += content
+      if (content && !body.endsWith('\n')) body += '\n'
+    }
+    if (!body) {
+      if (cleanBase !== existing) writeFileSync(resolved, cleanBase)
+      continue
+    }
+    const prefix = cleanBase && !cleanBase.endsWith('\n') ? '\n' : ''
+    writeFileSync(resolved, cleanBase + prefix + partsBegin + '\n' + body + partsEnd + '\n')
+  }
+}
+
+function restoreTarget(path, source, directory = false) {
+  const sourceRoot = resolve(project, source)
+  const repository = execFileSync('git', ['-C', sourceRoot, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+  const target = resolve(project, source, path)
+  const relativeTarget = relative(repository, target)
+  if (!relativeTarget || relativeTarget === '..' || relativeTarget.startsWith('..' + sep) || isAbsolute(relativeTarget))
+    throw Error('agent 配置目标超出共享配置仓库：' + path)
+  execFileSync('git', ['-C', repository, 'restore', '--source=HEAD', '--staged', '--worktree', '--', relativeTarget])
+  if (directory) execFileSync('git', ['-C', repository, 'clean', '-fd', '--', relativeTarget])
 }
 
 function main(action = 'sync') {
@@ -145,7 +240,10 @@ function main(action = 'sync') {
       for (const [path, source] of block.links) {
         if (!sameLink(path, source)) block.links.delete(path)
         else if (action === 'clean') {
-          unlinkSync(join(project, path))
+          const target = join(project, path)
+          const resolved = resolve(dirname(target), readlinkSync(target))
+          restoreTarget(path, source, lstatSync(resolved).isDirectory())
+          unlinkSync(target)
           block.links.delete(path)
           removed++
         }
