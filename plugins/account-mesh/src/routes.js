@@ -1,12 +1,21 @@
 /**
  * Same-origin HTTP routes backing the settings panel.
  *
- * The routes only expose mesh status and local trust management (trust,
- * revoke, reconnect). They never proxy remote session or file content; the
- * panel shows peers, not data.
+ * The routes expose mesh status, local trust management (trust, revoke,
+ * reconnect) and the read-only remote workspace/session views the panel
+ * renders. Nothing here writes to a peer.
+ *
+ * Every response that carries remote data reports its own transfer size
+ * (`bytes`) so the browser can add it to the per-session fetched total. A
+ * small in-memory cache keeps the session index and recent transcript pages,
+ * so a non-forced refresh does not pull the same data from the peer again.
  */
 const BASE = '/account-mesh'
 const MAX_BODY = 64 * 1024
+/** Session indexes kept per peer; the newest ones win. */
+const INDEX_CACHE_MAX = 64
+/** Transcript pages kept in the cache, across all sessions. */
+const TRANSCRIPT_CACHE_MAX = 512
 
 export function registerRoutes(ctx, mesh, log) {
   const webServer = ctx.get('webServer')
@@ -14,6 +23,7 @@ export function registerRoutes(ctx, mesh, log) {
     log.warn('webServer is not mounted; the settings panel has no data source')
     return () => {}
   }
+  const cache = new TransferCache()
   return webServer.register({
     kind: 'prefix',
     path: BASE,
@@ -34,21 +44,49 @@ export function registerRoutes(ctx, mesh, log) {
         if (route === '/api/tree' && req.method === 'GET') {
           return json(res, 200, await buildTree(mesh, log))
         }
+        if (route === '/api/sessions/index' && req.method === 'GET') {
+          const peer = String(url.searchParams.get('peer') ?? '')
+          const sessionId = String(url.searchParams.get('sessionId') ?? '')
+          if (!peer || !sessionId) return json(res, 400, { error: 'peer and sessionId are required' })
+          const force = isTruthy(url.searchParams.get('force'))
+          const key = `${peer}\u0000${sessionId}`
+          if (!force) {
+            const hit = cache.getIndex(key)
+            if (hit) return json(res, 200, { ...hit.value, cached: true, bytes: 0 })
+          }
+          try {
+            const index = await readRemote(mesh, peer, 'sessions/index', { sessionId })
+            const bytes = Buffer.byteLength(JSON.stringify(index), 'utf8')
+            cache.putIndex(key, index, bytes)
+            return json(res, 200, { ...index, cached: false, bytes })
+          } catch (error) {
+            return json(res, 502, { error: error.message, code: error.code ?? 'remote-failed' })
+          }
+        }
         if (route === '/api/transcript' && req.method === 'GET') {
           const peer = String(url.searchParams.get('peer') ?? '')
           const sessionId = String(url.searchParams.get('sessionId') ?? '')
           if (!peer || !sessionId) return json(res, 400, { error: 'peer and sessionId are required' })
           const fromSeq = Number(url.searchParams.get('fromSeq') ?? 0) || 0
           const limit = Number(url.searchParams.get('limit') ?? 200) || 200
+          const force = isTruthy(url.searchParams.get('force'))
+          const key = `${peer}\u0000${sessionId}\u0000${fromSeq}\u0000${limit}`
+          if (!force) {
+            const hit = cache.getPage(key)
+            if (hit) return json(res, 200, { ...hit.value, cached: true, bytes: 0 })
+          }
           try {
-            if (peer === 'local-test' && mesh.config.localSessionTest && !hasRealVerifiedPeer(mesh)) {
-              return json(res, 200, await mesh.data.sessionEvents({ sessionId, fromSeq, limit }))
-            }
-            if (peer === 'local-test') return json(res, 404, { error: 'local test peer is hidden while a real peer is connected' })
-            return json(res, 200, await mesh.call(peer, 'sessions/events', { sessionId, fromSeq, limit }))
+            const page = await readRemote(mesh, peer, 'sessions/events', { sessionId, fromSeq, limit })
+            const bytes = Buffer.byteLength(JSON.stringify(page), 'utf8')
+            cache.putPage(key, page, bytes)
+            return json(res, 200, { ...page, cached: false, bytes })
           } catch (error) {
             return json(res, 502, { error: error.message, code: error.code ?? 'remote-failed' })
           }
+        }
+        if (route === '/api/cache/clear' && req.method === 'POST') {
+          cache.clear()
+          return json(res, 200, { ok: true })
         }
         if (route === '/api/channels' && req.method === 'GET') {
           return json(res, 200, { channels: mesh.channels() })
@@ -136,6 +174,8 @@ async function buildTree(mesh, log) {
       source: peer.source,
       address: peer.address,
       rttMs: peer.rttMs,
+      version: peer.version ?? null,
+      transfer: peer.transfer ?? null,
       workspaces: [],
       error: null,
       lastSeenAt: peer.lastSeenAt ?? null,
@@ -184,6 +224,63 @@ async function buildTree(mesh, log) {
     }
   }
   return { peers: nodes, generatedAt: Date.now() }
+}
+
+/**
+ * One read-only remote operation, or the same operation served from this Host
+ * for the test-only local peer. The local path goes through the DataPlane, so
+ * it produces exactly the shape a remote peer would.
+ */
+async function readRemote(mesh, peer, op, params) {
+  if (peer === 'local-test') {
+    if (!(mesh.config.localSessionTest && !hasRealVerifiedPeer(mesh))) {
+      throw Object.assign(new Error('local test peer is hidden while a real peer is connected'), { code: 'local-test-hidden' })
+    }
+    return mesh.data.runOp(op, params)
+  }
+  return mesh.call(peer, op, params)
+}
+
+/** `force=1` / `force=true` bypasses the transfer cache; anything else reads it. */
+function isTruthy(value) {
+  return value === '1' || value === 'true' || value === 'yes'
+}
+
+/**
+ * Bounded LRU-ish cache for the data the panel pulls from peers. Values are
+ * stored with the byte size they were transferred at, so a cache hit can be
+ * reported honestly as "served locally, 0 bytes fetched from the peer".
+ */
+class TransferCache {
+  constructor() {
+    this.indexes = new Map()
+    this.pages = new Map()
+  }
+
+  getIndex(key) {
+    return this.indexes.get(key) ?? null
+  }
+
+  putIndex(key, value, bytes) {
+    this.indexes.delete(key)
+    this.indexes.set(key, { value, bytes })
+    while (this.indexes.size > INDEX_CACHE_MAX) this.indexes.delete(this.indexes.keys().next().value)
+  }
+
+  getPage(key) {
+    return this.pages.get(key) ?? null
+  }
+
+  putPage(key, value, bytes) {
+    this.pages.delete(key)
+    this.pages.set(key, { value, bytes })
+    while (this.pages.size > TRANSCRIPT_CACHE_MAX) this.pages.delete(this.pages.keys().next().value)
+  }
+
+  clear() {
+    this.indexes.clear()
+    this.pages.clear()
+  }
 }
 
 /** A real peer is online and authenticated; while one exists the local test peer stays hidden. */

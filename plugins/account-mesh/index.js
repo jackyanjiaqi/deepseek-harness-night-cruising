@@ -1,7 +1,7 @@
 /**
  * Host half of dsh-account-mesh.
  *
- * Two DSH instances signed in to the same DeepSeek account discover each other
+ * DSH instances signed in to the same DeepSeek account discover each other
  * on the LAN (including a Tailscale tailnet), authenticate with Ed25519 device
  * keys, and serve each other a read-only view of sessions and workspace files.
  *

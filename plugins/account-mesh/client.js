@@ -17,7 +17,7 @@ window.__ModuleLoader__.load({
     const TEXT = {
       zh: {
         title: '同账号互联',
-        description: '同一账号的两个 DSH 实例在局域网（含 Tailscale）通过加密数据通道互读会话与工作区，只读。',
+        description: '同一账号的多个 DSH 实例在局域网（含 Tailscale）通过加密数据通道互读会话与工作区，只读。',
         panelTitle: '远端工作区',
         panelHint: '对方的会话按工作区分组显示，只读。',
         status: '状态',
@@ -144,10 +144,18 @@ window.__ModuleLoader__.load({
         errorsCount: '{n} 个错误',
         resizeTree: '调整会话树宽度',
         selectSessionHint: '选择左侧会话，然后在右侧切换「对话」或「轨迹」。',
+        sessionBytesLabel: '数据量',
+        forceRefresh: '强制刷新',
+        forceRefreshHint: '强制刷新绕过缓存，重新从对端拉取会话数据。',
+        fromCache: '缓存',
+        fromRemote: '远端',
+        peerVersionLabel: '插件版本',
+        transferLabel: '传输',
+        transferValue: '已收 {received} · 已发 {sent} · {calls} 次调用',
       },
       en: {
         title: 'Account mesh',
-        description: 'Two DSH instances on the same account read each other\'s sessions and workspace over an encrypted data channel on the LAN, Tailscale included. Read-only.',
+        description: 'Multiple DSH instances on the same account read each other\'s sessions and workspace over an encrypted data channel on the LAN, Tailscale included. Read-only.',
         panelTitle: 'Remote workspaces',
         panelHint: 'The peer\'s sessions grouped by workspace, read-only.',
         status: 'Status',
@@ -274,6 +282,14 @@ window.__ModuleLoader__.load({
         errorsCount: '{n} errors',
         resizeTree: 'Resize session tree',
         selectSessionHint: 'Select a session on the left, then switch between Conversation and Trajectory.',
+        sessionBytesLabel: 'Data',
+        forceRefresh: 'Force refresh',
+        forceRefreshHint: 'Force refresh bypasses the cache and pulls the session data again.',
+        fromCache: 'cached',
+        fromRemote: 'remote',
+        peerVersionLabel: 'Plugin version',
+        transferLabel: 'Transfer',
+        transferValue: 'received {received} · sent {sent} · {calls} calls',
       },
     }
 
@@ -296,6 +312,7 @@ window.__ModuleLoader__.load({
     const styles = {
       page: { padding: '4px 2px 24px', maxWidth: '760px', color: 'var(--dsw-alias-label-primary)', fontSize: '13px', lineHeight: 1.55 },
       title: { fontSize: '16px', fontWeight: 600, margin: '0 0 4px' },
+      titleVersion: { marginLeft: '10px', fontSize: '11px', fontWeight: 400, verticalAlign: '2px', fontFamily: monoStyle.fontFamily, color: 'var(--dsw-alias-label-secondary)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '999px', padding: '1px 8px', background: 'var(--dsw-alias-bg-layer-2)' },
       desc: { color: 'var(--dsw-alias-label-secondary)', margin: '0 0 16px', fontSize: '12px' },
       card: { border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)', borderRadius: '10px', padding: '12px 14px', marginBottom: '12px' },
       row: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
@@ -369,6 +386,34 @@ window.__ModuleLoader__.load({
       copyIconButton: { padding: '0 6px', fontSize: contentFont, minWidth: '26px', opacity: 0, transition: 'opacity 120ms ease' },
       copyFailed: { color: 'var(--dsw-alias-state-error-primary, #d64545)', borderColor: 'var(--dsw-alias-state-error-primary, #d64545)' },
       input: { font: 'inherit', fontSize: '12px', color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '7px', padding: '3px 10px', minWidth: '220px' },
+    }
+
+    /** Human byte size: B / KB / MB / GB with one decimal above bytes. */
+    function formatBytes(bytes) {
+      const value = Number(bytes)
+      if (!Number.isFinite(value) || value <= 0) return '0 B'
+      const units = ['B', 'KB', 'MB', 'GB', 'TB']
+      let index = 0
+      let scaled = value
+      while (scaled >= 1024 && index < units.length - 1) {
+        scaled /= 1024
+        index += 1
+      }
+      return `${index === 0 ? Math.round(scaled) : scaled.toFixed(1)} ${units[index]}`
+    }
+
+    /** Fetch one panel route; `force` bypasses the Host transfer cache. */
+    async function getJson(path, params = {}, force = false) {
+      const query = new URLSearchParams()
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== null) query.set(key, String(value))
+      }
+      if (force) query.set('force', '1')
+      const suffix = query.toString()
+      const response = await fetch(`/account-mesh/api/${path}${suffix ? `?${suffix}` : ''}`, { headers: { accept: 'application/json' } })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`)
+      return body
     }
 
     /** Hover/focus affordances the inline style objects cannot express. */
@@ -510,29 +555,38 @@ window.__ModuleLoader__.load({
         [t('peerRttLabel'), peer.rttMs != null ? `${peer.rttMs} ms` : null],
         [t('peerFingerprintLabel'), peer.fingerprint],
         [t('peerPairCodeLabel'), peer.pairCode],
+        [t('peerVersionLabel'), peer.version ?? null],
         [t('peerTrustedAtLabel'), peer.trustedAt ? formatTime(peer.trustedAt) : null],
         [t('peerLastSeenLabel'), peer.lastSeenAt ? formatTime(peer.lastSeenAt) : null],
         [t('peerWorkspacesLabel'), (peer.workspaces ?? []).length],
         [t('peerSessionsLabel'), (peer.workspaces ?? []).reduce((sum, workspace) => sum + (workspace.sessions?.length ?? 0), 0)],
+        [t('transferLabel'), peer.transfer
+          ? fill(t('transferValue'), { received: formatBytes(peer.transfer.receivedBytes), sent: formatBytes(peer.transfer.sentBytes), calls: peer.transfer.calls })
+          : null],
       ])
     }
 
-    /** Workspace hover details: full path, session count. */
+    /** Workspace hover details: full path, session count, summed known data volume. */
     function workspaceDetail(workspace, t) {
+      const sessions = workspace.sessions ?? []
+      const known = sessions.filter(session => session.totalBytes != null)
       return detailText([
         [t('sessionCwdLabel'), workspace.path ?? workspace.title],
-        [t('peerSessionsLabel'), workspace.sessions?.length ?? 0],
+        [t('peerSessionsLabel'), sessions.length],
+        [t('sessionBytesLabel'), known.length > 0 ? formatBytes(known.reduce((sum, session) => sum + session.totalBytes, 0)) : null],
       ])
     }
 
-    /** Session hover details: full title, id, cwd, created time, live state. */
-    function sessionDetail(session, t) {
+    /** Session hover details: full title, id, cwd, created time, live state and data volume. */
+    function sessionDetail(session, t, totals) {
+      const total = totals?.totalBytes ?? session.totalBytes
       return detailText([
         [t('untitled'), session.title || t('untitled')],
         [t('sessionIdLabelShort'), session.id],
         [t('sessionCwdLabel'), session.cwd],
         [t('sessionCreatedLabel'), session.createdAt ? formatTime(session.createdAt) : null],
         [t('sessionLiveLabel'), session.live ? t('sessionLiveValue') : null],
+        [t('sessionBytesLabel'), total != null ? formatBytes(total) : null],
       ])
     }
 
@@ -713,10 +767,14 @@ window.__ModuleLoader__.load({
           peer.verified ? h(Chip, { tone: 'on' }, t('verified')) : null,
           peer.trusted ? h(Chip, { tone: 'on' }, t('trusted')) : h(Chip, { tone: 'warn' }, t('untrusted')),
           peer.source === 'tailnet' ? h(Chip, { tone: 'off' }, 'Tailscale') : null,
-          peer.rttMs !== null && peer.rttMs !== undefined ? h(Chip, { tone: 'off' }, `${peer.rttMs} ms`) : null),
+          peer.rttMs !== null && peer.rttMs !== undefined ? h(Chip, { tone: 'off' }, `${peer.rttMs} ms`) : null,
+          peer.version ? h(Chip, { tone: 'off' }, `v${peer.version}`) : null),
         h('div', { style: styles.mono }, peer.deviceId),
         peer.fingerprint ? h('div', { style: styles.mono }, `${t('fingerprint')}: ${peer.fingerprint}`) : null,
         peer.online && peer.address ? h('div', { style: styles.mono }, peer.address) : null,
+        peer.transfer
+          ? h('div', { style: styles.mono }, fill(t('transferValue'), { received: formatBytes(peer.transfer.receivedBytes), sent: formatBytes(peer.transfer.sentBytes), calls: peer.transfer.calls }))
+          : null,
         h('div', { style: { ...styles.row, marginTop: '8px' } },
           !peer.trusted
             ? h('button', { style: styles.buttonPrimary, className: 'am-button am-button-primary', disabled: pending, onClick: () => onAction('pair', peer.deviceId) }, t('trust'))
@@ -869,15 +927,15 @@ window.__ModuleLoader__.load({
       }
 
       return h('section', { style: styles.page },
-        h('h2', { style: styles.title }, t('title')),
+        h('h2', { style: styles.title }, t('title'),
+          state.version ? h('span', { style: styles.titleVersion }, `v${state.version}`) : null),
         h('p', { style: styles.desc }, t('description')),
         error ? h('p', { style: styles.error }, `${t('error')}: ${error}`) : null,
         actionError ? h('p', { style: styles.error }, actionError) : null,
         h('div', { style: styles.card },
           h('div', { style: styles.row },
             h('span', { style: styles.label }, t('status')),
-            h(Chip, { tone: state.status === 'ready' ? 'on' : state.status === 'disabled' || state.status === 'signed-out' ? 'warn' : 'off' }, statusLabel(t, state.status)),
-            state.version ? h(Chip, { tone: 'off' }, `v${state.version}`) : null),
+            h(Chip, { tone: state.status === 'ready' ? 'on' : state.status === 'disabled' || state.status === 'signed-out' ? 'warn' : 'off' }, statusLabel(t, state.status))),
           h(Field, { label: t('account') }, account.status ?? '—'),
           h(Field, { label: t('device') }, `${device.name ?? '—'} · ${device.id ?? '—'}`),
           device.fingerprint ? h(Field, { label: t('fingerprint') }, device.fingerprint) : null,
@@ -1060,6 +1118,9 @@ window.__ModuleLoader__.load({
       const [view, setView] = React.useState('conversation')
       const [treeWidth, setTreeWidth] = React.useState(360)
       const [dragging, setDragging] = React.useState(false)
+      const [forcing, setForcing] = React.useState(false)
+      // Known per-session data totals (from the remote index or a page total).
+      const [sessionTotals, setSessionTotals] = React.useState(() => new Map())
       const resizeRef = React.useRef(null)
 
       const onSplitterDown = event => {
@@ -1105,21 +1166,51 @@ window.__ModuleLoader__.load({
         }
       }, [loadTree])
 
-      const loadTranscript = React.useCallback(async (target, fromSeq = 0) => {
+      /** Record a session's data total once any response reports one. */
+      const noteTotal = React.useCallback((sessionId, body) => {
+        if (body?.totalBytes == null && body?.itemCount == null) return
+        setSessionTotals(current => {
+          const next = new Map(current)
+          next.set(sessionId, { totalBytes: Number(body.totalBytes) || 0, totalItems: Number(body.itemCount) || 0 })
+          return next
+        })
+      }, [])
+
+      /**
+       * Pull the compact session index (seq/role/bytes per item, plus totals).
+       * The Host serves it from its transfer cache unless `force` is set, so a
+       * plain refresh never re-reads the whole session from the peer.
+       *
+       * Older peers do not support `sessions/index` and answer bad-request;
+       * that is not an error the reader should surface — totals simply stay
+       * unknown for them until they upgrade.
+       */
+      const loadIndex = React.useCallback(async (target, force = false) => {
         try {
-          const query = new URLSearchParams({ peer: target.peer, sessionId: target.sessionId, fromSeq: String(fromSeq), limit: '200' })
-          const response = await fetch(`/account-mesh/api/transcript?${query.toString()}`, { headers: { accept: 'application/json' } })
-          const body = await response.json().catch(() => ({}))
-          if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`)
+          const index = await getJson('sessions/index', { peer: target.peer, sessionId: target.sessionId }, force)
+          noteTotal(target.sessionId, index)
+          return index
+        } catch {
+          return null
+        }
+      }, [noteTotal])
+
+      const loadTranscript = React.useCallback(async (target, fromSeq = 0, force = false) => {
+        try {
+          const body = await getJson('transcript', { peer: target.peer, sessionId: target.sessionId, fromSeq, limit: 200 }, force)
           setTranscript(current => {
             if (fromSeq === 0 || !current) return body
             return { ...body, items: [...current.items, ...(body.items ?? [])] }
           })
           setTranscriptError(null)
+          noteTotal(target.sessionId, body)
+          // Peers that do not report per-page totals: one compact index read
+          // sizes the session. Peers that report totalBytes skip this call.
+          if (fromSeq === 0 && body.totalBytes == null) loadIndex(target, false)
         } catch (failure) {
           setTranscriptError(failure.message)
         }
-      }, [])
+      }, [noteTotal, loadIndex])
 
       React.useEffect(() => {
         if (!selection) {
@@ -1128,8 +1219,22 @@ window.__ModuleLoader__.load({
         }
         setTranscript(null)
         setTranscriptError(null)
-        loadTranscript(selection, 0)
+        loadTranscript(selection, 0, false)
       }, [selection, loadTranscript])
+
+      /** Force refresh: bypass the Host cache and re-pull index and window from the peer. */
+      const forceRefresh = async () => {
+        if (!selection) return
+        setForcing(true)
+        setTranscript(null)
+        setTranscriptError(null)
+        try {
+          await loadIndex(selection, true)
+          await loadTranscript(selection, 0, true)
+        } finally {
+          setForcing(false)
+        }
+      }
 
       const toggle = key => setExpanded(current => ({ ...current, [key]: current[key] === false }))
       const isOpen = key => expanded[key] !== false
@@ -1242,12 +1347,14 @@ window.__ModuleLoader__.load({
                             workspaceOpen
                               ? workspace.sessions.map(session => {
                                   const active = selection?.peer === peerKey && selection?.sessionId === session.id
+                                  const total = sessionTotals.get(session.id)?.totalBytes ?? session.totalBytes
+                                  const meta = `${session.live ? t('live') : formatRelative(session.createdAt, t)}${total != null ? ` · ${formatBytes(total)}` : ''}`
                                   return h(TreeRow, {
                                     key: session.id,
                                     depth: 2,
                                     label: session.title || t('untitled'),
-                                    meta: session.live ? t('live') : formatRelative(session.createdAt, t),
-                                    detail: sessionDetail(session, t),
+                                    meta,
+                                    detail: sessionDetail(session, t, sessionTotals.get(session.id)),
                                     active,
                                     onClick: () => setSelection({ peer: peerKey, sessionId: session.id, title: session.title, workspaceKey }),
                                     actions: h(CopyButton, { text: session.id, label: t('copySessionId'), t, compact: true }),
@@ -1299,7 +1406,18 @@ window.__ModuleLoader__.load({
                   h('span', { style: styles.toolbarId, title: selection.sessionId },
                     `${t('sessionIdLabel')}: ${shortSessionId(selection.sessionId)}`),
                   h(CopyButton, { text: selection.sessionId, label: t('copySessionId'), t }),
+                  sessionTotals.get(selection.sessionId) != null
+                    ? h(Chip, { tone: 'off' }, `${t('sessionBytesLabel')} ${formatBytes(sessionTotals.get(selection.sessionId).totalBytes)}`)
+                    : null,
+                  transcript ? h(Chip, { tone: transcript.cached ? 'off' : 'on' }, transcript.cached ? t('fromCache') : t('fromRemote')) : null,
                   h('span', { style: { flex: 1 } }),
+                  h('button', {
+                    style: styles.button,
+                    className: 'am-button',
+                    disabled: forcing,
+                    title: t('forceRefreshHint'),
+                    onClick: forceRefresh,
+                  }, forcing ? t('waiting') : t('forceRefresh')),
                   h('button', { style: styles.button, className: 'am-button', onClick: () => setSelection(null) }, '×'))
               : null,
             transcriptBody())))

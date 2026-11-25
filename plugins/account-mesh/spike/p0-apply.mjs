@@ -96,8 +96,8 @@ try {
   apply(ctx, { dataDir: path.join(root, 'home'), discoveryPort: 48201, debug: false, localSessionTest: true })
   await new Promise(resolve => setTimeout(resolve, 800))
 
-  check('nine agent tools registered', tools.length === 9, tools.map(tool => tool.name).join(','))
-  const expected = ['mesh_status', 'mesh_peers', 'mesh_session_list', 'mesh_session_read', 'mesh_session_summary', 'mesh_workspace_list', 'mesh_file_read', 'mesh_peer_pair', 'mesh_peer_forget']
+  check('ten agent tools registered', tools.length === 10, tools.map(tool => tool.name).join(','))
+  const expected = ['mesh_status', 'mesh_peers', 'mesh_session_list', 'mesh_session_read', 'mesh_session_index', 'mesh_session_summary', 'mesh_workspace_list', 'mesh_file_read', 'mesh_peer_pair', 'mesh_peer_forget']
   check('tool names are the documented ones', expected.every(name => tools.some(tool => tool.name === name)))
   check('every tool declares object parameters', tools.every(tool => tool.parameters?.type === 'object' && typeof tool.parameters.properties === 'object'))
   check('every tool declares an output schema and render', tools.every(tool => tool.output?.schema?.type === 'object' && typeof tool.output.render === 'function'))
@@ -110,6 +110,7 @@ try {
 
   const peers = await tools.find(tool => tool.name === 'mesh_peers').execute({}, {})
   check('mesh_peers returns the peer array', Array.isArray(peers.peers))
+  check('mesh_peers reports transfer totals', peers.transfer?.calls === 0 && peers.transfer?.receivedBytes === 0, JSON.stringify(peers.transfer))
 
   const lossless = value => {
     if (value === undefined) return false
@@ -147,13 +148,41 @@ try {
   check('state route answers JSON', state.status === 'ready' && state.device.id)
   check('state reports the local test peer as enabled and visible', state.localTest?.enabled === true && state.localTest?.visible === true && state.localTest?.hiddenByRealPeer === false, JSON.stringify(state.localTest))
   check('state route never leaks the account id or token', !responses[0].includes('account-1') && !responses[0].includes('never-used-token'))
+
+  // Session index: compact per-item sizes plus the session total, cached unless forced.
+  await routes[0].handler({ method: 'GET', url: '/account-mesh/api/sessions/index?peer=local-test&sessionId=session-1', headers: {} }, res)
+  const index = JSON.parse(responses[responses.length - 1])
+  check('session index lists every projected item with a byte size',
+    index.items?.length === 3 && index.items.filter(item => item.role !== 'tool-call').every(item => item.bytes > 0) && index.totalBytes === index.items.reduce((sum, item) => sum + item.bytes, 0),
+    JSON.stringify(index))
+  check('session index drops reasoning bodies and tool arguments', !JSON.stringify(index.items).includes('think'))
+  check('session index reports its transfer size', typeof index.bytes === 'number' && index.bytes > 0 && index.cached === false)
+  await routes[0].handler({ method: 'GET', url: '/account-mesh/api/sessions/index?peer=local-test&sessionId=session-1', headers: {} }, res)
+  const indexHit = JSON.parse(responses[responses.length - 1])
+  check('session index is served from the cache on a non-forced read', indexHit.cached === true && indexHit.totalBytes === index.totalBytes)
+  await routes[0].handler({ method: 'GET', url: '/account-mesh/api/sessions/index?peer=local-test&sessionId=session-1&force=1', headers: {} }, res)
+  const indexForced = JSON.parse(responses[responses.length - 1])
+  check('force=1 bypasses the session index cache', indexForced.cached === false)
+
+  // Transcript pages carry the session total and are cached unless forced.
+  await routes[0].handler({ method: 'POST', url: '/account-mesh/api/cache/clear', headers: {} }, res)
+  await routes[0].handler({ method: 'GET', url: '/account-mesh/api/transcript?peer=local-test&sessionId=session-1&limit=200', headers: {} }, res)
+  const firstPage = JSON.parse(responses[responses.length - 1])
+  check('transcript reports the session total bytes and item count', firstPage.totalBytes > 0 && firstPage.itemCount === 3, JSON.stringify({ totalBytes: firstPage.totalBytes, itemCount: firstPage.itemCount }))
+  check('transcript reports its own transfer size', typeof firstPage.bytes === 'number' && firstPage.bytes > 0 && firstPage.cached === false)
+  await routes[0].handler({ method: 'GET', url: '/account-mesh/api/transcript?peer=local-test&sessionId=session-1&limit=200', headers: {} }, res)
+  const cachedPage = JSON.parse(responses[responses.length - 1])
+  check('transcript page is served from the cache on a non-forced read', cachedPage.cached === true && cachedPage.items?.length === 3)
+  await routes[0].handler({ method: 'GET', url: '/account-mesh/api/transcript?peer=local-test&sessionId=session-1&limit=200&force=1', headers: {} }, res)
+  const forcedPage = JSON.parse(responses[responses.length - 1])
+  check('force=1 bypasses the transcript cache', forcedPage.cached === false)
   console.log('payload keys:', Object.keys(state).join(','))
 
   // A real verified peer hides the local test peer from the tree and transcript.
   const fakeMesh = {
     config: { localSessionTest: true },
     peerViews: () => [{ deviceId: 'real-peer-0001', name: 'real-peer', online: true, verified: true, trusted: true }],
-    data: { listWorkspaces: () => ({ workspaces: [] }), listSessions: () => ({ sessions: [] }), sessionEvents: () => ({ items: [] }) },
+    data: { listWorkspaces: () => ({ workspaces: [] }), listSessions: () => ({ sessions: [] }), sessionEvents: () => ({ items: [] }), runOp: () => ({ items: [] }) },
     call: async () => ({ workspaces: [], sessions: [] }),
   }
   const fakeRoutes = []

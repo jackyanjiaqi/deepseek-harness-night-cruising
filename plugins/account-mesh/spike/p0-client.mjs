@@ -145,6 +145,10 @@ try {
     fromSeq: 0,
     nextSeq: 7,
     hasMore: false,
+    itemCount: 4,
+    totalBytes: 4096,
+    bytes: 2048,
+    cached: false,
     items: [
       { seq: 1, time: 1763000001000, role: 'user', text: 'Please inspect the remote workspace.' },
       {
@@ -172,7 +176,8 @@ try {
   // MeshPanel consumes eight states (tree, error, expanded, selection,
   // transcript, transcriptError, loadingMore, view), then the two tree copy
   // buttons, the toolbar copy button, and one reasoning block.
-  React.__stateQueue = [presetTree, null, {}, presetSelection, presetTranscript, null, false, 'conversation', 360, false, false, false, false, false]
+  const presetTotals = new Map([['sim-session-alpha', { totalBytes: 4096, totalItems: 4 }]])
+  React.__stateQueue = [presetTree, null, {}, presetSelection, presetTranscript, null, false, 'conversation', 360, false, false, presetTotals, false, false, false, false]
   const richPanel = renderElement(panelEntry.Component({}))
   const richText = JSON.stringify(richPanel)
   check('rich panel renders both session rows', richText.includes('Simulated remote session: workspace tour') && richText.includes('Simulated remote session: projection rules'))
@@ -191,22 +196,46 @@ try {
   check('session hover carries id and full date', richText.includes('会话 ID: sim-session-alpha') && richText.includes('创建时间:'))
   check('session meta uses relative time, not a full date', richText.includes('天') || richText.includes('小时') || richText.includes('分钟'))
   check('labels render an inner marquee text span', richText.includes('am-tree-name') && richText.includes('am-tree-text'))
+
+  // Data totals: known session size in the tree meta, hover, and toolbar chip.
+  check('session tree appends the data total', richText.includes('· 4.0 KB'))
+  check('session hover carries the data volume', richText.includes('数据量: 4.0 KB'))
+  check('toolbar shows the data total chip', richText.includes('数据量 4.0 KB'))
+  check('toolbar marks the first read as remote', richText.includes('远端'))
+  check('toolbar offers a force refresh that bypasses the cache', richText.includes('强制刷新') && clientSource.includes("'force', '1'"))
+  check('client falls back to the session index when pages lack totals', clientSource.includes('sessions/index') && clientSource.includes('body.totalBytes == null'))
+  check('formatBytes scales above 1024 bytes', clientSource.includes('function formatBytes') && clientSource.includes("'TB'"))
+  check('panel keeps no progress-percentage UI', !clientSource.includes('ProgressBar') && !clientSource.includes('percentOf') && !richText.includes('拉取进度'))
   check('marquee only applies to overflowing labels', richText.includes('data-overflow') && !richText.includes('data-marquee'))
   check('marquee animation is declared', richText.includes('am-marquee-text'))
 
   // Second render: the trajectory tab, with reasoning expanded and full calls/errors.
-  React.__stateQueue = [presetTree, null, {}, presetSelection, presetTranscript, null, false, 'trajectory', 360, false, false, false, false, true]
+  React.__stateQueue = [presetTree, null, {}, presetSelection, presetTranscript, null, false, 'trajectory', 360, false, false, presetTotals, false, false, false, true]
   const trajectoryPanel = renderElement(panelEntry.Component({}))
   const trajectoryText = JSON.stringify(trajectoryPanel)
   check('trajectory tab shows tool calls and arguments', trajectoryText.includes('工具调用 · mesh_workspace_list') && trajectoryText.includes('参数:') && trajectoryText.includes('sim-remote-workspace'))
   check('trajectory tab shows tool errors and error codes', trajectoryText.includes('工具结果 · 报错') && trajectoryText.includes('AbortError') && trajectoryText.includes('ABORTED'))
   check('trajectory tab expands reasoning', trajectoryText.includes('The user wants a workspace tour.') && trajectoryText.includes('收起思考'))
 
+  // Settings page with a loaded state: the version sits beside the section
+  // title, and the peer card shows the remote plugin version.
+  React.__stateQueue = [{
+    data: {
+      version: '0.1.0-rc.10',
+      status: 'ready',
+      peers: [{ deviceId: 'peer-1', shortId: 'peer…1', name: 'remote-mac', online: true, trusted: true, verified: true, version: '0.1.0-rc.9', rttMs: 12, transfer: { calls: 3, sentBytes: 120, receivedBytes: 4096, lastAt: 1 } }],
+    },
+    error: null,
+  }]
   const outer = registration.Component({ close() {} })
   const tree = typeof outer.type === 'function' ? outer.type(outer.props) : outer
   check('settings wrapper renders the page element', outer && typeof outer.type === 'function')
   check('page renders a section tree', tree && tree.type === 'section' && tree.children.length > 0, tree?.type)
-  const text = JSON.stringify(tree)
+  const text = JSON.stringify(renderElement(tree))
+  check('settings title carries the plugin version badge', text.includes('同账号互联') && text.includes('v0.1.0-rc.10'))
+  check('peer card shows the remote plugin version', text.includes('v0.1.0-rc.9'))
+  check('peer card shows transfer counters', text.includes('已收 4.0 KB · 已发 120 B · 3 次调用'))
+  React.__stateQueue = []
   check('page includes the localized title', text.includes('同账号互联'))
   check('page includes the tool hint', text.includes('mesh_session_read'))
   check('page mentions the read-only guarantee', text.includes('只读'))

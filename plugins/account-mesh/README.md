@@ -1,6 +1,6 @@
 # dsh-account-mesh
 
-Read-only mesh between two DSH instances signed in to the **same DeepSeek account**, over an authenticated WebRTC data channel on the LAN (physical LAN + Tailscale tailnet).
+Read-only mesh between DSH instances signed in to the **same DeepSeek account**, over an authenticated WebRTC data channel on the LAN (physical LAN + Tailscale tailnet).
 
 - Discovery: UDP multicast/broadcast, plus unicast probing of tailnet peers (`tailscale status --json`) because multicast does not cross Tailscale.
 - Handshake: p2play-js style room / deterministic initiator / signed `offer`/`answer`/`ice` fragments over the same UDP socket.

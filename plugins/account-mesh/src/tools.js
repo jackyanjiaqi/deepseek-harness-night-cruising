@@ -65,7 +65,11 @@ export function registerTools(ctx, mesh, log) {
         name: 'mesh_peers',
         description:
           'List peer devices of the same DeepSeek account: online state, link state, latency, and whether the device is trusted. Use the returned id or name with the other mesh_* tools.',
-        execute: async () => ({ status: mesh.statusText(), peers: mesh.peerViews() }),
+        execute: async () => ({
+          status: mesh.statusText(),
+          peers: mesh.peerViews(),
+          transfer: mesh.transferTotals(),
+        }),
       }),
     ),
   )
@@ -170,6 +174,26 @@ export function registerTools(ctx, mesh, log) {
             },
             exec?.signal,
           )
+        },
+      }),
+    ),
+  )
+
+  disposers.push(
+    register(
+      define({
+        name: 'mesh_session_index',
+        description:
+          'Compact index of one remote session: seq, time, role and byte size of every projected item, plus totalItems and totalBytes. Use it to size a session (or plan a read) without pulling reasoning bodies or tool-call arguments. Requires the peer to run a plugin version that supports sessions/index.',
+        properties: {
+          peer: PEER_PARAM,
+          sessionId: { type: 'string', description: 'Session id from mesh_session_list.' },
+        },
+        required: ['peer', 'sessionId'],
+        execute: async (args, exec) => {
+          const peer = requireString(args, 'peer')
+          const sessionId = requireString(args, 'sessionId')
+          return mesh.call(peer, 'sessions/index', { sessionId }, exec?.signal)
         },
       }),
     ),

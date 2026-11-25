@@ -37,8 +37,23 @@ function reasoningOfContent(content) {
     .trim()
 }
 
-/** One projected transcript item, or undefined for non-conversation events. */
-function projectEvent(event) {
+/**
+ * UTF-8 byte length of a projected item's text fields. This is the payload the
+ * peer actually ships, so it is the unit the panel reports as "data volume".
+ */
+export function bytesOfItem(item) {
+  const text = typeof item.text === 'string' ? item.text : ''
+  const reasoning = typeof item.reasoning === 'string' ? item.reasoning : ''
+  return Buffer.byteLength(text, 'utf8') + Buffer.byteLength(reasoning, 'utf8')
+}
+
+/**
+ * One projected transcript item, or undefined for non-conversation events.
+ * `compact` drops the reasoning body and tool-call arguments, keeping only the
+ * call names: that is the index payload the tree uses to size a session
+ * without shipping its whole transcript.
+ */
+function projectEvent(event, { compact = false } = {}) {
   if (!SESSION_EVENT_KINDS.has(event.type)) return undefined
   const data = event.data ?? {}
   if (event.type === 'user/message') {
@@ -48,12 +63,14 @@ function projectEvent(event) {
   if (event.type === 'assistant/message') {
     const content = data.message?.content
     const text = textOfContent(content, { toolCalls: false })
-    const reasoning = reasoningOfContent(content)
+    const reasoning = compact ? '' : reasoningOfContent(content)
     const calls = Array.isArray(content)
       ? content.filter(block => block?.type === 'tool-call').map(block => ({ name: block.name, arguments: block.arguments }))
       : []
-    return text || reasoning || calls.length > 0
-      ? {
+    if (!text && !reasoning && calls.length === 0) return undefined
+    return compact
+      ? { seq: event.seq, time: event.time, role: 'assistant', text, toolCalls: calls.map(call => call.name) }
+      : {
           seq: event.seq,
           time: event.time,
           role: 'assistant',
@@ -62,7 +79,6 @@ function projectEvent(event) {
           toolCalls: calls.map(call => call.name),
           toolCallDetails: calls,
         }
-      : undefined
   }
   if (event.type === 'tool/call') {
     return {
@@ -70,7 +86,7 @@ function projectEvent(event) {
       time: event.time,
       role: 'tool-call',
       name: data.name,
-      text: typeof data.arguments === 'string' ? data.arguments : '',
+      text: compact ? '' : typeof data.arguments === 'string' ? data.arguments : '',
     }
   }
   if (event.type === 'tool/result') {
@@ -173,6 +189,8 @@ export class DataPlane {
     }
     const page = items.slice(0, limit)
     const nextSeq = page.length > 0 ? page[page.length - 1].seq + 1 : fromSeq
+    // Totals describe the whole session, not just this window, so the reader
+    // can show how much of it has been fetched (and how much is left).
     return {
       session: {
         id: snapshot.session.id,
@@ -182,7 +200,82 @@ export class DataPlane {
       fromSeq,
       nextSeq,
       hasMore: page.length < items.length,
+      itemCount: items.length,
+      totalBytes: items.reduce((sum, item) => sum + bytesOfItem(item), 0),
+      pageBytes: page.reduce((sum, item) => sum + bytesOfItem(item), 0),
       items: page,
+    }
+  }
+
+  /**
+   * Compact index of one session: every projected item's seq, time, role and
+   * byte size, without reasoning bodies or tool-call arguments. It lets the
+   * tree size a session and the reader plan a fetch without pulling the whole
+   * transcript.
+   */
+  async sessionIndex({ sessionId } = {}) {
+    if (typeof sessionId !== 'string' || !sessionId) throw rpcError('bad-request', 'sessionId is required')
+    const snapshot = await this.sessionQuery().readSession(sessionId)
+    const items = []
+    let totalBytes = 0
+    let totalItems = 0
+    for (const event of snapshot.events) {
+      const projected = projectEvent(event, { compact: true })
+      if (!projected) continue
+      const bytes = bytesOfItem(projected)
+      totalItems += 1
+      totalBytes += bytes
+      items.push({
+        seq: projected.seq,
+        time: projected.time,
+        role: projected.role,
+        bytes,
+        ...(projected.name ? { name: projected.name } : {}),
+      })
+    }
+    return {
+      session: {
+        id: snapshot.session.id,
+        cwd: snapshot.session.cwd ?? null,
+        createdAt: snapshot.session.createdAt ?? null,
+      },
+      totalItems,
+      totalBytes,
+      items,
+    }
+  }
+
+  /** Dispatch one whitelisted read-only operation (shared by RPC and the panel routes). */
+  async runOp(op, params = {}) {
+    switch (op) {
+      case 'sessions/list':
+        return this.listSessions({
+          limit: clampInt(params.limit, 1, 500, 50),
+          offset: clampInt(params.offset, 0, 1_000_000, 0),
+          workspace: params.workspace,
+        })
+      case 'sessions/events':
+        return this.sessionEvents({
+          sessionId: params.sessionId,
+          fromSeq: clampInt(params.fromSeq, 0, Number.MAX_SAFE_INTEGER, 0),
+          limit: clampInt(params.limit, 1, 500, 100),
+        })
+      case 'sessions/index':
+        return this.sessionIndex({ sessionId: params.sessionId })
+      case 'workspaces/list':
+        return this.listWorkspaces()
+      case 'files/list':
+        return this.listFiles({ path: params.path })
+      case 'files/stat':
+        return this.statFile({ path: params.path })
+      case 'files/read':
+        return this.readFile({
+          path: params.path,
+          offset: clampInt(params.offset, 0, Number.MAX_SAFE_INTEGER, 0),
+          limit: clampInt(params.limit, 1, 2000, 200),
+        })
+      default:
+        throw rpcError('bad-request', `unknown or unsupported operation: ${op}`)
     }
   }
 
@@ -316,6 +409,12 @@ async function readLineWindow(file, offset, limit) {
     stream.destroy()
   }
   return { lines, totalLines: null, hasMore }
+}
+
+function clampInt(value, min, max, fallback) {
+  const number = Number.parseInt(value, 10)
+  if (!Number.isFinite(number)) return fallback
+  return Math.min(max, Math.max(min, number))
 }
 
 function realpathOf(value) {

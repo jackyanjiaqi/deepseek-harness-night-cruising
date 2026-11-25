@@ -291,12 +291,15 @@ export class Mesh {
     const nonce = b64u(Buffer.from(cryptoRandom(24)))
     entry.helloNonce = nonce
     const signature = signBytes(this.identity.privateKey, `${HELLO_CONTEXT}|${nonce}|${this.deviceId}`)
+    // Both directions carry the plugin version, so each side can show which
+    // build the other one runs; the panel flags mixed-version pairs.
     entry.link.rpc({
       op: 'hello',
       params: {
         nonce,
         dev: this.deviceId,
         name: this.peerName,
+        v: this.version,
         pk: b64u(this.identity.publicKey),
         sig: signature,
       },
@@ -443,8 +446,10 @@ export class Mesh {
       entry.link.teardown('hello signature failed')
       return
     }
+    // The hello is signed, so the announced plugin version is trustworthy.
+    entry.peerVersion = typeof params.v === 'string' && params.v ? params.v : null
     const signature = signBytes(this.identity.privateKey, `${HELLO_CONTEXT}|${nonce}|${this.deviceId}`)
-    entry.link.rpc({ op: 'hello-ack', params: { nonce, sig: signature } })
+    entry.link.rpc({ op: 'hello-ack', params: { nonce, v: this.version, sig: signature } })
     this.markVerified(entry)
   }
 
@@ -457,6 +462,7 @@ export class Mesh {
       entry.link.teardown('hello-ack signature failed')
       return
     }
+    if (!entry.peerVersion && typeof params.v === 'string' && params.v) entry.peerVersion = params.v
     this.markVerified(entry)
   }
 
@@ -497,36 +503,8 @@ export class Mesh {
 
   /** Fixed read-only operation whitelist. No write, prompt or shell path exists. */
   async runOp(op, params) {
-    switch (op) {
-      case 'sessions/list':
-        return this.data.listSessions({
-          limit: clampInt(params.limit, 1, 500, 50),
-          offset: clampInt(params.offset, 0, 1_000_000, 0),
-          workspace: params.workspace,
-        })
-      case 'sessions/events':
-        return this.data.sessionEvents({
-          sessionId: params.sessionId,
-          fromSeq: clampInt(params.fromSeq, 0, Number.MAX_SAFE_INTEGER, 0),
-          limit: clampInt(params.limit, 1, 500, 100),
-        })
-      case 'workspaces/list':
-        return this.data.listWorkspaces()
-      case 'files/list':
-        return this.data.listFiles({ path: params.path })
-      case 'files/stat':
-        return this.data.statFile({ path: params.path })
-      case 'files/read':
-        return this.data.readFile({
-          path: params.path,
-          offset: clampInt(params.offset, 0, Number.MAX_SAFE_INTEGER, 0),
-          limit: clampInt(params.limit, 1, 2000, 200),
-        })
-      case 'summary':
-        return this.describeForPeer()
-      default:
-        throw rpcError('bad-request', `unknown or unsupported operation: ${op}`)
-    }
+    if (op === 'summary') return this.describeForPeer()
+    return this.data.runOp(op, params)
   }
 
   /** Fixed ICE UDP range so a host firewall needs one rule instead of many random ports. */
@@ -576,7 +554,38 @@ export class Mesh {
     const pending = this.pendingFor(entry.peer.deviceId)
     const { id, promise } = pending.open(signal)
     if (!linkEntry.link.rpc({ id, op, params })) throw rpcError('peer-offline', 'link is not writable')
+    // Transfer accounting for the panel: what this call asked for and what the
+    // peer actually answered with. Counters only; nothing here gates a call.
+    const sentBytes = Buffer.byteLength(JSON.stringify(params ?? {}), 'utf8')
+    promise.then(
+      result => this.recordTransfer(entry.peer.deviceId, sentBytes, Buffer.byteLength(JSON.stringify(result ?? null), 'utf8')),
+      () => {},
+    )
     return promise
+  }
+
+  /** Summed transfer counters over every link (panel and agent view). */
+  transferTotals() {
+    const totals = { calls: 0, sentBytes: 0, receivedBytes: 0, peers: 0 }
+    for (const entry of this.links.values()) {
+      if (!entry.transfer) continue
+      totals.peers += 1
+      totals.calls += entry.transfer.calls
+      totals.sentBytes += entry.transfer.sentBytes
+      totals.receivedBytes += entry.transfer.receivedBytes
+    }
+    return totals
+  }
+
+  /** Fold one completed call into the peer's transfer counters. */
+  recordTransfer(deviceId, sentBytes, receivedBytes) {
+    const entry = this.links.get(deviceId)
+    if (!entry) return
+    const stats = entry.transfer ?? (entry.transfer = { calls: 0, sentBytes: 0, receivedBytes: 0, lastAt: null })
+    stats.calls += 1
+    stats.sentBytes += sentBytes
+    stats.receivedBytes += receivedBytes
+    stats.lastAt = now()
   }
 
   resolvePeer(input) {
@@ -683,6 +692,9 @@ export class Mesh {
         pairCode: trusted ? pairCode(this.identity.publicKey, peer.publicKey) : null,
         trustedAt: trusted?.trustedAt ?? null,
         lastSeenAt: trusted?.lastSeen ?? null,
+        // Plugin build the peer announced during its signed hello (null until then).
+        version: entry?.peerVersion ?? null,
+        transfer: entry?.transfer ? { ...entry.transfer } : null,
       })
     }
     for (const trusted of this.trust.list()) {
@@ -702,6 +714,8 @@ export class Mesh {
         pairCode: pairCode(this.identity.publicKey, trusted.publicKey),
         trustedAt: trusted.trustedAt ?? null,
         lastSeenAt: trusted.lastSeen ?? null,
+        version: null,
+        transfer: null,
       })
     }
     return views.sort((a, b) => Number(b.online) - Number(a.online) || String(a.name).localeCompare(String(b.name)))

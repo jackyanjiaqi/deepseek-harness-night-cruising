@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "同账号互联",
-    "description": "同一账号的两个 DSH 实例在局域网或 Tailscale 组网内，通过经认证的 WebRTC 数据通道互相只读访问会话与工作区。",
+    "description": "同一账号的多个 DSH 实例在局域网或 Tailscale 组网内，通过经认证的 WebRTC 数据通道互相只读访问会话与工作区。",
     "detail": "docs/DETAIL.md"
   }
 }

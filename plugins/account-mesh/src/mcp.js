@@ -79,6 +79,20 @@ function toolCatalogue(mesh) {
       }),
     },
     {
+      name: 'mesh_session_index',
+      description: 'Compact index of one remote session: seq, time, role and byte size of every projected item, plus total items and total bytes, without reasoning bodies or tool-call arguments.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          peer: PEER_SCHEMA,
+          sessionId: { type: 'string', description: 'Session id from mesh_session_list.' },
+        },
+        required: ['peer', 'sessionId'],
+        additionalProperties: false,
+      },
+      run: async args => mesh.call(args.peer, 'sessions/index', { sessionId: args.sessionId }),
+    },
+    {
       name: 'mesh_session_summary',
       description: 'Read one remote session end to end and return its full transcript as plain text, ready to summarise.',
       inputSchema: {

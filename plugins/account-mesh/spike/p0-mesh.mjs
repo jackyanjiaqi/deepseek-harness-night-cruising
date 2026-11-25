@@ -115,8 +115,22 @@ try {
   check('sessions/events projects four items', transcript?.items?.length === 4, JSON.stringify(transcript))
   check('assistant text and tool call survive projection', transcript.items[1].text === 'remote answer' && transcript.items[1].toolCalls?.[0] === 'read')
 
+  check('sessions/events reports the session total bytes', transcript.totalBytes === transcript.items.reduce((sum, item) => sum + Buffer.byteLength(item.text ?? '', 'utf8') + Buffer.byteLength(item.reasoning ?? '', 'utf8'), 0) && transcript.itemCount === 4, JSON.stringify({ totalBytes: transcript.totalBytes, itemCount: transcript.itemCount }))
+
   const paged = await meshA.call('device-beta', 'sessions/events', { sessionId: 'session-remote', fromSeq: 3, limit: 10 })
   check('sessions/events pages by seq', paged.items.length === 2 && paged.nextSeq === 5, JSON.stringify(paged))
+
+  const index = await meshA.call('device-beta', 'sessions/index', { sessionId: 'session-remote' })
+  check('sessions/index sizes every item and totals the session',
+    index?.items?.length === 4 && index.totalItems === 4 && index.items.filter(item => item.role !== 'tool-call').every(item => item.bytes > 0),
+    JSON.stringify(index))
+  check('sessions/index carries no reasoning or tool arguments', !JSON.stringify(index.items).includes('notes.txt'))
+
+  const transfer = meshA.transferTotals()
+  check('transfer counters follow completed calls', transfer.calls >= 4 && transfer.receivedBytes > 0 && transfer.sentBytes > 0, JSON.stringify(transfer))
+  check('peer views expose per-peer transfer counters', meshA.peerViews().find(peer => peer.deviceId === 'device-beta')?.transfer?.calls >= 4, JSON.stringify(meshA.peerViews()))
+  check('hello exchange reveals the peer plugin version', meshA.peerViews().find(peer => peer.deviceId === 'device-beta')?.version === '0.1.0-test'
+    && meshB.peerViews().find(peer => peer.deviceId === 'device-alpha')?.version === '0.1.0-test', JSON.stringify(meshA.peerViews()))
 
   const file = await meshA.call('device-beta', 'files/read', { path: 'notes.txt', offset: 1, limit: 2 })
   check('files/read reads a line window in the allowed root', file?.lines?.join('|') === 'line two|line three', JSON.stringify(file))

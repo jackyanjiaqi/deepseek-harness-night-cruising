@@ -1,6 +1,6 @@
 # 同账号互联（account mesh）
 
-两个 **登录同一 DeepSeek 账号** 的 DSH 实例，在局域网（含 Tailscale 组网）内互相发现，用 Ed25519 身份认证做握手，然后用 WebRTC 数据通道传输，允许各自的 agent **只读**访问对方的会话与工作区。
+多个 **登录同一 DeepSeek 账号** 的 DSH 实例，在局域网（含 Tailscale 组网）内互相发现，用 Ed25519 身份认证做握手，然后用 WebRTC 数据通道传输，允许各自的 agent **只读**访问对方的会话与工作区。
 
 ## 能做什么
 
@@ -12,6 +12,7 @@ ai 侧可用的工具（本地 agent 调用，不会写远端）：
 | `mesh_peers` | 同账号对端：在线、连接、延迟、是否已信任 |
 | `mesh_session_list` | 远端会话列表（标题、工作目录、时间、live/persisted） |
 | `mesh_session_read` | 远端会话消息窗口（user / assistant / tool 调用与结果），按 `nextSeq` 翻页 |
+| `mesh_session_index` | 会话紧凑索引：每条投影消息的 seq/角色/字节数与全会话总量，不含 reasoning 正文与工具参数（需对端 ≥ rc.10） |
 | `mesh_session_summary` | 分页读完远端会话全部事件，返回纯文本 transcript，便于一次总结整段对话 |
 | `mesh_workspace_list` | 远端工作区列表，或某个目录内容 |
 | `mesh_file_read` | 远端文本文件按行读取，返回 `hasMore` |
@@ -19,6 +20,14 @@ ai 侧可用的工具（本地 agent 调用，不会写远端）：
 | `mesh_peer_forget` | 撤销信任并断开 |
 
 设置页「同账号互联」显示状态、设备指纹、发现地址、Tailscale 探测结果与对端列表，并提供信任 / 撤销 / 重连。
+
+## 会话数据量与传输缓存（rc.10）
+
+- **数据总量**：`sessions/events` 响应附带 `itemCount` / `totalBytes` / `pageBytes`（整个会话，不是当前窗口）；`sessions/index` 返回紧凑索引（每条消息的 seq/时间/角色/字节），用于在不拉全文的情况下知道一个会话多大。面板把已知总量追加在会话行与工具条上。
+- **对端兼容**：旧对端（< rc.10）不支持 `sessions/index` 时，面板静默降级——分页若也没带总量，就只显示会话列表，不报错、不产生 502 噪音。
+- **传输缓存**：Host 侧对 `sessions/index` 与 `transcript` 分页做有界缓存（64 索引 / 512 页，LRU）。非强制刷新命中缓存时响应标记 `cached: true, bytes: 0`，不再向对端拉取；「强制刷新」按钮带 `force=1` 绕过缓存，另有 `POST /api/cache/clear`。
+- **版本互通**：hello / hello-ack 握手互带插件版本（`v`），`peerViews` 暴露 `version`，面板悬停可见对端插件版本，不再出现“两边不同版却不自知”。
+- **传输计数器**：每次完成的 RPC 按请求/响应字节数累计（`transferTotals()`、`peerViews[].transfer`），只做统计，不做任何门控。
 
 ## 工作方式
 
