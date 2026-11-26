@@ -17,6 +17,8 @@ import { createLog } from './src/log.js'
 import { registerTools } from './src/tools.js'
 import { registerRoutes } from './src/routes.js'
 import { registerMcp } from './src/mcp.js'
+import { detectDistribution } from './src/distribution.js'
+import { CodecController } from './src/codec.js'
 
 export const name = 'account-mesh'
 export const inject = []
@@ -30,7 +32,16 @@ export function apply(ctx, config = {}) {
   const log = createLog({ dir: dataDir, debug: config.debug !== false, logger: ctx.logger })
   log.info(`starting dsh-account-mesh ${version}`)
 
-  const mesh = new Mesh({ ctx, config, log, version })
+  // Edition gate for the optional JLC transfer codec. Standard DSH stays on
+  // JSONL; Night Cruising may load the native module after a restart.
+  const edition = detectDistribution({ config })
+  const codec = new CodecController({ ctx, config, log, edition, dataDir, here })
+  ctx.effect(() => {
+    codec.start().catch(error => log.warn(`account-mesh: codec start failed: ${error.message}`))
+    return () => codec.stop()
+  }, 'account-mesh: codec')
+
+  const mesh = new Mesh({ ctx, config, log, version, codec })
   ctx.effect(() => {
     mesh.start()
     return () => mesh.stop()
@@ -42,7 +53,7 @@ export function apply(ctx, config = {}) {
     child.effect(() => registerTools(child, mesh, log), 'account-mesh: agent tools')
   })
   ctx.inject(['webServer'], child => {
-    child.effect(() => registerRoutes(child, mesh, log), 'account-mesh: panel routes')
+    child.effect(() => registerRoutes(child, mesh, log, codec), 'account-mesh: panel routes')
   })
   // Optional MCP endpoint: exposes the same read-only operations to external
   // MCP clients (streamable HTTP). Off unless `mcpPort` is configured.

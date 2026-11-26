@@ -105,6 +105,40 @@ export function registerTools(ctx, mesh, log) {
   disposers.push(
     register(
       define({
+        name: 'mesh_session_fetch',
+        description:
+          'Fetch one remote session end to end with the JLC block codec and return its projected transcript items. The archive and session bytes stay in local memory; nothing is written to disk. Requires both peers to have JLC active (Night Cruising). Prefer this over paging sessions/events for a full-session read.',
+        properties: {
+          peer: PEER_PARAM,
+          sessionId: { type: 'string', description: 'Session id from mesh_session_list.' },
+          priority: { type: 'string', description: 'JLC priority: dialog (default) or none.' },
+        },
+        required: ['peer', 'sessionId'],
+        execute: async (args, exec) => {
+          const peer = requireString(args, 'peer')
+          const sessionId = requireString(args, 'sessionId')
+          const result = await mesh.fetchSession(peer, sessionId, {
+            priority: args.priority === 'none' ? 'none' : 'dialog',
+            signal: exec?.signal,
+          })
+          return {
+            sessionId: result.sessionId,
+            itemCount: result.items.length,
+            items: result.items,
+            rawBytes: result.rawBytes,
+            archiveBytes: result.archiveBytes,
+            blocks: result.blocks,
+            elapsedMs: result.elapsedMs,
+            vaultHit: result.vaultHit === true,
+          }
+        },
+      }),
+    ),
+  )
+
+  disposers.push(
+    register(
+      define({
         name: 'mesh_session_summary',
         description:
           'Read one remote session end to end and return its full projected transcript as plain text (user/assistant messages, tool calls, tool results, errors) so the caller can summarise it. Pages internally through sessions/events; returns every item, not a truncated window.',

@@ -6,12 +6,15 @@ Read-only mesh between DSH instances signed in to the **same DeepSeek account**,
 - Handshake: p2play-js style room / deterministic initiator / signed `offer`/`answer`/`ice` fragments over the same UDP socket.
 - Authentication: Ed25519 nonce challenge on the data channel, bound to a local trust table.
 - Data plane: read-only whitelist — sessions list/read, workspaces list, file list/stat/read. No write, prompt, shell or arbitrary-command path exists.
+- Transfer: JSONL by default in standard DSH; Night Cruising may enable the optional JLC codec after a restart. The setting page and site-owned download/featured links live in the `transfer` state.
 
 Full capability notes and limitations: [docs/DETAIL.md](docs/DETAIL.md).
 
 ## Agent tools
 
-`mesh_status`, `mesh_peers`, `mesh_session_list`, `mesh_session_read`, `mesh_session_summary`, `mesh_workspace_list`, `mesh_file_read`, `mesh_peer_pair`, `mesh_peer_forget`.
+`mesh_status`, `mesh_peers`, `mesh_session_list`, `mesh_session_read`, `mesh_session_summary`, `mesh_session_fetch`, `mesh_workspace_list`, `mesh_file_read`, `mesh_peer_pair`, `mesh_peer_forget`.
+
+`mesh_session_fetch` pulls a whole session through the JLC binary block channel into local memory and returns its projected transcript. The JLC archive may be cached in the encrypted, process-lifetime **vault** (`vault/*.ncv`, AES-256-GCM, 0600); it is not a user-visible file store and is cleared when DSH exits.
 
 `mesh_session_summary` pages through a whole remote session and returns its transcript as plain text, so the agent can summarise a remote conversation in one call.
 
@@ -43,7 +46,7 @@ Then `mcp__account-mesh__mesh_session_summary` reads a remote session by id and 
 
 ## Panel
 
-Settings → Account mesh: status, device fingerprint, discovery addresses, Tailscale probe result, discovery channels with LAN/Tailscale probes, local test peer toggle, peer devices with trust/revoke/reconnect.
+Settings → Account mesh: status, transfer mode (JSONL / JLC), device fingerprint, discovery addresses, Tailscale probe result, discovery channels with LAN/Tailscale probes, local test peer toggle, peer devices with trust/revoke/reconnect. In standard DSH the transfer card shows JSONL only and links to the Night Cruising download page; Night Cruising shows `本地到远端 巡航加速中` or `本地到远端 重启即出发` and a site-owned 插件精选 link.
 
 ## Local development
 

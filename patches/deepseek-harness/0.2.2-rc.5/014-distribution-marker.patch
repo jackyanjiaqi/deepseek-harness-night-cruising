@@ -1,0 +1,19 @@
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 3acebea02feac99b9a56f2a96eeb7e9fa6df3786..b7e303cc7f5e64def289563240567707cbbf010c 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -534,7 +534,13 @@ async function main(): Promise<void> {
+   const backend = new DesktopBackendController((onFailure) => {
+     const hostInspectPort = developmentHostInspectPort(development)
+     const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
+-      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion() }, onFailure,
++      hostInspectPort, {
++        ...hostEnvironment,
++        DSH_CLIENT_VERSION: desktopClientVersion(),
++        // Authoritative edition marker for plugins that ship in both DSH and
++        // Night Cruising. Native DSH deliberately leaves this unset.
++        DSH_DISTRIBUTION: 'night-cruising',
++      }, onFailure,
+       primaryRuntime,
+       resources, (next) => { platformView.setSession(next) }, (record) => {
+         operationJournal ??= new OperationJournal(join(app.getPath('userData'), 'plugin-operations'), {

@@ -11,12 +11,28 @@
  * a default at activation, so a partial profile override never breaks the
  * row. See cordis.patch.yml.
  */
+import fs from 'node:fs'
 import { DocServerManager } from './src/manager.js'
 import { registerRoutes } from './src/routes.js'
 import { registerTools } from './src/tools.js'
 
 export const name = 'doc-server'
 export const inject = []
+
+/**
+ * Plugin version, read from this package's own manifest so the settings page
+ * badge never drifts from what was actually installed. No new dependency.
+ */
+const PACKAGE_VERSION = (() => {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
+    return typeof manifest.version === 'string' ? manifest.version : null
+  } catch {
+    return null
+  }
+})()
+
+export const version = PACKAGE_VERSION
 
 /**
  * Activate the document-service manager.
@@ -28,7 +44,7 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => () => manager.stopAll(), 'doc-server: server lifetime')
 
   ctx.inject(['webServer'], (child) => {
-    child.effect(() => registerRoutes(child, manager, child.logger), 'doc-server: control routes')
+    child.effect(() => registerRoutes(child, manager, child.logger, PACKAGE_VERSION), 'doc-server: control routes')
   })
 
   ctx.inject(['tools'], (child) => {

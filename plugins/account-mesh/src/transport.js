@@ -13,6 +13,7 @@ import { frameId, parseJson } from './util.js'
 const CHUNK_SIZE = 48 * 1024
 const RPC = 'mesh-rpc'
 const PING = 'mesh-ping'
+const BIN = 'mesh-bin'
 
 export class PeerLink extends EventEmitter {
   constructor(options) {
@@ -63,6 +64,7 @@ export class PeerLink extends EventEmitter {
     if (this.initiator) {
       this.attach(pc.createDataChannel(RPC, { ordered: true }))
       this.attach(pc.createDataChannel(PING, { ordered: false, maxRetransmits: 0 }))
+      this.attach(pc.createDataChannel(BIN, { ordered: true, maxMessageSize: 262144 }))
     }
   }
 
@@ -82,7 +84,17 @@ export class PeerLink extends EventEmitter {
   }
 
   onMessage(label, message) {
-    const text = typeof message === 'string' ? message : Buffer.from(message).toString('utf8')
+    if (typeof message !== 'string') {
+      const buffer = Buffer.isBuffer(message) ? message : Buffer.from(message)
+      // JLC binary frames are handled by the transfer manager, never parsed as
+      // UTF-8 JSON envelopes.
+      if (buffer.subarray(0, 4).toString('ascii') === 'JLCB') {
+        this.emit('binary', { label, buffer })
+        return
+      }
+      message = buffer.toString('utf8')
+    }
+    const text = message
     const envelope = parseJson(text)
     if (envelope && envelope.__chunkId) {
       const key = `${label}:${envelope.__chunkId}`
@@ -118,6 +130,20 @@ export class PeerLink extends EventEmitter {
 
   rpc(frame) {
     return this.send(RPC, JSON.stringify(frame))
+  }
+
+  /** Send one binary JLC frame on the reliable binary channel. */
+  sendBinary(buffer) {
+    const channel = this.channels.get(BIN)
+    if (!channel || !channel.isOpen()) return false
+    try {
+      if (typeof channel.sendMessageBinary === 'function') channel.sendMessageBinary(buffer)
+      else channel.sendMessage(buffer)
+      return true
+    } catch (error) {
+      this.log?.warn?.(`binary send failed: ${error.message}`)
+      return false
+    }
   }
 
   ping() {
@@ -163,4 +189,4 @@ export class PeerLink extends EventEmitter {
   }
 }
 
-export { RPC, PING }
+export { RPC, PING, BIN }

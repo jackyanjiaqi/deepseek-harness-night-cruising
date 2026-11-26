@@ -75,6 +75,7 @@ Linux 的 `deb` 需要维护者地址，默认写入 `Night Cruising <night-crui
 | 等待与轮询 | `wait.session.default` | 30 秒 |
 | 工具执行 | `tool.call`、`tool.bash`、`tool.persistentBash`、`tool.worktree`、`web.fetch` | 0（不限制） |
 | 服务维护 | `lsp.shutdown` / `lsp.grace` | 10 秒 / 5 秒 |
+| 服务维护 | `mcp.operation` / `mcp.tool` | 0（不限制） |
 | 运行观测 | `job.status.afterMs` / `workflow.progress.interval` | 5 分钟 / 60 秒 |
 | 重复调用守卫 | `guard.repeat.*`（窗口、阈值、提醒间隔、阻断） | 24 / 8 / 20 / 关闭 |
 | 模型请求 | `llm.request` | 固定不限制（仓库政策） |

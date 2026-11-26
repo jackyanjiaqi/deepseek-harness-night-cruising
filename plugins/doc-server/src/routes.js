@@ -44,9 +44,10 @@ function readBody(req) {
  * @param {any} ctx - Host context with `webServer`.
  * @param {import('./manager.js').DocServerManager} manager - instance owner.
  * @param {any} log - plugin logger.
+ * @param {string|null} [version] - plugin version read from package.json.
  * @returns {() => void} unregister.
  */
-export function registerRoutes(ctx, manager, log) {
+export function registerRoutes(ctx, manager, log, version = null) {
   return ctx.webServer.register({
     kind: 'prefix',
     path: BASE,
@@ -58,7 +59,7 @@ export function registerRoutes(ctx, manager, log) {
         const route = url.pathname.slice(BASE.length) || '/'
 
         if (route === '/api/list' && req.method === 'GET') {
-          return json(res, 200, { ok: true, servers: manager.list() })
+          return json(res, 200, { ok: true, version, servers: manager.list() })
         }
         if (route === '/api/state' && req.method === 'GET') {
           const sessionId = String(url.searchParams.get('sessionId') ?? '')

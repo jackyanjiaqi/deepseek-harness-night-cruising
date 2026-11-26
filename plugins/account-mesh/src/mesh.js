@@ -13,6 +13,8 @@ import path from 'node:path'
 import { Discovery, localAddresses, tailscalePeers } from './discovery.js'
 import { SignalInbox, encodeSignal, parseSignalPayload, roomOf } from './signaling.js'
 import { PeerLink, RPC } from './transport.js'
+import { TransferManager } from './transfer.js'
+import { EncryptedVault } from './vault.js'
 import { DataPlane, rpcError } from './data.js'
 import { PendingCalls, requestFrame, toWireError } from './rpc.js'
 import { fingerprintOf, loadOrCreateIdentity, pairCode, signBytes, verifyBytes } from './identity.js'
@@ -60,10 +62,16 @@ export const DEFAULT_CONFIG = {
   mcpPort: null,
   mcpPath: '/mcp',
   mcpToken: '',
+  // Test-only: force a device id so two Hosts on one machine can act as two
+  // distinct peers. Leave empty in production; the account device identity wins.
+  deviceId: '',
+  // Encrypted process-lifetime cache for remote JLC archives.
+  vaultEnabled: true,
+  vaultMaxBytes: 268435456,
 }
 
 export class Mesh {
-  constructor({ ctx, config, log, version }) {
+  constructor({ ctx, config, log, version, codec }) {
     this.ctx = ctx
     this.config = { ...DEFAULT_CONFIG, ...(config ?? {}) }
     this.log = log
@@ -73,6 +81,11 @@ export class Mesh {
     this.identity = loadOrCreateIdentity(this.dataDir)
     this.trust = new TrustStore(path.join(this.dataDir, 'peers.json'))
     this.data = new DataPlane(ctx, this.config, log)
+    this.codec = codec
+    this.vault = this.config.vaultEnabled === false
+      ? null
+      : new EncryptedVault({ dir: path.join(this.dataDir, 'vault'), maxBytes: this.config.vaultMaxBytes, log })
+    this.transfer = new TransferManager({ ctx, config: this.config, log, codec, vault: this.vault })
     this.account = { status: 'unknown' }
     this.accountTag = undefined
     this.deviceId = undefined
@@ -93,6 +106,7 @@ export class Mesh {
   start() {
     if (this.started) return
     this.started = true
+    this.vault?.open().catch(error => this.noteError(error))
     this.timers.push(setInterval(() => this.guard(() => this.refreshAccount()), 15000))
     this.timers.push(setInterval(() => this.guard(() => this.housekeeping()), 3000))
     this.refreshAccount().catch(error => this.noteError(error))
@@ -108,6 +122,8 @@ export class Mesh {
     this.discovery = undefined
     for (const pending of this.pending.values()) pending.rejectAll(new Error('mesh stopped'))
     this.pending.clear()
+    await this.vault?.clear()
+    this.vault?.clearSync()
   }
 
   /** Run one periodic task; a failure is recorded instead of becoming a fatal Host exception. */
@@ -133,7 +149,7 @@ export class Mesh {
     const changed = tag !== this.accountTag || account.status !== this.account.status
     this.account = account
     if (account.status === 'ready' && tag) {
-      this.deviceId = account.deviceId ?? `local-${digest(this.identity.publicKey, 12)}`
+      this.deviceId = this.config.deviceId || account.deviceId || `local-${digest(this.identity.publicKey, 12)}`
       this.accountTag = tag
       if (!this.discovery || changed) await this.restartDiscovery()
     } else if (this.discovery && (account.status !== 'ready' || !tag)) {
@@ -255,6 +271,7 @@ export class Mesh {
       this.sendSignal(peer, 'ice', { candidate, mid })
     })
     link.on('message', ({ text }) => this.onLinkText(peer, entry, text))
+    link.on('binary', ({ buffer }) => this.transfer.onBinary(buffer))
     link.on('state', state => {
       if (state === 'open') {
         entry.openedAt = now()
@@ -366,6 +383,7 @@ export class Mesh {
     })
     link.on('local-candidate', ({ candidate, mid }) => this.sendSignal(peer, 'ice', { candidate, mid }))
     link.on('message', ({ text }) => this.onLinkText(peer, entry, text))
+    link.on('binary', ({ buffer }) => this.transfer.onBinary(buffer))
     link.on('state', state => {
       if (state === 'open') {
         entry.openedAt = now()
@@ -494,7 +512,11 @@ export class Mesh {
       return
     }
     try {
-      const result = await this.runOp(frame.op, frame.params ?? {})
+      let result
+      if (frame.op === 'sessions/export/prepare') result = await this.transfer.prepare(frame.params ?? {}, entry)
+      else if (frame.op === 'sessions/export/block') result = await this.transfer.block(frame.params ?? {}, entry)
+      else if (frame.op === 'sessions/export/cancel') result = await this.transfer.cancel(frame.params ?? {})
+      else result = await this.runOp(frame.op, frame.params ?? {})
       respond({ ok: true, result })
     } catch (error) {
       respond({ ok: false, err: toWireError(error) })
@@ -562,6 +584,38 @@ export class Mesh {
       () => {},
     )
     return promise
+  }
+
+  /** Pull one remote session with JLC into memory and project it. */
+  fetchSession(peerId, sessionId, options = {}) {
+    return this.transfer.fetch({
+      peerId,
+      sessionId,
+      priority: options.priority ?? 'dialog',
+      call: (target, op, params) => this.call(target, op, params, options.signal),
+      onProgress: options.onProgress,
+    })
+  }
+
+  /** Active JLC transfer progress for the panel. */
+  transferState() {
+    return this.transfer.state()
+  }
+
+  /** Memory-only JLC cache stats. */
+  cacheState() {
+    return this.transfer.cacheState()
+  }
+
+  /** Aggregate encrypted-vault status; never lists entries or keys. */
+  vaultState() {
+    return this.vault?.state() ?? null
+  }
+
+  /** Clear the encrypted vault; only aggregate state is ever reported. */
+  async clearVault() {
+    await this.vault?.clear()
+    return this.vaultState()
   }
 
   /** Summed transfer counters over every link (panel and agent view). */
@@ -656,6 +710,9 @@ export class Mesh {
           }
         : null,
       lastError: this.lastError ?? null,
+      transfers: this.transferState(),
+      cache: this.cacheState(),
+      vault: this.vault?.state() ?? null,
       peers: this.peerViews(),
     }
   }

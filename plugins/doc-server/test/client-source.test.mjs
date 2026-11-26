@@ -15,3 +15,11 @@ test('client only calls the observable store methods it actually defines', () =>
   const allowed = new Set(['getSnapshot', 'set', 'subscribe'])
   assert.deepEqual([...new Set(calls.filter(name => !allowed.has(name)))], [])
 })
+
+test('settings page renders the version served by /api/list', () => {
+  // The badge mirrors account-mesh: the Host reads package.json and serves it
+  // on /api/list, and the settings title renders it as `v<version>`.
+  assert.match(source, /typeof result\.version === 'string'/)
+  assert.match(source, /className: 'dsd-title-version'/)
+  assert.match(source, /`v\$\{snapshot\.version\}`/)
+})

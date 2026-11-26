@@ -53,7 +53,7 @@ export function bytesOfItem(item) {
  * call names: that is the index payload the tree uses to size a session
  * without shipping its whole transcript.
  */
-function projectEvent(event, { compact = false } = {}) {
+export function projectEvent(event, { compact = false } = {}) {
   if (!SESSION_EVENT_KINDS.has(event.type)) return undefined
   const data = event.data ?? {}
   if (event.type === 'user/message') {

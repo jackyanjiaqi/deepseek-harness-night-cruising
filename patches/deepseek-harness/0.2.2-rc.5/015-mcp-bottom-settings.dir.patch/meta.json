@@ -1,0 +1,29 @@
+{
+  "type": "dir-patch",
+  "added": [
+    "packages/bundle/web-app/src/night-timeouts.ts",
+    "packages/mcp/mcp-client/src/connection.ts",
+    "packages/mcp/mcp-client/src/deadline.ts",
+    "packages/mcp/mcp-client/src/generation.ts",
+    "packages/mcp/mcp-client/src/probe.ts",
+    "packages/mcp/mcp-client/src/tools.ts",
+    "packages/mcp/mcp-client/tests/deadline.spec.ts"
+  ],
+  "deleted": [
+    "packages/bundle/web-app/src/night-timeouts.ts",
+    "packages/mcp/mcp-client/src/connection.ts",
+    "packages/mcp/mcp-client/src/deadline.ts",
+    "packages/mcp/mcp-client/src/generation.ts",
+    "packages/mcp/mcp-client/src/probe.ts",
+    "packages/mcp/mcp-client/src/tools.ts"
+  ],
+  "modes": {},
+  "before": {
+    "packages/bundle/web-app/src/night-timeouts.ts": "100644 d6c9f3307d4f59f4d40c16f90e0f74e2aa53cbe5",
+    "packages/mcp/mcp-client/src/connection.ts": "100644 19180aa8c813ea27d2be0a4efd74943a4462faa2",
+    "packages/mcp/mcp-client/src/deadline.ts": "100644 da048c22914f06f26b62906330401de234630913",
+    "packages/mcp/mcp-client/src/generation.ts": "100644 79a47e039b72baee04b829e91aeddf7e10b4ee86",
+    "packages/mcp/mcp-client/src/probe.ts": "100644 80719cd3b564569ec7d569719ce2ee9c2eb406e4",
+    "packages/mcp/mcp-client/src/tools.ts": "100644 6b6920d8cbcb91e68d0fc8b11fffb1908c4f0cee"
+  }
+}

@@ -248,6 +248,7 @@ window.__ModuleLoader__.load({
       servers: [],
       byId: {},
       localUrls: {},
+      version: null,
       loading: false,
       error: null,
     })
@@ -283,6 +284,7 @@ window.__ModuleLoader__.load({
             servers,
             byId: nextById,
             localUrls,
+            version: typeof result.version === 'string' ? result.version : null,
             loading: false,
             error: null,
           })
@@ -471,6 +473,7 @@ window.__ModuleLoader__.load({
       .dsd-error { color: var(--dsw-alias-state-error-primary, #d64545); font-size: 12px; padding: 6px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2); }
       .dsd-page { padding: 4px 2px 28px; max-width: 900px; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 1.55; }
       .dsd-page h2 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+      .dsd-title-version { margin-left: 10px; font-size: 11px; font-weight: 400; vertical-align: 2px; font-family: var(--dsh-code-font-family, ui-monospace, SFMono-Regular, Menlo, monospace); color: var(--dsw-alias-label-secondary); border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; padding: 1px 8px; background: var(--dsw-alias-bg-layer-2); }
       .dsd-page-desc { margin: 0 0 14px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
       .dsd-page-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
       .dsd-card { border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
@@ -854,7 +857,8 @@ window.__ModuleLoader__.load({
       return h(React.Fragment, null,
         h(StyleTag, null),
         h('div', { className: 'dsd-page', 'data-dsh-doc-server-settings': '' },
-          h('h2', null, t('settings.title')),
+          h('h2', null, t('settings.title'),
+            snapshot.version ? h('span', { className: 'dsd-title-version' }, `v${snapshot.version}`) : null),
           h('p', { className: 'dsd-page-desc' }, t('settings.description')),
           h('div', { className: 'dsd-page-tools' },
             h('button', { type: 'button', className: 'dsd-button', onClick: () => { void refresh() } }, t('settings.refresh')),

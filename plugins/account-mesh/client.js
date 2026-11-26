@@ -116,6 +116,7 @@ window.__ModuleLoader__.load({
         workspaceUnknown: '未知工作区',
         readOnlyTag: '只读',
         noWorkspaces: '这个对端没有工作区。',
+        noVisibleWorkspaces: '这个对端没有可展示的会话。',
         sessionsPane: '会话',
         conversationTab: '对话',
         trajectoryTab: '轨迹',
@@ -152,6 +153,32 @@ window.__ModuleLoader__.load({
         peerVersionLabel: '插件版本',
         transferLabel: '传输',
         transferValue: '已收 {received} · 已发 {sent} · {calls} 次调用',
+        transferTitle: '传输方式',
+        transferJsonl: 'JSONL',
+        transferJlc: 'JLC',
+        transferCruising: '本地到远端 巡航加速中',
+        transferRestart: '本地到远端 重启即出发',
+        transferJsonlHint: '当前为 JSONL 传输方式。夜间巡航版可在本地到远端启用 JLC 巡航加速。',
+        transferRestartHint: '设置已保存，重启 DSH 后生效。',
+        transferEnable: '启用 JLC 巡航加速',
+        transferDisable: '改用 JSONL',
+        transferUnavailable: 'JLC 加速组件不可用',
+        transferDisabled: 'JLC 巡航加速已关闭，当前为 JSONL 传输方式。',
+        transferLinksUnavailable: '精选配置暂不可用',
+        transferEditionDsh: '原生 DSH',
+        transferEditionNight: '夜间巡航版',
+        fetchFull: 'JLC 拉取完整会话',
+        fetching: '拉取中',
+        fetchProgress: '拉取中 {received}/{total} 块 · {percent}%',
+        fetchFailed: '拉取失败',
+        fetchDialogReady: '对话已到，继续拉取其余数据…',
+        fetchComplete: '完整会话已到',
+        vaultTitle: '保险柜',
+        vaultHint: '远端会话在本机的加密临时缓存；关闭 DSH 后自动清除，面板不提供查看。',
+        vaultEmpty: '保险柜为空',
+        vaultUsage: '已加密 {bytes} · {entries} 项',
+        vaultClear: '清空保险柜',
+        vaultCleared: '保险柜已清空',
       },
       en: {
         title: 'Account mesh',
@@ -254,6 +281,7 @@ window.__ModuleLoader__.load({
         workspaceUnknown: 'Unknown workspace',
         readOnlyTag: 'read-only',
         noWorkspaces: 'This peer has no workspace.',
+        noVisibleWorkspaces: 'This peer has no sessions to show.',
         sessionsPane: 'Sessions',
         conversationTab: 'Conversation',
         trajectoryTab: 'Trajectory',
@@ -290,6 +318,32 @@ window.__ModuleLoader__.load({
         peerVersionLabel: 'Plugin version',
         transferLabel: 'Transfer',
         transferValue: 'received {received} · sent {sent} · {calls} calls',
+        transferTitle: 'Transfer',
+        transferJsonl: 'JSONL',
+        transferJlc: 'JLC',
+        transferCruising: 'Local → remote: cruising',
+        transferRestart: 'Local → remote: restart to take off',
+        transferJsonlHint: 'JSONL transfer is in use. Night Cruising can enable JLC cruising acceleration for local → remote.',
+        transferRestartHint: 'Saved. Restart DSH to apply.',
+        transferEnable: 'Enable JLC cruising',
+        transferDisable: 'Switch to JSONL',
+        transferUnavailable: 'JLC acceleration component unavailable',
+        transferDisabled: 'JLC cruising is off; JSONL transfer is in use.',
+        transferLinksUnavailable: 'Featured configuration unavailable',
+        transferEditionDsh: 'Standard DSH',
+        transferEditionNight: 'Night Cruising',
+        fetchFull: 'Fetch full session with JLC',
+        fetching: 'Fetching',
+        fetchProgress: 'Fetching {received}/{total} blocks · {percent}%',
+        fetchFailed: 'Fetch failed',
+        fetchDialogReady: 'Dialog is ready; fetching the rest…',
+        fetchComplete: 'Full session received',
+        vaultTitle: 'Vault',
+        vaultHint: 'Encrypted temporary cache of remote sessions on this machine. Cleared when DSH exits; no viewer is provided.',
+        vaultEmpty: 'Vault is empty',
+        vaultUsage: '{bytes} encrypted · {entries} entries',
+        vaultClear: 'Clear vault',
+        vaultCleared: 'Vault cleared',
       },
     }
 
@@ -333,7 +387,9 @@ window.__ModuleLoader__.load({
       hint: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11.5px', margin: '10px 0 0' },
       error: { color: 'var(--dsw-alias-state-error-primary, #d64545)', fontSize: '12px', margin: '8px 0 0' },
       panel: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, color: 'var(--dsw-alias-label-primary)', fontSize: contentFont, lineHeight: contentLineTall },
-      panelHead: { display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 16px', borderBottom: '1px solid var(--dsw-alias-border-l2)', flexWrap: 'wrap' },
+      // Padding lives in PANEL_CSS so the darwin clearance rules can override it
+      // without fighting an inline shorthand.
+      panelHead: { display: 'flex', alignItems: 'center', gap: '10px', borderBottom: '1px solid var(--dsw-alias-border-l2)', flexWrap: 'wrap' },
       panelBody: { display: 'flex', flex: 1, minHeight: 0 },
       treePane: (width) => ({ width: `${width}px`, flex: 'none', overflow: 'auto', padding: '8px 8px 24px', minWidth: 0 }),
       transcriptPane: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 },
@@ -341,13 +397,16 @@ window.__ModuleLoader__.load({
       splitterLine: { width: '1px', height: '100%', background: 'var(--dsw-alias-border-l2)', transition: 'background 120ms ease, width 120ms ease' },
       treeRow: (depth) => ({
         display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 8px', paddingLeft: `${8 + depth * 16}px`,
-        borderRadius: 'var(--dsw-radius-sm, 6px)', fontSize: contentFont, minWidth: 0,
+        borderRadius: 'var(--dsw-radius-sm, 6px)', fontSize: contentFont, minWidth: 0, position: 'relative',
       }),
       treeButton: { display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0, padding: 0, background: 'transparent', border: 'none', color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer' },
       treeIcon: { display: 'inline-flex', alignItems: 'center', flex: 'none' },
       treeName: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' },
       treeMeta: { color: 'var(--dsw-alias-label-secondary)', fontSize: secondaryFont, flex: 'none' },
-      chevron: { width: 'calc(14px + var(--dsh-content-font-delta, 0px))', flex: 'none', color: 'var(--dsw-alias-label-secondary)' },
+      // Row meta hugs the right edge; the copy affordance floats over it on
+      // hover/focus instead of reserving a permanent slot beside the title.
+      treeMetaRight: { color: 'var(--dsw-alias-label-secondary)', fontSize: secondaryFont, flex: 'none', marginLeft: 'auto' },
+      treeActions: { position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center' },
       msg: { padding: '10px 16px', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
       msgRole: { fontSize: secondaryFont, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--dsw-alias-label-secondary)', marginBottom: '4px' },
       msgText: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: contentFont, lineHeight: contentLineTall },
@@ -383,7 +442,7 @@ window.__ModuleLoader__.load({
       reasoningText: { marginTop: '6px', padding: '8px 12px', borderLeft: '2px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: secondaryFont, lineHeight: secondaryLine },
       errorMeta: { color: 'var(--dsw-alias-state-error-primary, #d64545)', fontSize: secondaryFont, marginTop: '4px' },
       copyButton: { font: 'inherit', fontSize: secondaryFont, cursor: 'pointer', color: 'var(--dsw-alias-label-secondary)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 'var(--dsw-radius-sm, 6px)', padding: '3px 10px', lineHeight: secondaryLine, minWidth: '48px' },
-      copyIconButton: { padding: '0 6px', fontSize: contentFont, minWidth: '26px', opacity: 0, transition: 'opacity 120ms ease' },
+      copyIconButton: { padding: '0 6px', fontSize: contentFont, minWidth: '26px' },
       copyFailed: { color: 'var(--dsw-alias-state-error-primary, #d64545)', borderColor: 'var(--dsw-alias-state-error-primary, #d64545)' },
       input: { font: 'inherit', fontSize: '12px', color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '7px', padding: '3px 10px', minWidth: '220px' },
     }
@@ -418,6 +477,15 @@ window.__ModuleLoader__.load({
 
     /** Hover/focus affordances the inline style objects cannot express. */
     const PANEL_CSS = `
+      .am-panel-head { padding: 12px 16px; }
+      /* macOS desktop: the main panel can reach the top-left corner while the
+         sidebar is collapsed, so the head yields the traffic-light band. The
+         clearance replaces the ordinary inset instead of stacking on it, and
+         the rule stays inert on every other platform. */
+      html[data-platform="darwin"] .am-panel-head {
+        padding-top: var(--dsh-frame-top-clearance, 0px);
+        padding-inline-start: var(--dsh-frame-leading-clearance, 0px);
+      }
       .am-button { background: var(--dsw-alias-bg-layer-1); }
       .am-copy { background: var(--dsw-alias-bg-layer-1); }
       .am-tab { background: var(--dsw-alias-bg-layer-1); }
@@ -431,9 +499,13 @@ window.__ModuleLoader__.load({
       .am-splitter:hover { background: var(--dsw-alias-interactive-bg-hover); }
       .am-splitter:hover .am-splitter-line, .am-splitter[data-dragging] .am-splitter-line { background: var(--dsw-alias-brand-primary); width: 2px; }
       .am-splitter:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
-      /* The copy button only appears while its row is hovered or focused, so the
-         title keeps the full width the rest of the time. */
-      .am-tree-row:hover .am-copy, .am-tree-row:focus-within .am-copy { opacity: 1; }
+      /* The copy button floats over the row's right edge instead of occupying
+         flow space, so the title keeps the full width the rest of the time.
+         Tab focus still reaches it: focus-within reveals it, and the meta only
+         steps aside while the row is hovered or focused. */
+      .am-tree-actions { opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+      .am-tree-row:hover .am-tree-actions, .am-tree-row:focus-within .am-tree-actions { opacity: 1; pointer-events: auto; }
+      .am-tree-row:hover .am-tree-meta, .am-tree-row:focus-within .am-tree-meta { padding-right: 30px; }
       /* Only a label wider than its box scrolls: the inner text keeps its full
          width (no ellipsis) and slides left until its end is visible. The
          overflow flag is measured on hover, so short labels never animate.
@@ -458,10 +530,13 @@ window.__ModuleLoader__.load({
 
     function useMeshState() {
       const [state, setState] = React.useState({ data: null, error: null })
+      // The polling load is also exposed as `refresh`, so a mutation can pull
+      // the new state immediately instead of waiting for the next tick.
+      const refreshRef = React.useRef(null)
       React.useEffect(() => {
         let alive = true
         let timer
-        const load = async () => {
+        const fetchState = async () => {
           try {
             const response = await fetch('/account-mesh/api/state', { headers: { accept: 'application/json' } })
             const body = await response.json().catch(() => ({}))
@@ -470,15 +545,19 @@ window.__ModuleLoader__.load({
           } catch (error) {
             if (alive) setState(current => ({ data: current.data, error: error.message }))
           }
+        }
+        const load = async () => {
+          await fetchState()
           if (alive) timer = setTimeout(load, 2500)
         }
+        refreshRef.current = fetchState
         load()
         return () => {
           alive = false
           clearTimeout(timer)
         }
       }, [])
-      return state
+      return { data: state.data, error: state.error, refresh: () => refreshRef.current?.() }
     }
 
     function post(path, body) {
@@ -592,6 +671,59 @@ window.__ModuleLoader__.load({
 
     function fill(template, values) {
       return String(template).replace(/\{(\w+)\}/g, (match, key) => (values[key] === undefined ? match : String(values[key])))
+    }
+
+    /** Known byte total for a session: runtime totals win over the tree payload. */
+    function sessionBytes(session, totals) {
+      const known = totals?.get?.(session.id)?.totalBytes ?? session.totalBytes
+      if (known === null || known === undefined) return null
+      return Number(known) || 0
+    }
+
+    /**
+     * Empty, title-less, zero-byte sessions are pure noise: hide them. A session
+     * with content (a known byte total above zero) stays visible even when the
+     * peer has not produced a title yet.
+     */
+    function isVisibleSession(session, totals, t) {
+      const title = String(session.title ?? '').trim()
+      if (title !== '' && title !== t('untitled')) return true
+      const bytes = sessionBytes(session, totals)
+      return bytes !== null && bytes > 0
+    }
+
+    /** Pinned (when the peer reports it) first, then live, then newest. */
+    function compareSessions(left, right) {
+      const pinned = (right.pinned === true ? 1 : 0) - (left.pinned === true ? 1 : 0)
+      if (pinned !== 0) return pinned
+      const live = (right.live === true ? 1 : 0) - (left.live === true ? 1 : 0)
+      if (live !== 0) return live
+      return (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0)
+    }
+
+    /** Newest session timestamp in a peer's tree; peers without sessions fall back to last seen. */
+    function latestSessionAt(peer) {
+      let latest = 0
+      for (const workspace of peer.workspaces ?? []) {
+        for (const session of workspace.sessions ?? []) {
+          const at = Number(session.createdAt) || 0
+          if (at > latest) latest = at
+        }
+      }
+      return latest || Number(peer.lastSeenAt) || 0
+    }
+
+    /** Online peers first by newest session, then offline peers by last seen. */
+    function comparePeers(left, right) {
+      const onlineLeft = left.online === true && !left.error
+      const onlineRight = right.online === true && !right.error
+      if (onlineLeft !== onlineRight) return onlineLeft ? -1 : 1
+      if (onlineLeft) {
+        const newest = latestSessionAt(right) - latestSessionAt(left)
+        if (newest !== 0) return newest
+        return String(left.name ?? left.shortId ?? '').localeCompare(String(right.name ?? right.shortId ?? ''))
+      }
+      return (Number(right.lastSeenAt) || 0) - (Number(left.lastSeenAt) || 0)
     }
 
     /** Compact display form for an opaque session id; the copy action keeps the full value. */
@@ -796,9 +928,108 @@ window.__ModuleLoader__.load({
             : null))
     }
 
+    /**
+     * Normalize one site-provided transfer link. Only an https URL with a
+     * non-empty label is rendered; the label/url/hint always come from the
+     * Host state, never from constants in this file.
+     */
+    function transferLink(entry) {
+      if (!entry || typeof entry !== 'object') return null
+      const label = typeof entry.label === 'string' ? entry.label.trim() : ''
+      const url = typeof entry.url === 'string' ? entry.url.trim() : ''
+      if (!label || !/^https:\/\//i.test(url)) return null
+      const hint = typeof entry.hint === 'string' && entry.hint.trim() ? entry.hint.trim() : ''
+      return { label, url, hint }
+    }
+
+    /**
+     * "Transfer" card: the edition-specific codec state plus the download /
+     * featured link supplied by the site configuration. A Host that predates
+     * `transfer` renders nothing, so older panels stay unchanged.
+     */
+    function TransferCard({ transfer, t, pending, onToggle }) {
+      if (!transfer || typeof transfer !== 'object') return null
+      const night = transfer.edition === 'night-cruising'
+      const links = transfer.links ?? {}
+      const editionChip = h(Chip, { tone: 'off' }, night ? t('transferEditionNight') : t('transferEditionDsh'))
+      const linkNode = entry => {
+        const link = transferLink(entry)
+        if (!link) return null
+        return h('div', null,
+          h('div', { style: styles.row },
+            h('a', { href: link.url, target: '_blank', rel: 'noreferrer', style: styles.link }, link.label)),
+          link.hint ? h('p', { style: styles.hint }, link.hint) : null)
+      }
+      const linksUnavailable = transfer.linksStatus === 'error'
+        ? h('p', { style: styles.hint }, t('transferLinksUnavailable'))
+        : null
+
+      if (!night) {
+        return h('div', { style: styles.card },
+          h('div', { style: styles.row },
+            h('span', { style: styles.label }, t('transferTitle')),
+            h(Chip, { tone: 'off' }, t('transferJsonl')),
+            editionChip),
+          h('p', { style: styles.hint }, t('transferJsonlHint')),
+          linkNode(links.download) ?? linksUnavailable)
+      }
+
+      const active = transfer.active === true && transfer.mode === 'jlc'
+      const pendingRestart = transfer.pendingRestart === true
+      const tone = active ? 'on' : pendingRestart ? 'warn' : 'off'
+      const chipLabel = active || pendingRestart ? t('transferJlc') : t('transferJsonl')
+      const statusText = active
+        ? t('transferCruising')
+        : pendingRestart
+          ? t('transferRestart')
+          : transfer.available === false
+            ? t('transferUnavailable')
+            : t('transferDisabled')
+      const on = transfer.desired === 'on' || active || pendingRestart
+      return h('div', { style: styles.card },
+        h('div', { style: styles.row },
+          h('span', { style: styles.label }, t('transferTitle')),
+          h(Chip, { tone }, chipLabel),
+          editionChip,
+          h('span', { style: { ...styles.value, fontFamily: 'inherit' } }, statusText)),
+        pendingRestart ? h('p', { style: styles.hint }, t('transferRestartHint')) : null,
+        h('div', { style: { ...styles.row, marginTop: '10px' } },
+          h('button', {
+            style: styles.button,
+            className: 'am-button',
+            disabled: pending === true,
+            onClick: () => onToggle(!on),
+          }, on ? t('transferDisable') : t('transferEnable'))),
+        linkNode(links.featured) ?? linksUnavailable)
+    }
+
+    /**
+     * Aggregate-only vault card. It never lists entries or exposes a read
+     * action; the vault is a process-lifetime encrypted cache, not a file
+     * browser. Only size/count and a user-initiated clear are shown.
+     */
+    function VaultCard({ vault, t, onClear, pending }) {
+      if (!vault || typeof vault !== 'object') return null
+      const empty = (vault.entries ?? 0) === 0
+      return h('div', { style: styles.card },
+        h('div', { style: styles.row },
+          h('span', { style: styles.label }, t('vaultTitle')),
+          h(Chip, { tone: empty ? 'off' : 'on' }, empty ? t('vaultEmpty') : fill(t('vaultUsage'), {
+            bytes: formatBytes(vault.bytes ?? 0),
+            entries: vault.entries ?? 0,
+          }))),
+        h('p', { style: styles.hint }, t('vaultHint')),
+        empty ? null : h('button', {
+          style: styles.button,
+          className: 'am-button',
+          disabled: pending,
+          onClick: onClear,
+        }, t('vaultClear')))
+    }
+
     const SettingsPage = props => {
       const t = props.translate
-      const { data, error } = useMeshState()
+      const { data, error, refresh } = useMeshState()
       const [pending, setPending] = React.useState(false)
       const [actionError, setActionError] = React.useState(null)
       const [probeTarget, setProbeTarget] = React.useState('')
@@ -864,6 +1095,34 @@ window.__ModuleLoader__.load({
         setActionError(null)
         try {
           await post(action, { deviceId })
+        } catch (failure) {
+          setActionError(failure.message)
+        } finally {
+          setPending(false)
+        }
+      }
+
+      /** Clear the encrypted vault; it only exposes aggregate state, never entries. */
+      const clearVault = async () => {
+        setPending(true)
+        setActionError(null)
+        try {
+          await post('vault/clear', {})
+          refresh()
+        } catch (failure) {
+          setActionError(failure.message)
+        } finally {
+          setPending(false)
+        }
+      }
+
+      /** Persist the codec intent, then pull the fresh state instead of waiting for the poll tick. */
+      const toggleCodec = async enabled => {
+        setPending(true)
+        setActionError(null)
+        try {
+          await post('codec', { enabled })
+          refresh()
         } catch (failure) {
           setActionError(failure.message)
         } finally {
@@ -946,6 +1205,8 @@ window.__ModuleLoader__.load({
           h(Field, { label: t('tailscale') },
             state.tailscale?.available ? h(Chip, { tone: 'on' }, `${t('tailnetOn')} · ${state.tailscale.peers} peer(s)`) : h(Chip, { tone: 'off' }, t('tailnetOff'))),
           state.lastError ? h('p', { style: styles.error }, state.lastError.message) : null),
+        h(TransferCard, { transfer: state.transfer, t, pending, onToggle: toggleCodec }),
+        h(VaultCard, { vault: state.vault, t, pending, onClear: clearVault }),
         channelCard(),
         h('div', { style: { ...styles.row, justifyContent: 'space-between', margin: '14px 0 8px' } },
           h('h3', { style: { ...styles.title, fontSize: '13px', margin: 0 } }, t('peers')),
@@ -958,16 +1219,17 @@ window.__ModuleLoader__.load({
     }
 
     /** Collapsible reasoning block shared by the conversation and trajectory tabs. */
-    function ReasoningBlock({ text, t, defaultOpen = false }) {
-      const [open, setOpen] = React.useState(defaultOpen)
+    function ReasoningBlock({ text, t, defaultOpen = false, locked = false }) {
+      const [open, setOpen] = React.useState(defaultOpen && !locked)
       return h('div', { style: styles.reasoning },
         h('button', {
           style: styles.reasoningToggle,
           className: 'am-reasoning-toggle',
-          onClick: () => setOpen(current => !current),
-          'aria-expanded': open,
-        }, `${t('thinking')} · ${open ? t('collapseThinking') : t('expandThinking')}`),
-        open ? h('div', { style: styles.reasoningText }, text) : null)
+          disabled: locked,
+          onClick: () => { if (!locked) setOpen(current => !current) },
+          'aria-expanded': locked ? false : open,
+        }, `${t('thinking')} · ${locked ? t('fetching') : open ? t('collapseThinking') : t('expandThinking')}`),
+        !locked && open ? h('div', { style: styles.reasoningText }, text) : null)
     }
 
     /** System reminders are injected user messages; the chat view hides them. */
@@ -985,14 +1247,14 @@ window.__ModuleLoader__.load({
     }
 
     /** Conversation tab: chat-like view with user bubbles, rendered assistant markdown and collapsed process. */
-    function ConversationItem({ item, t }) {
+    function ConversationItem({ item, t, locked = false }) {
       if (item.role === 'user') {
         return h('div', { style: styles.userRow },
           h('div', { style: styles.userBubble }, item.text ?? ''))
       }
       return h('div', { style: styles.assistantRow },
         h('div', { style: styles.msgRole }, `${t('assistantRole')} · ${formatTime(item.time)}`),
-        item.reasoning ? h(ReasoningBlock, { text: item.reasoning, t }) : null,
+        item.reasoning ? h(ReasoningBlock, { text: item.reasoning, t, locked }) : null,
         item.text ? h('div', null, renderMarkdown(item.text)) : null,
         item.toolCalls?.length
           ? h('div', { style: styles.processNote },
@@ -1001,7 +1263,7 @@ window.__ModuleLoader__.load({
     }
 
     /** Build the conversation list: messages plus one collapsed summary per tool-result run. */
-    function conversationNodes(items, t) {
+    function conversationNodes(items, t, locked = false) {
       const nodes = []
       let results = []
       const flush = () => {
@@ -1016,14 +1278,14 @@ window.__ModuleLoader__.load({
           continue
         }
         flush()
-        if (item.role === 'user' || item.role === 'assistant') nodes.push(h(ConversationItem, { key: item.seq, item, t }))
+        if (item.role === 'user' || item.role === 'assistant') nodes.push(h(ConversationItem, { key: item.seq, item, t, locked }))
       }
       flush()
       return nodes
     }
 
     /** Trajectory tab: every event in seq order, including thinking, calls and errors. */
-    function TrajectoryItem({ item, t }) {
+    function TrajectoryItem({ item, t, locked = false }) {
       const kind = item.role === 'user' || item.role === 'assistant'
         ? t('messageEvent')
         : item.role === 'tool-call'
@@ -1039,7 +1301,7 @@ window.__ModuleLoader__.load({
       return h('div', { style: styles.msg },
         h('div', { style: { ...styles.msgRole, color: tone } }, `${kind} · ${meta} · ${formatTime(item.time)}`),
         body,
-        item.reasoning ? h(ReasoningBlock, { text: item.reasoning, t, defaultOpen: true }) : null,
+        item.reasoning ? h(ReasoningBlock, { text: item.reasoning, t, defaultOpen: true, locked }) : null,
         item.isError && (item.errorName || item.errorCode)
           ? h('div', { style: styles.errorMeta }, `${t('errorName')}: ${item.errorName ?? ''}${item.errorCode ? ` (${item.errorCode})` : ''}`)
           : null)
@@ -1089,6 +1351,8 @@ window.__ModuleLoader__.load({
           name.style.removeProperty('--am-marquee-duration')
         }
       }
+      // No chevron glyph: the whole row is the expand/collapse control and
+      // aria-expanded carries the state, so the icon column stays narrow.
       return h('div', { style: styles.treeRow(depth), className: active ? 'am-tree-row am-tree-row-active' : 'am-tree-row', onMouseEnter: onEnter },
         h('button', {
           style: styles.treeButton,
@@ -1098,16 +1362,16 @@ window.__ModuleLoader__.load({
           'aria-expanded': expandable ? expanded : undefined,
           'aria-current': active ? 'true' : undefined,
         },
-          h('span', { style: styles.chevron }, expandable ? (expanded ? '▾' : '▸') : ''),
           icon ? h('span', { style: styles.treeIcon }, icon) : null,
           h('span', { ref: nameRef, style: styles.treeName, className: 'am-tree-name' },
             h('span', { ref: textRef, className: 'am-tree-text' }, label)),
-          meta ? h('span', { style: styles.treeMeta }, meta) : null),
-        actions ?? null)
+          meta ? h('span', { style: styles.treeMetaRight, className: 'am-tree-meta' }, meta) : null),
+        actions ? h('span', { style: styles.treeActions, className: 'am-tree-actions' }, actions) : null)
     }
 
     const MeshPanel = props => {
       const t = props.translate
+      const meshState = useMeshState()
       const [tree, setTree] = React.useState(null)
       const [error, setError] = React.useState(null)
       const [expanded, setExpanded] = React.useState({})
@@ -1119,6 +1383,9 @@ window.__ModuleLoader__.load({
       const [treeWidth, setTreeWidth] = React.useState(360)
       const [dragging, setDragging] = React.useState(false)
       const [forcing, setForcing] = React.useState(false)
+      const [fetching, setFetching] = React.useState(false)
+      const [fetchError, setFetchError] = React.useState(null)
+      const [staged, setStaged] = React.useState(false)
       // Known per-session data totals (from the remote index or a page total).
       const [sessionTotals, setSessionTotals] = React.useState(() => new Map())
       const resizeRef = React.useRef(null)
@@ -1239,11 +1506,25 @@ window.__ModuleLoader__.load({
       const toggle = key => setExpanded(current => ({ ...current, [key]: current[key] === false }))
       const isOpen = key => expanded[key] !== false
 
-      const peers = tree?.peers ?? []
-      const offlinePeers = peers.filter(peer => !peer.online)
+      const peers = [...(tree?.peers ?? [])].sort(comparePeers)
+      const offlinePeers = peers.filter(peer => peer.online !== true)
       const verifiedPeers = peers.filter(peer => peer.online === true && !peer.error)
+      /**
+       * Filtered tree: sessions that carry neither a title nor a known byte
+       * total are dropped, and a workspace whose every session was dropped is
+       * dropped too. Peers stay listed even when nothing survives, so the pane
+       * shows an empty state instead of losing the device.
+       */
+      const visibleWorkspaces = peer => (peer.workspaces ?? [])
+        .map(workspace => ({
+          workspace,
+          sessions: [...(workspace.sessions ?? [])]
+            .filter(session => isVisibleSession(session, sessionTotals, t))
+            .sort(compareSessions),
+        }))
+        .filter(entry => entry.sessions.length > 0)
       const totalSessions = verifiedPeers.reduce(
-        (sum, peer) => sum + peer.workspaces.reduce((count, workspace) => count + workspace.sessions.length, 0),
+        (sum, peer) => sum + visibleWorkspaces(peer).reduce((count, entry) => count + entry.sessions.length, 0),
         0,
       )
       const retry = async deviceId => {
@@ -1255,15 +1536,78 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const transfer = meshState.data?.transfer ?? null
+      const activeTransfer = (meshState.data?.transfers ?? []).find(entry =>
+        entry.peerId === selection?.peer && entry.sessionId === selection?.sessionId) ?? null
+
+      const startFetch = async () => {
+        if (!selection || fetching) return
+        setFetching(true)
+        setFetchError(null)
+        setStaged(false)
+        try {
+          const body = await post('fetch', { peer: selection.peer, sessionId: selection.sessionId, priority: 'dialog' })
+          setTranscript({
+            session: { id: selection.sessionId, cwd: null, createdAt: null },
+            fromSeq: 0,
+            nextSeq: 0,
+            hasMore: false,
+            items: body.items ?? [],
+            bytes: body.archiveBytes ?? 0,
+            cached: false,
+          })
+        } catch (failure) {
+          setFetchError(failure.message)
+        } finally {
+          setFetching(false)
+        }
+      }
+
+      // Stage the dialog as soon as all P0 blocks are in memory; the rest of
+      // the session continues pulling and the reasoning blocks stay locked
+      // until the full archive is decoded.
+      React.useEffect(() => {
+        if (!fetching || staged || !activeTransfer?.dialogReady || !activeTransfer.transferId) return
+        let alive = true
+        fetch(`/account-mesh/api/transfer/dialog?transferId=${encodeURIComponent(activeTransfer.transferId)}`)
+          .then(response => response.json())
+          .then(body => {
+            if (!alive || !body?.ready) return
+            setTranscript(current => ({
+              ...(current ?? { session: { id: selection?.sessionId }, fromSeq: 0, nextSeq: 0 }),
+              hasMore: false,
+              items: body.items ?? [],
+              bytes: 0,
+              cached: false,
+            }))
+            setStaged(true)
+          })
+          .catch(() => {})
+        return () => { alive = false }
+      }, [activeTransfer?.transferId, activeTransfer?.dialogReady, fetching, staged, selection?.sessionId])
+
       const transcriptBody = () => {
         if (!selection) return h('div', { style: styles.empty }, t('selectSessionHint'))
         if (transcriptError) return h('div', { style: styles.empty }, `${t('error')}: ${transcriptError}`)
         if (!transcript) return h('div', { style: styles.empty }, t('waiting'))
         const items = transcript.items ?? []
+        const locked = fetching || staged
+        const progress = activeTransfer
+          ? fill(t('fetchProgress'), {
+              received: activeTransfer.receivedBlocks ?? 0,
+              total: activeTransfer.totalBlocks ?? 0,
+              percent: activeTransfer.totalBlocks
+                ? Math.round((activeTransfer.receivedBlocks ?? 0) / activeTransfer.totalBlocks * 100)
+                : 0,
+            })
+          : null
         const content = view === 'conversation'
-          ? conversationNodes(items, t)
-          : items.map(item => h(TrajectoryItem, { key: item.seq, item, t }))
+          ? conversationNodes(items, t, locked)
+          : items.map(item => h(TrajectoryItem, { key: item.seq, item, t, locked }))
         return h(React.Fragment, null,
+          progress ? h('div', { style: { ...styles.hint, padding: '6px 14px' } }, progress) : null,
+          staged ? h('div', { style: { ...styles.hint, padding: '0 14px 6px' } }, t('fetchDialogReady')) : null,
+          fetchError ? h('div', { style: { ...styles.error, padding: '6px 14px' } }, `${t('fetchFailed')}: ${fetchError}`) : null,
           h('div', { style: { flex: 1, overflow: 'auto' } },
             content.length === 0
               ? h('div', { style: styles.empty }, view === 'conversation' ? t('emptyConversation') : t('emptyTrajectory'))
@@ -1286,7 +1630,7 @@ window.__ModuleLoader__.load({
 
       return h('section', { style: styles.panel },
         h('style', null, PANEL_CSS),
-        h('div', { style: styles.panelHead },
+        h('div', { style: styles.panelHead, className: 'am-panel-head' },
           h('span', { style: { ...styles.title, margin: 0 } }, t('panelTitle')),
           h(Chip, { tone: 'off' }, t('readOnlyTag')),
           h('span', { style: styles.treeMeta }, fill(t('devicesCount'), { n: verifiedPeers.length })),
@@ -1303,18 +1647,10 @@ window.__ModuleLoader__.load({
             verifiedPeers.length === 0 && tree !== null
               ? h('div', { style: styles.empty }, t('noPeersOnline'))
               : null,
-            offlinePeers.map(peer => h('div', { key: `offline:${peer.deviceId}`, style: { ...styles.empty, padding: '6px 10px' } },
-              h('div', { style: { ...styles.row, color: 'var(--dsw-alias-label-secondary)' } },
-                h('span', { style: styles.chevron }, '·'),
-                h('span', { style: { ...styles.treeName, color: 'var(--dsw-alias-label-secondary)' } }, peer.name || peer.shortId),
-                h(Chip, { tone: 'off' }, t('offlineTag'))),
-              h('div', { style: { ...styles.treeMeta, paddingLeft: '18px' } },
-                peer.lastSeenAt ? `${t('lastSeen')} ${formatRelative(peer.lastSeenAt, t)}` : `${t('neverSeen')} · ${peer.shortId}`),
-              h('div', { style: { paddingLeft: '18px', marginTop: '4px' } },
-                h('button', { style: styles.button, className: 'am-button', onClick: () => retry(peer.deviceId) }, t('retry'))))),
             verifiedPeers.map(peer => {
               const peerKey = peer.deviceId
               const peerOpen = isOpen(peerKey)
+              const workspaces = visibleWorkspaces(peer)
               return h('div', { key: peerKey },
                 h(TreeRow, {
                   depth: 0,
@@ -1328,16 +1664,18 @@ window.__ModuleLoader__.load({
                 }),
                 peer.error ? h('div', { style: { ...styles.empty, padding: '4px 20px' } }, peer.error) : null,
                 peerOpen
-                  ? (peer.workspaces.length === 0
-                      ? h('div', { style: { ...styles.empty, padding: '4px 20px' } }, t('noWorkspaces'))
-                      : peer.workspaces.map(workspace => {
+                  ? (workspaces.length === 0
+                      ? h('div', { style: { ...styles.empty, padding: '4px 20px' } },
+                          peer.workspaces.length === 0 ? t('noWorkspaces') : t('noVisibleWorkspaces'))
+                      : workspaces.map(entry => {
+                          const workspace = entry.workspace
                           const workspaceKey = `${peerKey}/${workspace.id}`
                           const workspaceOpen = isOpen(workspaceKey)
                           return h('div', { key: workspaceKey },
                             h(TreeRow, {
                               depth: 1,
                               label: workspace.name || workspace.title || t('workspaceUnknown'),
-                              meta: fill(t('sessionsCount'), { n: workspace.sessions.length }),
+                              meta: fill(t('sessionsCount'), { n: entry.sessions.length }),
                               detail: workspaceDetail(workspace, t),
                               icon: h(FolderIcon, { open: workspaceOpen, selected: selection?.workspaceKey === workspaceKey }),
                               expandable: true,
@@ -1345,7 +1683,7 @@ window.__ModuleLoader__.load({
                               onClick: () => toggle(workspaceKey),
                             }),
                             workspaceOpen
-                              ? workspace.sessions.map(session => {
+                              ? entry.sessions.map(session => {
                                   const active = selection?.peer === peerKey && selection?.sessionId === session.id
                                   const total = sessionTotals.get(session.id)?.totalBytes ?? session.totalBytes
                                   const meta = `${session.live ? t('live') : formatRelative(session.createdAt, t)}${total != null ? ` · ${formatBytes(total)}` : ''}`
@@ -1363,7 +1701,15 @@ window.__ModuleLoader__.load({
                               : null)
                         }))
                   : null)
-            })),
+            }),
+            offlinePeers.map(peer => h('div', { key: `offline:${peer.deviceId}`, style: { ...styles.empty, padding: '6px 10px' } },
+              h('div', { style: { ...styles.row, color: 'var(--dsw-alias-label-secondary)' } },
+                h('span', { style: { ...styles.treeName, color: 'var(--dsw-alias-label-secondary)' } }, peer.name || peer.shortId),
+                h(Chip, { tone: 'off' }, t('offlineTag'))),
+              h('div', { style: { ...styles.treeMeta, paddingLeft: '18px' } },
+                peer.lastSeenAt ? `${t('lastSeen')} ${formatRelative(peer.lastSeenAt, t)}` : `${t('neverSeen')} · ${peer.shortId}`),
+              h('div', { style: { paddingLeft: '18px', marginTop: '4px' } },
+                h('button', { style: styles.button, className: 'am-button', onClick: () => retry(peer.deviceId) }, t('retry')))))),
           h('div', {
             style: styles.splitter,
             className: 'am-splitter',
@@ -1406,6 +1752,14 @@ window.__ModuleLoader__.load({
                   h('span', { style: styles.toolbarId, title: selection.sessionId },
                     `${t('sessionIdLabel')}: ${shortSessionId(selection.sessionId)}`),
                   h(CopyButton, { text: selection.sessionId, label: t('copySessionId'), t }),
+                  transfer?.active
+                    ? h('button', {
+                        style: styles.button,
+                        className: 'am-button',
+                        disabled: fetching,
+                        onClick: () => { void startFetch() },
+                      }, fetching ? t('fetching') : t('fetchFull'))
+                    : null,
                   sessionTotals.get(selection.sessionId) != null
                     ? h(Chip, { tone: 'off' }, `${t('sessionBytesLabel')} ${formatBytes(sessionTotals.get(selection.sessionId).totalBytes)}`)
                     : null,

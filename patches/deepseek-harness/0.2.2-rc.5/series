@@ -12,3 +12,6 @@
 011-view-selection.patch
 012-night-cruising-timeouts.dir.patch
 013-bottom-settings-heartbeat-guard.patch
+014-distribution-marker.patch
+015-mcp-bottom-settings.dir.patch
+016-outside-click-close.patch

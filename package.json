@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness-night-cruising",
-  "version": "0.2.2-rc.5-20261126v2",
+  "version": "0.2.2-rc.5-20261126v3",
   "private": false,
   "submodule-paths": {
     "deepseek-harness": [

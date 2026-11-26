@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#10151b" />
+    <meta name="description" content="夜间巡航插件精选：dsh-account-mesh 同账号互联与 JLC 巡航加速，介绍插件能力、适用场景与获取方式。" />
+    <meta name="robots" content="index, follow" />
+    <title>插件精选 · 夜间巡航</title>
+    <link rel="canonical" href="https://deepseek-harness.partyplay.top/plugins.html" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="夜间巡航 · Night Cruising" />
+    <meta property="og:title" content="插件精选 · 夜间巡航" />
+    <meta property="og:description" content="夜间巡航插件精选：dsh-account-mesh 同账号互联与 JLC 巡航加速，介绍插件能力、适用场景与获取方式。" />
+    <meta property="og:url" content="https://deepseek-harness.partyplay.top/plugins.html" />
+    <meta property="og:image" content="https://deepseek-harness.partyplay.top/assets/night-ride.jpg" />
+    <meta property="og:image:alt" content="夜间巡航：骑手穿过跨江大桥的夜景" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="插件精选 · 夜间巡航" />
+    <meta name="twitter:description" content="夜间巡航插件精选：dsh-account-mesh 同账号互联与 JLC 巡航加速，介绍插件能力、适用场景与获取方式。" />
+    <meta name="twitter:image" content="https://deepseek-harness.partyplay.top/assets/night-ride.jpg" />
+    <link rel="stylesheet" href="assets/site.css" />
+    <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "CollectionPage",
+      "@id": "https://deepseek-harness.partyplay.top/plugins.html#webpage",
+      "url": "https://deepseek-harness.partyplay.top/plugins.html",
+      "name": "插件精选 · 夜间巡航",
+      "description": "夜间巡航插件精选：dsh-account-mesh 同账号互联与 JLC 巡航加速，介绍插件能力、适用场景与获取方式。",
+      "inLanguage": "zh-CN",
+      "isPartOf": {
+        "@id": "https://deepseek-harness.partyplay.top/#website"
+      },
+      "about": {
+        "@id": "https://deepseek-harness.partyplay.top/#software"
+      }
+    }
+  ]
+}
+    </script>
+  </head>
+  <body>
+    <header>
+      <nav class="frame" aria-label="主导航">
+        <a class="brand" href="./"><i class="mark" aria-hidden="true"></i>夜间巡航</a>
+        <div class="nav-links">
+          <a href="./">概览</a>
+          <a href="downloads.html">下载</a>
+          <a class="source" href="https://github.com/deepseek-ai/deepseek-harness">上游</a>
+          <a href="https://github.com/jackyanjiaqi/deepseek-harness-night-cruising">源码</a>
+        </div>
+      </nav>
+    </header>
+    <main class="frame plugins">
+      <p class="wordmark ink"><span></span> PLUGIN PICKS</p>
+      <h1>插件精选<span>.</span></h1>
+      <p class="subhead">为夜间巡航优化的插件，按需启用。</p>
+      <section aria-labelledby="picks-title">
+        <h2 id="picks-title">同账号互联与巡航加速</h2>
+        <div class="plugin-grid">
+          <article class="plugin-card">
+            <h3>dsh-account-mesh · 同账号互联</h3>
+            <p class="meta">只读互联 · WebRTC 数据通道 · LAN / Tailscale</p>
+            <p>在登录同一 DeepSeek 账号的多台 DSH 设备之间建立只读互联：通过局域网组播与 Tailscale 探测发现对端，经 WebRTC 数据通道完成 Ed25519 认证后，可列出远端会话、工作区与文件并读取内容。只读白名单不提供写入、提示词或任意命令通道。</p>
+            <a class="text-link" href="https://github.com/jackyanjiaqi/deepseek-harness-night-cruising/tree/main/plugins">查看插件源码</a>
+          </article>
+          <article class="plugin-card">
+            <h3>JLC 巡航加速</h3>
+            <p class="meta">块级 zstd 容器 · 夜间巡航版默认启用</p>
+            <p>把 JSONL 会话数据装入块级 zstd 容器，在本地到远端传输时压缩传输体积。夜间巡航版在加速组件可用时默认启用 JLC，设置页会显示「本地到远端 巡航加速中」；原生 DSH 保持 JSONL 传输方式，不加载加速组件。</p>
+            <a class="text-link" href="downloads.html">下载夜间巡航版</a>
+          </article>
+        </div>
+      </section>
+      <section aria-labelledby="more-title">
+        <h2 id="more-title">更多插件</h2>
+        <p class="subhead">插件目录持续更新，安装与配置说明见仓库。</p>
+        <p><a class="text-link" href="https://github.com/jackyanjiaqi/deepseek-harness-night-cruising/tree/main/plugins">浏览 plugins 目录</a></p>
+      </section>
+    </main>
+    <footer class="frame">
+      <span class="footer-brand">夜间巡航 <span>/</span> Night Cruising</span><span id="footer-info"></span>
+    </footer>
+  </body>
+</html>

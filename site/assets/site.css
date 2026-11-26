@@ -287,6 +287,52 @@ code {
 .downloads h2 {
   font-size: 1.25rem;
 }
+.plugins {
+  max-width: 1000px;
+}
+.plugins h1 {
+  font-size: clamp(3rem, 6vw, 5.4rem);
+  line-height: 1.1;
+  letter-spacing: -0.05em;
+}
+.plugins h1 span {
+  color: #bb680b;
+}
+.plugins section {
+  margin-top: 42px;
+}
+.plugins h2 {
+  font-size: 1.25rem;
+}
+.plugin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+  margin-top: 18px;
+}
+.plugin-card {
+  background: white;
+  border: 1px solid var(--rule);
+  border-top: 3px solid #26333b;
+  border-radius: 3px;
+  padding: 20px 24px;
+}
+.plugin-card h3 {
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+.plugin-card .meta {
+  margin-top: 4px;
+}
+.plugin-card p {
+  margin-top: 10px;
+  color: var(--muted);
+  line-height: 1.75;
+}
+.plugin-card .text-link {
+  display: inline-block;
+  margin-top: 12px;
+}
 .home-release .release {
   margin-top: 14px;
 }

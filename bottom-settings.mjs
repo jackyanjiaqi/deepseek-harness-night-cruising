@@ -105,6 +105,8 @@ export const BOTTOM_SETTING_GROUPS = [
     entries: [
       { key: 'lsp.shutdown', label: 'LSP 关闭', unit: 'ms', default: 10_000, min: 1_000, max: 600_000, hint: '关闭语言服务器时的等待上限。', consumer: 'packages/lsp/lsp-stdio/src/instance.ts' },
       { key: 'lsp.grace', label: 'LSP 取消宽限', unit: 'ms', default: 5_000, min: 1_000, max: 600_000, hint: '取消请求后等待进程退出的宽限。', consumer: 'packages/lsp/lsp-stdio/src/instance.ts' },
+      { key: 'mcp.operation', label: 'MCP 启停/探测', unit: 'ms', default: 0, min: 0, max: 86_400_000, hint: 'MCP 启动、探测、关闭与清理的上限。', consumer: 'packages/mcp/mcp-client/src/deadline.ts' },
+      { key: 'mcp.tool', label: 'MCP 工具调用', unit: 'ms', default: 0, min: 0, max: 86_400_000, hint: 'MCP tools/call 的上限。', consumer: 'packages/mcp/mcp-client/src/connection.ts' },
     ],
   },
   {

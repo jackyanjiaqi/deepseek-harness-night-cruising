@@ -1,0 +1,18 @@
+{
+  "format": 1,
+  "updatedAt": "2026-11-26T00:00:00Z",
+  "dsh": {
+    "download": {
+      "label": "下载夜间巡航版",
+      "url": "/downloads.html",
+      "hint": "夜间巡航版可在本地到远端启用 JLC 巡航加速。"
+    }
+  },
+  "nightCruising": {
+    "featured": {
+      "label": "插件精选",
+      "url": "/plugins.html",
+      "hint": "发现更多为夜间巡航优化的插件。"
+    }
+  }
+}

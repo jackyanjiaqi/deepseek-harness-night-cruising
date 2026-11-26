@@ -19,7 +19,7 @@ ai 侧可用的工具（本地 agent 调用，不会写远端）：
 | `mesh_peer_pair` | 显式信任一个已发现设备 |
 | `mesh_peer_forget` | 撤销信任并断开 |
 
-设置页「同账号互联」显示状态、设备指纹、发现地址、Tailscale 探测结果与对端列表，并提供信任 / 撤销 / 重连。
+设置页「同账号互联」显示状态、传输方式、设备指纹、发现地址、Tailscale 探测结果与对端列表，并提供信任 / 撤销 / 重连。
 
 ## 会话数据量与传输缓存（rc.10）
 
@@ -28,6 +28,22 @@ ai 侧可用的工具（本地 agent 调用，不会写远端）：
 - **传输缓存**：Host 侧对 `sessions/index` 与 `transcript` 分页做有界缓存（64 索引 / 512 页，LRU）。非强制刷新命中缓存时响应标记 `cached: true, bytes: 0`，不再向对端拉取；「强制刷新」按钮带 `force=1` 绕过缓存，另有 `POST /api/cache/clear`。
 - **版本互通**：hello / hello-ack 握手互带插件版本（`v`），`peerViews` 暴露 `version`，面板悬停可见对端插件版本，不再出现“两边不同版却不自知”。
 - **传输计数器**：每次完成的 RPC 按请求/响应字节数累计（`transferTotals()`、`peerViews[].transfer`），只做统计，不做任何门控。
+
+## 传输方式与双版本（rc.11）
+
+同一份 `dsh-account-mesh` 同时装入原生 DSH 与夜间巡航版，按 Host 启动环境判定版本：
+
+- **原生 DSH**：强制 JSONL 传输，不加载 native 模块；设置页只显示 `[JSONL]`、说明和官网下载链接。`POST /api/codec` 返回 409 `edition-requires-night-cruising`。
+- **夜间巡航版**：启动时若 `codec=auto` 且 `native/` 或 `@dsh/jlc` 可加载，显示 `本地到远端 巡航加速中`；用户在设置页开启但当前进程未加载时显示 `本地到远端 重启即出发`，重启后生效。关闭立即回到 JSONL。
+- **版本判定**：优先 `DSH_DISTRIBUTION=night-cruising`（夜间巡航 Host 注入），再回退环境变量、可执行路径和 `$DSH_HOME/night-cruising` 标记。原生 DSH 不设置该标记。
+- **设置持久化**：`$DSH_HOME/account-mesh/settings.json` 保存 `codec: auto|off`，不改写 profile。
+- **站点链接**：下载/插件精选的 `label`、`url`、`hint` 来自官网同源七牛 OSS 的 `data/account-mesh.json`，由 Host `/account-mesh/api/site-links` 代取并缓存；插件内置 `site-links.json` 作为离线快照，UI 不写死链接文案。
+- **状态接口**：`/api/state` 新增 `transfer` 字段；`GET /api/site-links`、`POST /api/codec` 只读/本地设置，不写对端。
+- **不热加载**：开启 JLC 只写设置并要求重启；native 模块在 Host 启动时加载，避免运行中切换传输通道。
+
+### 当前范围
+
+rc.13 已实现 napi 绑定、传输方式状态/开关、双版本判定、设置页和站点配置，并接通 `mesh-bin` 的 JLC 块传输：`mesh_session_fetch`/`/account-mesh/api/fetch` 把整份会话拉入内存，按 manifest/block 分块校验，并把 archive 写入进程级 AES-256-GCM 加密“保险柜”（`dataDir/vault/*.ncv`，0600），关闭 DSH 清除；不写明文会话文件。当前“巡航加速中”表示 native 编解码器已加载；具体会话仍需用户触发拉取，不是所有 RPC 自动走 JLC。
 
 ## 工作方式
 
@@ -62,6 +78,8 @@ ai 侧可用的工具（本地 agent 调用，不会写远端）：
 
 插件没有 `Config` 导出，所有字段可选，写在 profile 的 `cordis.patch.yml`：
 
+> rc.13 新增 `deviceId` 仅用于同一台机器模拟两端测试；生产留空。`cacheMaxBytes` 是 JLC 内存缓存上限，不是模型用量门控。
+
 ```yaml
 - id: account-mesh
   config:
@@ -73,6 +91,15 @@ ai 侧可用的工具（本地 agent 调用，不会写远端）：
     iceServers: []
     debug: true
     localSessionTest: false   # 测试端：无真实对端时用本机会话渲染远端工作区
+    codec: auto               # auto：夜巡启用 JLC；off：都用 JSONL；原生 DSH 始终 JSONL
+    distribution: auto        # auto | dsh | night-cruising（测试/强制运维用）
+    siteBaseUrl: https://deepseek-harness.partyplay.top
+    siteConfigPath: /data/account-mesh.json
+    nativeModulePath: ''      # 可选：显式 .node 路径；否则找 @dsh/jlc / native/
+    cacheMaxBytes: 268435456  # JLC 已完成会话的内存投影缓存上限（默认 256 MiB）
+    vaultEnabled: true         # 加密保险柜（远端 JLC archive，退出清除）
+    vaultMaxBytes: 268435456   # 保险柜密文上限（默认 256 MiB）
+    deviceId: ''              # 仅测试：同机模拟两端；生产留空
     mcpPort: 47990            # 可选：开启 MCP streamable-HTTP 端点
     mcpToken: ''              # 可选：要求 Authorization: Bearer <token>
 ```
@@ -94,4 +121,4 @@ ai 侧可用的工具（本地 agent 调用，不会写远端）：
 
 接入后可用 `mcp__account-mesh__mesh_session_summary` 按会话 id 读取远端会话全文并总结。
 
-状态与信任表保存在 `$DSH_HOME/account-mesh/`（`peers.json`、`identity.json`、`mesh.log`，权限 0600）。
+状态与信任表保存在 `$DSH_HOME/account-mesh/`（`peers.json`、`identity.json`、`settings.json`、`mesh.log`，权限 0600）。`settings.json` 只保存 JLC 开关意图，不保存令牌或会话内容。

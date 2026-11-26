@@ -6,6 +6,13 @@ import test from 'node:test'
 import { DocServerManager } from '../src/manager.js'
 import { registerRoutes } from '../src/routes.js'
 import { registerTools } from '../src/tools.js'
+import { version as pluginVersion } from '../index.js'
+
+const packageVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+
+test('plugin version is read from package.json', () => {
+  assert.equal(pluginVersion, packageVersion)
+})
 
 function makeCtx(sessions, rejection) {
   const routes = []
@@ -90,7 +97,7 @@ test('control routes and doc_server tool share the manager', async (t) => {
     await manager.stopAll()
     fs.rmSync(root, { recursive: true, force: true })
   })
-  registerRoutes(ctx, manager, ctx.logger)
+  registerRoutes(ctx, manager, ctx.logger, packageVersion)
   assert.equal(ctx.routes.length, 1)
   const route = ctx.routes[0]
 
@@ -105,6 +112,8 @@ test('control routes and doc_server tool share the manager', async (t) => {
 
   const listed = await invoke(route, { url: '/doc-server/api/list' })
   assert.equal(listed.json().servers.length, 1)
+  // The settings page badge reads this value, so it must be the manifest version.
+  assert.equal(listed.json().version, packageVersion)
 
   const located = await invoke(route, {
     method: 'POST',

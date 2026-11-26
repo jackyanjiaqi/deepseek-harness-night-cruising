@@ -108,6 +108,7 @@ try {
     typeof entry.dict.copied === 'string'))
   const clientSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'client.js'), 'utf8')
   check('client offers clipboard copy for session ids', clientSource.includes('copySessionId') && clientSource.includes('navigator.clipboard'))
+  check('client offers the JLC full-session fetch action', clientSource.includes('fetchFull') && clientSource.includes("post('fetch'") && clientSource.includes('fetchProgress'))
 
   // Render the panel with a populated tree and a selected session so the
   // session rows, copy buttons, and trajectory item labels are exercised.
@@ -177,7 +178,7 @@ try {
   // transcript, transcriptError, loadingMore, view), then the two tree copy
   // buttons, the toolbar copy button, and one reasoning block.
   const presetTotals = new Map([['sim-session-alpha', { totalBytes: 4096, totalItems: 4 }]])
-  React.__stateQueue = [presetTree, null, {}, presetSelection, presetTranscript, null, false, 'conversation', 360, false, false, presetTotals, false, false, false, false]
+  React.__stateQueue = [{ data: null, error: null }, presetTree, null, {}, presetSelection, presetTranscript, null, false, 'conversation', 360, false, false, false, null, false, presetTotals, false, false, false, false]
   const richPanel = renderElement(panelEntry.Component({}))
   const richText = JSON.stringify(richPanel)
   check('rich panel renders both session rows', richText.includes('Simulated remote session: workspace tour') && richText.includes('Simulated remote session: projection rules'))
@@ -209,8 +210,112 @@ try {
   check('marquee only applies to overflowing labels', richText.includes('data-overflow') && !richText.includes('data-marquee'))
   check('marquee animation is declared', richText.includes('am-marquee-text'))
 
+  // Detail pass: no chevron glyphs, right-aligned meta, and a copy affordance
+  // that floats over the row instead of reserving flow space beside the title.
+  check('tree rows carry no chevron glyph', !richText.includes('▾') && !richText.includes('▸'))
+  check('tree meta hugs the right edge', richText.includes('"marginLeft":"auto"'))
+  check('tree copy button is absolutely positioned', richText.includes('am-tree-actions') && richText.includes('"position":"absolute"'))
+  check('tree copy button stays hidden until hover or focus', richText.includes('.am-tree-actions') && richText.includes('pointer-events: none') && richText.includes('focus-within .am-tree-actions'))
+  check('tree copy button keeps its accessible label', richText.includes('"aria-label":"复制会话 ID: sim-session-alpha"'))
+  check('panel head marks itself for the darwin clearance rule', richText.includes('am-panel-head') && richText.includes('html[data-platform=\\"darwin\\"] .am-panel-head') && richText.includes('--dsh-frame-top-clearance') && richText.includes('--dsh-frame-leading-clearance'))
+
+  // Filtering and ordering: empty untitled zero-byte sessions, workspaces whose
+  // every session was filtered, offline peers last, and peers with nothing to
+  // show keeping their empty state.
+  const filteredTree = {
+    peers: [
+      {
+        online: true,
+        verified: true,
+        deviceId: 'sim-keep-peer',
+        shortId: 'sim-kee…001',
+        name: 'sim-keep-peer',
+        source: 'lan',
+        address: '127.0.0.1',
+        rttMs: 1,
+        workspaces: [
+          {
+            id: 'sim-ws-empty',
+            title: 'Empty workspace',
+            name: 'empty-workspace',
+            path: '/tmp/sim/empty',
+            sessions: [{ id: 'sim-session-empty', title: '', createdAt: 1763000200000, live: false, totalBytes: 0 }],
+          },
+          {
+            id: 'sim-ws-mixed',
+            title: 'Mixed workspace',
+            name: 'mixed-workspace',
+            path: '/tmp/sim/mixed',
+            sessions: [
+              { id: 'sim-session-untitled-bytes', title: '', createdAt: 1763000300000, live: false, totalBytes: 2048 },
+              { id: 'sim-session-titled', title: 'Kept session', createdAt: 1763000400000, live: false },
+            ],
+          },
+        ],
+        error: null,
+        lastSeenAt: null,
+      },
+      {
+        online: true,
+        verified: true,
+        deviceId: 'sim-blank-peer',
+        shortId: 'sim-bla…002',
+        name: 'sim-blank-peer',
+        source: 'lan',
+        address: '127.0.0.1',
+        rttMs: 2,
+        workspaces: [{
+          id: 'sim-ws-blank',
+          title: 'Blank workspace',
+          name: 'blank-workspace',
+          path: '/tmp/sim/blank',
+          sessions: [{ id: 'sim-session-blank', title: '(无标题)', createdAt: 1763000100000, live: false }],
+        }],
+        error: null,
+        lastSeenAt: null,
+      },
+      {
+        online: true,
+        verified: true,
+        deviceId: 'sim-no-workspace-peer',
+        shortId: 'sim-no-…003',
+        name: 'sim-no-workspace-peer',
+        source: 'lan',
+        address: '127.0.0.1',
+        rttMs: 3,
+        workspaces: [],
+        error: null,
+        lastSeenAt: null,
+      },
+      {
+        online: false,
+        verified: false,
+        deviceId: 'sim-offline-peer',
+        shortId: 'sim-off…004',
+        name: 'sim-offline-peer',
+        source: 'lan',
+        address: null,
+        rttMs: null,
+        workspaces: [],
+        error: null,
+        lastSeenAt: 1763000000000,
+      },
+    ],
+    generatedAt: 1763000000000,
+  }
+  React.__stateQueue = [{ data: null, error: null }, filteredTree, null, {}, null, null, null, false, 'conversation', 360, false, false, false, null, false, new Map(), false, false, false, false]
+  const filteredPanel = renderElement(panelEntry.Component({}))
+  const filteredText = JSON.stringify(filteredPanel)
+  check('empty untitled zero-byte sessions are filtered out', !filteredText.includes('sim-session-empty'))
+  check('a workspace whose sessions were all filtered is dropped', !filteredText.includes('empty-workspace') && !filteredText.includes('Empty workspace'))
+  check('an untitled session with content survives the filter', filteredText.includes('sim-session-untitled-bytes'))
+  check('a titled session survives the filter', filteredText.includes('Kept session'))
+  check('a peer with only filtered sessions keeps its empty state', filteredText.includes('sim-blank-peer') && filteredText.includes('这个对端没有可展示的会话。'))
+  check('a peer with no workspace keeps its empty state', filteredText.includes('sim-no-workspace-peer') && filteredText.includes('这个对端没有工作区。'))
+  check('offline peers sort after online peers', filteredText.indexOf('sim-keep-peer') < filteredText.indexOf('sim-offline-peer'))
+
   // Second render: the trajectory tab, with reasoning expanded and full calls/errors.
-  React.__stateQueue = [presetTree, null, {}, presetSelection, presetTranscript, null, false, 'trajectory', 360, false, false, presetTotals, false, false, false, true]
+  React.__stateQueue = [{ data: null, error: null }, presetTree, null, {}, presetSelection, presetTranscript, null, false, 'trajectory', 360, false, false, false, null, false, presetTotals, false, false, false, true]
   const trajectoryPanel = renderElement(panelEntry.Component({}))
   const trajectoryText = JSON.stringify(trajectoryPanel)
   check('trajectory tab shows tool calls and arguments', trajectoryText.includes('工具调用 · mesh_workspace_list') && trajectoryText.includes('参数:') && trajectoryText.includes('sim-remote-workspace'))
@@ -241,6 +346,141 @@ try {
   check('page mentions the read-only guarantee', text.includes('只读'))
   check('page never contains a token field', !/token/i.test(text))
   check('client bundle has no syntax leftovers', typeof fs.statSync(path.join(import.meta.dirname, '..', 'client.js')).size === 'number')
+
+  // Transfer card: edition-specific codec state plus site-provided links. The
+  // Host state is the only source of link labels/urls; the client never
+  // hardcodes them. A Host without `transfer` must render no card.
+  check('settings page without transfer renders no transfer card', !text.includes('传输方式'))
+  check('dictionaries expose the transfer copy strings', dicts.every(entry =>
+    typeof entry.dict.transferTitle === 'string' &&
+    typeof entry.dict.transferJsonl === 'string' &&
+    typeof entry.dict.transferJlc === 'string' &&
+    typeof entry.dict.transferCruising === 'string' &&
+    typeof entry.dict.transferRestart === 'string' &&
+    typeof entry.dict.transferJsonlHint === 'string' &&
+    typeof entry.dict.transferRestartHint === 'string' &&
+    typeof entry.dict.transferEnable === 'string' &&
+    typeof entry.dict.transferDisable === 'string' &&
+    typeof entry.dict.transferUnavailable === 'string' &&
+    typeof entry.dict.transferDisabled === 'string' &&
+    typeof entry.dict.transferLinksUnavailable === 'string' &&
+    typeof entry.dict.transferEditionDsh === 'string' &&
+    typeof entry.dict.transferEditionNight === 'string'))
+  check('client posts the codec toggle through the existing helper', clientSource.includes("post('codec'") && clientSource.includes('enabled'))
+  check('client does not hardcode the download/featured link copy', !clientSource.includes('下载夜间巡航版') && !clientSource.includes('插件精选'))
+  check('client exposes vault copy and clear action', clientSource.includes('vaultTitle') && clientSource.includes("post('vault/clear'") && !clientSource.includes('vault/read'))
+
+  const renderSettings = transfer => {
+    React.__stateQueue = [{ data: { version: '0.1.0-rc.13', status: 'ready', peers: [], transfer, vault: { bytes: 1315069, entries: 1, maxBytes: 268435456 } }, error: null }]
+    const outer = registration.Component({ close() {} })
+    const tree = typeof outer.type === 'function' ? outer.type(outer.props) : outer
+    return JSON.stringify(renderElement(tree))
+  }
+  const downloadLink = { label: 'TEST-DOWNLOAD', url: 'https://example.test/d', hint: 'TEST-DOWNLOAD-HINT' }
+  const featuredLink = { label: 'TEST-FEATURED', url: 'https://example.test/f', hint: 'TEST-FEATURED-HINT' }
+
+  // Native DSH: JSONL chip, hint, download link from state, no JLC toggle.
+  const nativeText = renderSettings({
+    edition: 'dsh',
+    editionSource: 'env',
+    mode: 'jsonl',
+    desired: 'off',
+    active: false,
+    available: false,
+    pendingRestart: false,
+    reason: 'edition-requires-night-cruising',
+    nativeVersion: null,
+    links: { download: downloadLink, featured: null },
+    linksStatus: 'ok',
+    linksFetchedAt: 1763000000000,
+  })
+  check('native transfer card renders the JSONL chip', nativeText.includes('传输方式') && nativeText.includes('"children":[["JSONL"]]'))
+  check('native transfer card shows the JSONL hint', nativeText.includes('当前为 JSONL 传输方式'))
+  check('native transfer card marks the edition', nativeText.includes('原生 DSH'))
+  check('native transfer card hides the JLC toggle', !nativeText.includes('"children":["启用 JLC 巡航加速"]') && !nativeText.includes('"children":["改用 JSONL"]'))
+  check('native download link label and url come from state', nativeText.includes('TEST-DOWNLOAD') && nativeText.includes('"href":"https://example.test/d"') && nativeText.includes('"target":"_blank"') && nativeText.includes('"rel":"noreferrer"'))
+  check('native download hint comes from state', nativeText.includes('TEST-DOWNLOAD-HINT'))
+  check('native transfer card shows no featured link', !nativeText.includes('TEST-FEATURED'))
+  check('settings page renders the encrypted vault card', nativeText.includes('保险柜') && nativeText.includes('已加密'), 'missing vault card')
+
+  const nativeBrokenText = renderSettings({
+    edition: 'dsh',
+    editionSource: 'env',
+    mode: 'jsonl',
+    desired: 'off',
+    active: false,
+    available: false,
+    pendingRestart: false,
+    reason: 'edition-requires-night-cruising',
+    nativeVersion: null,
+    links: { download: null, featured: null },
+    linksStatus: 'error',
+    linksFetchedAt: null,
+  })
+  check('native transfer card falls back when the site links fail', nativeBrokenText.includes('精选配置暂不可用') && !nativeBrokenText.includes('TEST-DOWNLOAD'))
+
+  // Night Cruising, active: green JLC chip, cruising status, featured link only.
+  const nightActiveText = renderSettings({
+    edition: 'night-cruising',
+    editionSource: 'env',
+    mode: 'jlc',
+    desired: 'on',
+    active: true,
+    available: true,
+    pendingRestart: false,
+    reason: 'native-module-loaded',
+    nativeVersion: '0.1.0',
+    links: { download: downloadLink, featured: featuredLink },
+    linksStatus: 'ok',
+    linksFetchedAt: 1763000000000,
+  })
+  check('night cruising active shows the cruising status', nightActiveText.includes('本地到远端 巡航加速中'))
+  check('night cruising active renders a green JLC chip', nightActiveText.includes('state-success-primary') && nightActiveText.includes('"children":[["JLC"]]'))
+  check('night cruising active renders the featured link from state', nightActiveText.includes('TEST-FEATURED') && nightActiveText.includes('"href":"https://example.test/f"') && nightActiveText.includes('TEST-FEATURED-HINT'))
+  check('night cruising active hides the download link', !nightActiveText.includes('TEST-DOWNLOAD'))
+  check('night cruising active offers the JSONL switch', nightActiveText.includes('"children":["改用 JSONL"]'))
+  check('night cruising active marks the edition', nightActiveText.includes('夜间巡航版'))
+
+  // Night Cruising, saved but not loaded: warning chip + restart copy.
+  const nightPendingText = renderSettings({
+    edition: 'night-cruising',
+    editionSource: 'env',
+    mode: 'jsonl',
+    desired: 'on',
+    active: false,
+    available: true,
+    pendingRestart: true,
+    reason: 'pending-restart',
+    nativeVersion: '0.1.0',
+    links: { download: null, featured: null },
+    linksStatus: 'loading',
+    linksFetchedAt: null,
+  })
+  check('night cruising pending shows the restart status', nightPendingText.includes('本地到远端 重启即出发'))
+  check('night cruising pending explains the restart', nightPendingText.includes('设置已保存，重启 DSH 后生效。'))
+  check('night cruising pending renders a warning JLC chip', nightPendingText.includes('state-warning-primary') && nightPendingText.includes('"children":[["JLC"]]'))
+  check('night cruising pending offers the JSONL switch', nightPendingText.includes('"children":["改用 JSONL"]'))
+
+  // Night Cruising with a missing native module and failed site links.
+  const nightBrokenText = renderSettings({
+    edition: 'night-cruising',
+    editionSource: 'env',
+    mode: 'jsonl',
+    desired: 'off',
+    active: false,
+    available: false,
+    pendingRestart: false,
+    reason: 'native-module-missing',
+    nativeVersion: null,
+    links: { download: null, featured: null },
+    linksStatus: 'error',
+    linksFetchedAt: null,
+  })
+  check('night cruising unavailable reports the missing component', nightBrokenText.includes('JLC 加速组件不可用'))
+  check('night cruising unavailable shows the links fallback', nightBrokenText.includes('精选配置暂不可用'))
+  check('night cruising unavailable offers the enable button', nightBrokenText.includes('"children":["启用 JLC 巡航加速"]'))
+  React.__stateQueue = []
+
 } catch (error) {
   failures += 1
   console.error('CLIENT SMOKE ERROR', error)

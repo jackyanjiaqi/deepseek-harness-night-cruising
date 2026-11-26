@@ -1,0 +1,22 @@
+diff --git a/apps/web/src/night-cruising.ts b/apps/web/src/night-cruising.ts
+index f6bfd2170a1d0ca7383feeb6f6d7c7f711356021..3ecb69c82a1041b3689ba6315ab487ad36c0a2bc 100644
+--- a/apps/web/src/night-cruising.ts
++++ b/apps/web/src/night-cruising.ts
+@@ -396,6 +396,17 @@ document.addEventListener('keydown', (event: KeyboardEvent) => {
+   }
+ })
+ 
++/* Clicking anywhere outside the footer closes the expanded panel, matching the
++ * conventional popover behavior. Clicks inside the footer (including the
++ * toggle and panel controls) stay untouched; Escape still works above. */
++document.addEventListener('pointerdown', (event: PointerEvent) => {
++  if (panel?.hidden !== false) return
++  const target = event.target
++  if (!(target instanceof Node)) return
++  if (footer?.contains(target)) return
++  setExpanded(false, false)
++}, true)
++
+ /* The chat's running indicator disappearing is the one DOM signal every
+  * conversation view shares (the stop button's localized label is a fallback).
+  * Re-state the timeout as the same minimal white line when output completes;

@@ -17,7 +17,7 @@ const INDEX_CACHE_MAX = 64
 /** Transcript pages kept in the cache, across all sessions. */
 const TRANSCRIPT_CACHE_MAX = 512
 
-export function registerRoutes(ctx, mesh, log) {
+export function registerRoutes(ctx, mesh, log, codec = null) {
   const webServer = ctx.get('webServer')
   if (!webServer) {
     log.warn('webServer is not mounted; the settings panel has no data source')
@@ -39,7 +39,38 @@ export function registerRoutes(ctx, mesh, log) {
             tailscale: await mesh.tailscaleStatus(),
             channels: mesh.channels(),
             localTest: localTestStatus(mesh),
+            transfer: codec ? codec.state() : null,
           })
+        }
+        if (route === '/api/site-links' && req.method === 'GET') {
+          if (!codec) {
+            return json(res, 503, {
+              links: { download: null, featured: null },
+              linksStatus: 'error',
+              linksFetchedAt: null,
+            })
+          }
+          if (isTruthy(url.searchParams.get('force'))) await codec.refreshLinks({ force: true })
+          const transfer = codec.state()
+          return json(res, 200, {
+            links: transfer.links,
+            linksStatus: transfer.linksStatus,
+            linksFetchedAt: transfer.linksFetchedAt,
+          })
+        }
+        if (route === '/api/codec' && req.method === 'POST') {
+          if (!codec) return json(res, 503, { error: 'codec controller is unavailable', code: 'codec-unavailable' })
+          const body = await readBody(req)
+          if (typeof body.enabled !== 'boolean') return json(res, 400, { error: 'enabled must be a boolean' })
+          const result = codec.setEnabled(body.enabled)
+          if (result?.ok === false) {
+            const status = result.code === 'edition-requires-night-cruising' ? 409 : 500
+            return json(res, status, {
+              error: result.error ?? result.code ?? 'codec update failed',
+              code: result.code ?? 'codec-failed',
+            })
+          }
+          return json(res, 200, { ok: true, transfer: result })
         }
         if (route === '/api/tree' && req.method === 'GET') {
           return json(res, 200, await buildTree(mesh, log))
@@ -83,6 +114,32 @@ export function registerRoutes(ctx, mesh, log) {
           } catch (error) {
             return json(res, 502, { error: error.message, code: error.code ?? 'remote-failed' })
           }
+        }
+        if (route === '/api/fetch' && req.method === 'POST') {
+          const body = await readBody(req)
+          const peer = String(body.peer ?? '')
+          const sessionId = String(body.sessionId ?? '')
+          if (!peer || !sessionId) return json(res, 400, { error: 'peer and sessionId are required' })
+          if (codec?.state().active !== true) {
+            return json(res, 409, { error: 'JLC is not active; restart Night Cruising after enabling it', code: 'jlc-inactive' })
+          }
+          try {
+            const result = await mesh.fetchSession(peer, sessionId, {
+              priority: body.priority === 'none' ? 'none' : 'dialog',
+            })
+            return json(res, 200, { ok: true, ...result })
+          } catch (error) {
+            return json(res, 502, { error: error.message, code: error.code ?? 'fetch-failed' })
+          }
+        }
+        if (route === '/api/transfer/dialog' && req.method === 'GET') {
+          const transferId = String(url.searchParams.get('transferId') ?? '')
+          if (!transferId) return json(res, 400, { error: 'transferId is required' })
+          return json(res, 200, mesh.transfer.dialog(transferId))
+        }
+        if (route === '/api/vault/clear' && req.method === 'POST') {
+          const vault = await mesh.clearVault()
+          return json(res, 200, { ok: true, vault })
         }
         if (route === '/api/cache/clear' && req.method === 'POST') {
           cache.clear()

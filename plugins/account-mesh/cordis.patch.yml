@@ -14,6 +14,25 @@
       name: dsh-account-mesh
       config:
         autoTrustSameAccount: true
+        # Transfer codec (rc.11). `auto` enables JLC only in Night Cruising;
+        # standard DSH always stays on JSONL. `off` forces JSONL in both.
+        # codec: auto
+        # Edition detection is authoritative via DSH_DISTRIBUTION, injected by
+        # the Night Cruising Host. Set this only for a test/forced deployment:
+        # distribution: auto
+        # Site-owned download / featured links are read from the same-origin
+        # Qiniu OSS document; these values are endpoints, not the link copy.
+        # siteBaseUrl: https://deepseek-harness.partyplay.top
+        # siteConfigPath: /data/account-mesh.json
+        # Optional explicit native module (otherwise @dsh/jlc or native/):
+        # nativeModulePath: ''
+        # JLC completed-session memory cache cap; not a model usage gate.
+        # cacheMaxBytes: 268435456
+        # Encrypted process-lifetime vault (remote JLC archives); cleared on exit.
+        # vaultEnabled: true
+        # vaultMaxBytes: 268435456
+        # Test-only: force a device id for two Hosts on one machine.
+        # deviceId: ''
         # Optional MCP endpoint (streamable HTTP) exposing the same read-only
         # operations to external MCP clients. Unset keeps it off; set mcpToken
         # to require `Authorization: Bearer <token>`.
