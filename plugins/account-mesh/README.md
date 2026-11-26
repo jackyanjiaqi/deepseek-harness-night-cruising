@@ -16,6 +16,8 @@ Full capability notes and limitations: [docs/DETAIL.md](docs/DETAIL.md).
 
 `mesh_session_fetch` pulls a whole session through the JLC binary block channel into local memory and returns its projected transcript. The JLC archive may be cached in the encrypted, process-lifetime **vault** (`vault/*.ncv`, AES-256-GCM, 0600); it is not a user-visible file store and is cleared when DSH exits.
 
+A cross-restart **hosted vault** is designed but not implemented yet: the ciphertext stays on this machine while the opening key remains derived and released by the remote peer, one generation per open. See [docs/托管保险柜与本地缓存.md](docs/托管保险柜与本地缓存.md).
+
 `mesh_session_summary` pages through a whole remote session and returns its transcript as plain text, so the agent can summarise a remote conversation in one call.
 
 ## MCP endpoint (optional)
