@@ -43,7 +43,7 @@ ai 侧可用的工具（本地 agent 调用，不会写远端）：
 
 ### 当前范围
 
-rc.13 已实现 napi 绑定、传输方式状态/开关、双版本判定、设置页和站点配置，并接通 `mesh-bin` 的 JLC 块传输：`mesh_session_fetch`/`/account-mesh/api/fetch` 把整份会话拉入内存，按 manifest/block 分块校验，并把 archive 写入进程级 AES-256-GCM 加密“保险柜”（`dataDir/vault/*.ncv`，0600），关闭 DSH 清除；不写明文会话文件。当前“巡航加速中”表示 native 编解码器已加载；具体会话仍需用户触发拉取，不是所有 RPC 自动走 JLC。
+rc.14 已实现 napi 绑定、传输方式状态/开关、双版本判定、设置页和站点配置，并接通 `mesh-bin` 的 JLC 块传输：`mesh_session_fetch`/`/account-mesh/api/fetch` 把整份会话拉入内存，按 manifest/block 分块校验，并把 archive 写入进程级 AES-256-GCM 加密“保险柜”（`dataDir/vault/*.ncv`，0600），关闭 DSH 清除；不写明文会话文件。原生 DSH 没有 JLC 时，`fetchJsonl` 按 `sessions/events` 每页 500 项串行拉取，返回可见进度；设置页提示用户可下载夜间巡航版加速。rc.14 同时修复了 >48 KiB RPC 文本分片重组的稀疏数组 bug（长会话挂起的根因）。当前“巡航加速中”表示 native 编解码器已加载；具体会话仍需用户触发拉取，不是所有 RPC 自动走 JLC。
 
 ### 托管保险柜（设计，未实现）
 
@@ -88,7 +88,7 @@ rc.13 的保险柜密钥只存在于进程内，重启后只能重拉全量。�
 
 插件没有 `Config` 导出，所有字段可选，写在 profile 的 `cordis.patch.yml`：
 
-> rc.13 新增 `deviceId` 仅用于同一台机器模拟两端测试；生产留空。`cacheMaxBytes` 是 JLC 内存缓存上限，不是模型用量门控。
+> rc.14 新增 `deviceId` 仅用于同一台机器模拟两端测试；生产留空。`cacheMaxBytes` 是 JLC 内存缓存上限，不是模型用量门控。
 
 ```yaml
 - id: account-mesh

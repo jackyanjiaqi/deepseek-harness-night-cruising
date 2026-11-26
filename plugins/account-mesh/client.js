@@ -172,7 +172,6 @@ window.__ModuleLoader__.load({
         fetching: '拉取中',
         jsonlProgress: '分段拉取中 {received}/{total} 项…',
         nativePromo: '原生 DSH 的长会话会分段串行拉取，速度较慢；夜间巡航版可用 JLC 加速。',
-        nativePromoLink: '下载夜间巡航版',
         fetchProgress: '拉取中 {received}/{total} 块 · {percent}%',
         fetchFailed: '拉取失败',
         fetchDialogReady: '对话已到，继续拉取其余数据…',
@@ -341,7 +340,6 @@ window.__ModuleLoader__.load({
         fetching: 'Fetching',
         jsonlProgress: 'Fetching segment {received}/{total} items…',
         nativePromo: 'Standard DSH pages long sessions serially and can be slow; Night Cruising uses JLC acceleration.',
-        nativePromoLink: 'Download Night Cruising',
         fetchProgress: 'Fetching {received}/{total} blocks · {percent}%',
         fetchFailed: 'Fetch failed',
         fetchDialogReady: 'Dialog is ready; fetching the rest…',
@@ -1620,7 +1618,7 @@ window.__ModuleLoader__.load({
           ? h('div', { style: { ...styles.hint, padding: '6px 14px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
               h('span', null, t('nativePromo')),
               nativeDownload
-                ? h('a', { href: nativeDownload.url, target: '_blank', rel: 'noreferrer', style: styles.link }, t('nativePromoLink'))
+                ? h('a', { href: nativeDownload.url, target: '_blank', rel: 'noreferrer', style: styles.link }, nativeDownload.label)
                 : null)
           : null
         const content = view === 'conversation'

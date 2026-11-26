@@ -101,7 +101,11 @@ export class PeerLink extends EventEmitter {
       const entry = this.pendingChunks.get(key) ?? { total: envelope.__total, parts: new Array(envelope.__total), at: Date.now() }
       entry.parts[envelope.__index] = Buffer.from(envelope.__data, 'base64url')
       this.pendingChunks.set(key, entry)
-      if (entry.parts.every(part => part !== undefined)) {
+      // Array.prototype.every skips holes: a sparse parts array would look
+      // complete after the first chunk. Count filled slots explicitly, otherwise
+      // any response larger than one 48 KiB chunk is emitted prematurely and the
+      // caller waits forever for a valid JSON reply.
+      if (entry.parts.reduce((count, part) => count + (part === undefined ? 0 : 1), 0) === entry.total) {
         this.pendingChunks.delete(key)
         this.emit('message', { label, text: Buffer.concat(entry.parts).toString('utf8') })
       }
