@@ -111,6 +111,7 @@ export class TransferManager {
     this.vault = vault
     this.sends = new Map()
     this.recvs = new Map()
+    this.jsonlJobs = new Map()
     this.cache = new Map()
     this.cacheBytes = 0
     this.maxCacheBytes = Number.isFinite(Number(config.cacheMaxBytes))
@@ -224,6 +225,7 @@ export class TransferManager {
           peerId,
           sessionId,
           transferId: null,
+          mode: 'jlc',
           ...decoded,
           headerBytes: 0,
           blocks: 0,
@@ -298,6 +300,7 @@ export class TransferManager {
         peerId,
         sessionId,
         transferId,
+        mode: 'jlc',
         ...decoded,
         headerBytes: header.length,
         blocks: incoming.receivedBlocks,
@@ -396,10 +399,112 @@ export class TransferManager {
     return archive
   }
 
-  /** Progress snapshot for the panel; never exposes session bytes. */
+  /**
+   * Native-DSH fallback: page the remote projection serially. Each page is a
+   * separate RPC task; the next page starts only after the previous one
+   * settles, so a long session shows slow but visible progress instead of one
+   * oversized response that fails at the transport edge.
+   */
+  async fetchJsonl({ peerId, sessionId, call, onProgress }) {
+    const transferId = crypto.randomUUID()
+    const job = {
+      transferId,
+      peerId,
+      sessionId,
+      mode: 'jsonl',
+      phase: 'pulling',
+      totalItems: 0,
+      receivedItems: 0,
+      totalBlocks: 1,
+      receivedBlocks: 0,
+      totalBytes: 0,
+      receivedBytes: 0,
+      dialogReady: false,
+      startedAt: Date.now(),
+    }
+    this.jsonlJobs.set(transferId, job)
+    const progress = () => onProgress?.(this.jsonlProgress(job))
+    progress()
+    try {
+      try {
+        const index = await call(peerId, 'sessions/index', { sessionId })
+        job.totalItems = Number(index?.totalItems ?? 0)
+      } catch {
+        // The index is only a progress denominator; continue with pages.
+      }
+      const items = []
+      let fromSeq = 0
+      let pages = 0
+      const session = { id: sessionId }
+      for (;;) {
+        const page = await call(peerId, 'sessions/events', { sessionId, fromSeq, limit: 500 })
+        if (page?.session) Object.assign(session, page.session)
+        items.push(...(page?.items ?? []))
+        pages += 1
+        job.receivedItems = items.length
+        job.receivedBlocks = pages
+        job.totalBlocks = Math.max(job.totalBlocks, pages + (page?.hasMore ? 1 : 0))
+        job.receivedBytes = items.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), 'utf8'), 0)
+        job.totalBytes = Math.max(job.receivedBytes, job.totalBytes)
+        progress()
+        if (!page?.hasMore || !Number.isFinite(page?.nextSeq) || page.nextSeq <= fromSeq) break
+        fromSeq = page.nextSeq
+      }
+      const result = {
+        peerId,
+        sessionId,
+        transferId,
+        mode: 'jsonl',
+        session,
+        items,
+        dialogItems: items,
+        rawBytes: job.receivedBytes,
+        archiveBytes: 0,
+        headerBytes: 0,
+        blocks: pages,
+        totalItems: job.totalItems || items.length,
+        dialogReadyIncoming: true,
+        elapsedMs: Date.now() - job.startedAt,
+        vaultHit: false,
+      }
+      job.phase = 'done'
+      this.putCache(`${peerId}\u0000${sessionId}`, result)
+      progress()
+      return result
+    } catch (error) {
+      job.phase = 'error'
+      job.error = error.message
+      progress()
+      throw error
+    } finally {
+      this.jsonlJobs.delete(transferId)
+    }
+  }
+
+  /** Progress snapshot for one JSONL fallback job. */
+  jsonlProgress(job) {
+    return {
+      transferId: job.transferId,
+      peerId: job.peerId,
+      sessionId: job.sessionId,
+      mode: 'jsonl',
+      phase: job.phase,
+      totalItems: job.totalItems,
+      receivedItems: job.receivedItems,
+      totalBlocks: job.totalBlocks,
+      receivedBlocks: job.receivedBlocks,
+      totalBytes: job.totalBytes,
+      receivedBytes: job.receivedBytes,
+      dialogReady: false,
+      error: job.error,
+    }
+  }
+
+  /** Progress snapshot for the panel; never exposes session bytes. */  /** Progress snapshot for the panel; never exposes session bytes. */
   progressOf(incoming) {
     return {
       transferId: incoming.transferId,
+      mode: 'jlc',
       peerId: incoming.peerId,
       sessionId: incoming.sessionId,
       phase: incoming.phase,
@@ -421,7 +526,10 @@ export class TransferManager {
 
   /** Current transfer states (active only; terminal states are dropped). */
   state() {
-    return [...this.recvs.values()].map(incoming => this.progressOf(incoming))
+    return [
+      ...this.recvs.values(),
+      ...this.jsonlJobs.values(),
+    ].map(entry => entry.mode === 'jsonl' ? this.jsonlProgress(entry) : this.progressOf(entry))
   }
 
   /** Read the current cache stats for `/api/state`. */

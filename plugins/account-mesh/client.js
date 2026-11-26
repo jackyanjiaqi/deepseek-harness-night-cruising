@@ -168,7 +168,11 @@ window.__ModuleLoader__.load({
         transferEditionDsh: '原生 DSH',
         transferEditionNight: '夜间巡航版',
         fetchFull: 'JLC 拉取完整会话',
+        fetchSegmented: '分段拉取完整会话',
         fetching: '拉取中',
+        jsonlProgress: '分段拉取中 {received}/{total} 项…',
+        nativePromo: '原生 DSH 的长会话会分段串行拉取，速度较慢；夜间巡航版可用 JLC 加速。',
+        nativePromoLink: '下载夜间巡航版',
         fetchProgress: '拉取中 {received}/{total} 块 · {percent}%',
         fetchFailed: '拉取失败',
         fetchDialogReady: '对话已到，继续拉取其余数据…',
@@ -333,7 +337,11 @@ window.__ModuleLoader__.load({
         transferEditionDsh: 'Standard DSH',
         transferEditionNight: 'Night Cruising',
         fetchFull: 'Fetch full session with JLC',
+        fetchSegmented: 'Fetch full session in segments',
         fetching: 'Fetching',
+        jsonlProgress: 'Fetching segment {received}/{total} items…',
+        nativePromo: 'Standard DSH pages long sessions serially and can be slow; Night Cruising uses JLC acceleration.',
+        nativePromoLink: 'Download Night Cruising',
         fetchProgress: 'Fetching {received}/{total} blocks · {percent}%',
         fetchFailed: 'Fetch failed',
         fetchDialogReady: 'Dialog is ready; fetching the rest…',
@@ -1593,18 +1601,33 @@ window.__ModuleLoader__.load({
         const items = transcript.items ?? []
         const locked = fetching || staged
         const progress = activeTransfer
-          ? fill(t('fetchProgress'), {
-              received: activeTransfer.receivedBlocks ?? 0,
-              total: activeTransfer.totalBlocks ?? 0,
-              percent: activeTransfer.totalBlocks
-                ? Math.round((activeTransfer.receivedBlocks ?? 0) / activeTransfer.totalBlocks * 100)
-                : 0,
-            })
+          ? activeTransfer.mode === 'jsonl'
+            ? fill(t('jsonlProgress'), {
+                received: activeTransfer.receivedItems ?? 0,
+                total: activeTransfer.totalItems ? activeTransfer.totalItems : '?',
+              })
+            : fill(t('fetchProgress'), {
+                received: activeTransfer.receivedBlocks ?? 0,
+                total: activeTransfer.totalBlocks ?? 0,
+                percent: activeTransfer.totalBlocks
+                  ? Math.round((activeTransfer.receivedBlocks ?? 0) / activeTransfer.totalBlocks * 100)
+                  : 0,
+              })
+          : null
+        const nativeMode = transfer?.active !== true
+        const nativeDownload = transferLink(transfer?.links?.download)
+        const nativePromo = fetching && nativeMode
+          ? h('div', { style: { ...styles.hint, padding: '6px 14px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+              h('span', null, t('nativePromo')),
+              nativeDownload
+                ? h('a', { href: nativeDownload.url, target: '_blank', rel: 'noreferrer', style: styles.link }, t('nativePromoLink'))
+                : null)
           : null
         const content = view === 'conversation'
           ? conversationNodes(items, t, locked)
           : items.map(item => h(TrajectoryItem, { key: item.seq, item, t, locked }))
         return h(React.Fragment, null,
+          nativePromo,
           progress ? h('div', { style: { ...styles.hint, padding: '6px 14px' } }, progress) : null,
           staged ? h('div', { style: { ...styles.hint, padding: '0 14px 6px' } }, t('fetchDialogReady')) : null,
           fetchError ? h('div', { style: { ...styles.error, padding: '6px 14px' } }, `${t('fetchFailed')}: ${fetchError}`) : null,
@@ -1752,14 +1775,13 @@ window.__ModuleLoader__.load({
                   h('span', { style: styles.toolbarId, title: selection.sessionId },
                     `${t('sessionIdLabel')}: ${shortSessionId(selection.sessionId)}`),
                   h(CopyButton, { text: selection.sessionId, label: t('copySessionId'), t }),
-                  transfer?.active
-                    ? h('button', {
-                        style: styles.button,
-                        className: 'am-button',
-                        disabled: fetching,
-                        onClick: () => { void startFetch() },
-                      }, fetching ? t('fetching') : t('fetchFull'))
-                    : null,
+                  h('button', {
+                    style: styles.button,
+                    className: 'am-button',
+                    disabled: fetching,
+                    title: transfer?.active === true ? t('fetchFull') : t('nativePromo'),
+                    onClick: () => { void startFetch() },
+                  }, fetching ? t('fetching') : transfer?.active === true ? t('fetchFull') : t('fetchSegmented')),
                   sessionTotals.get(selection.sessionId) != null
                     ? h(Chip, { tone: 'off' }, `${t('sessionBytesLabel')} ${formatBytes(sessionTotals.get(selection.sessionId).totalBytes)}`)
                     : null,

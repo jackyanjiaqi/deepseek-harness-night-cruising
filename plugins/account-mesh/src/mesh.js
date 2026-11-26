@@ -588,13 +588,19 @@ export class Mesh {
 
   /** Pull one remote session with JLC into memory and project it. */
   fetchSession(peerId, sessionId, options = {}) {
-    return this.transfer.fetch({
-      peerId,
-      sessionId,
-      priority: options.priority ?? 'dialog',
-      call: (target, op, params) => this.call(target, op, params, options.signal),
-      onProgress: options.onProgress,
-    })
+    const call = (target, op, params) => this.call(target, op, params, options.signal)
+    if (this.codec?.state?.().active === true) {
+      return this.transfer.fetch({
+        peerId,
+        sessionId,
+        priority: options.priority ?? 'dialog',
+        call,
+        onProgress: options.onProgress,
+      })
+    }
+    // Standard DSH has no JLC native module. Page the projection serially so a
+    // long chat still completes, with one page per task and visible progress.
+    return this.transfer.fetchJsonl({ peerId, sessionId, call, onProgress: options.onProgress })
   }
 
   /** Active JLC transfer progress for the panel. */

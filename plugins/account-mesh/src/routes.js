@@ -120,9 +120,6 @@ export function registerRoutes(ctx, mesh, log, codec = null) {
           const peer = String(body.peer ?? '')
           const sessionId = String(body.sessionId ?? '')
           if (!peer || !sessionId) return json(res, 400, { error: 'peer and sessionId are required' })
-          if (codec?.state().active !== true) {
-            return json(res, 409, { error: 'JLC is not active; restart Night Cruising after enabling it', code: 'jlc-inactive' })
-          }
           try {
             const result = await mesh.fetchSession(peer, sessionId, {
               priority: body.priority === 'none' ? 'none' : 'dialog',
