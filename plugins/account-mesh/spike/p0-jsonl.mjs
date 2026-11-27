@@ -33,12 +33,12 @@ function makeCtx({ deviceId }) {
 
 const meshA = new Mesh({
   ctx: makeCtx({ deviceId: 'device-alpha' }),
-  config: { discoveryPort: 48501, staticPeers: ['127.0.0.1:48502'], dataDir: path.join(root, 'home-a'), vaultEnabled: false },
+  config: { discoveryPort: 48901, staticPeers: ['127.0.0.1:48902'], dataDir: path.join(root, 'home-a'), vaultEnabled: false },
   log, version: '0.1.0-test',
 })
 const meshB = new Mesh({
   ctx: makeCtx({ deviceId: 'device-beta' }),
-  config: { discoveryPort: 48502, staticPeers: ['127.0.0.1:48501'], dataDir: path.join(root, 'home-b'), vaultEnabled: false },
+  config: { discoveryPort: 48902, staticPeers: ['127.0.0.1:48901'], dataDir: path.join(root, 'home-b'), vaultEnabled: false },
   log, version: '0.1.0-test',
 })
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -57,7 +57,9 @@ const check = (label, condition, detail) => {
 }
 try {
   meshA.start(); meshB.start()
-  await waitFor('verified', () => meshA.peerViews().some(peer => peer.verified))
+  await waitFor('discovered', () => meshA.peerViews().length > 0)
+  meshA.pair('device-beta'); meshB.pair('device-alpha')
+  try { await waitFor('verified', () => meshA.peerViews().some(peer => peer.verified)) } catch (e) { console.error('PEERS', JSON.stringify(meshA.peerViews())); console.error('STATE', JSON.stringify(meshA.state())); throw e }
   const progress = []
   const started = Date.now()
   const result = await meshA.fetchSession('device-beta', 'session-remote', { onProgress: state => progress.push(state) })

@@ -193,10 +193,10 @@ window.__ModuleLoader__.load({
         fetchFailed: '拉取失败',
         fetchDialogReady: '对话已到，继续拉取其余数据…',
         fetchComplete: '完整会话已到',
-        vaultTitle: '保险柜',
-        vaultHint: '远端会话在本机的加密临时缓存；关闭 DSH 后自动清除，面板不提供查看。',
-        vaultEmpty: '保险柜为空',
-        vaultUsage: '已加密 {bytes} · {entries} 项',
+        vaultTitle: '托管保险柜',
+        vaultHint: '远端数据在本机的加密容器；跨重启保留，没有远端放行无法打开。目录、策略和删除在底部栏“托管保险柜”中管理。',
+        vaultEmpty: '还没有托管内容',
+        vaultUsage: '已加密 {bytes} · {entries} 个容器',
         vaultClear: '清空保险柜',
         vaultCleared: '保险柜已清空',
       },
@@ -372,10 +372,10 @@ window.__ModuleLoader__.load({
         fetchFailed: 'Fetch failed',
         fetchDialogReady: 'Dialog is ready; fetching the rest…',
         fetchComplete: 'Full session received',
-        vaultTitle: 'Vault',
-        vaultHint: 'Encrypted temporary cache of remote sessions on this machine. Cleared when DSH exits; no viewer is provided.',
-        vaultEmpty: 'Vault is empty',
-        vaultUsage: '{bytes} encrypted · {entries} entries',
+        vaultTitle: 'Hosted vault',
+        vaultHint: 'Encrypted remote-data containers on this machine. Kept across restarts; cannot be opened without the remote owner’s release. Paths, policy and deletion live in the bottom-bar Hosted vault panel.',
+        vaultEmpty: 'No hosted content',
+        vaultUsage: '{bytes} encrypted · {entries} containers',
         vaultClear: 'Clear vault',
         vaultCleared: 'Vault cleared',
       },
@@ -1061,13 +1061,14 @@ window.__ModuleLoader__.load({
      */
     function VaultCard({ vault, t, onClear, pending }) {
       if (!vault || typeof vault !== 'object') return null
-      const empty = (vault.entries ?? 0) === 0
+      const count = vault.containers ?? vault.entries ?? 0
+      const empty = count === 0
       return h('div', { style: styles.card },
         h('div', { style: styles.row },
           h('span', { style: styles.label }, t('vaultTitle')),
           h(Chip, { tone: empty ? 'off' : 'on' }, empty ? t('vaultEmpty') : fill(t('vaultUsage'), {
             bytes: formatBytes(vault.bytes ?? 0),
-            entries: vault.entries ?? 0,
+            entries: count,
           }))),
         h('p', { style: styles.hint }, t('vaultHint')),
         empty ? null : h('button', {

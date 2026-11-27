@@ -2,6 +2,11 @@
 
 独立维护的桌面发行工程。基线是 DeepSeek Harness `0.2.2-rc.5`，固定提交为 `9c2670d3bce5275e0d1610272958121af87787bb`。登录页和工作区使用夜间巡航主题，工作区默认使用深色配色，底部展示摩托车穿过跨江大桥驶向夜间都市的全景。点「播放音乐」可循环播放当前的 20 秒合成器占位音轨，再次点击暂停。正式配乐已选定动画《乒乓》原声带中牛尾宪辅（牛尾憲輔）的《Night Cruising》，待取得可随包分发的录音后替换。已有外观偏好优先。
 
+## 科普视频
+
+114 秒中文科普动画（JLC、同账号多设备互联、远端工作区、文档服务、跨夜长任务、macOS/Windows/Linux 三平台与未来规划，含官网实时 iframe）：
+[tutorial/night-cruising-intro.mp4](tutorial/night-cruising-intro.mp4) · [脚本与复现说明](tutorial/README.md)
+
 ## 从仓库启动
 
 需要 Git、Node.js 24、pnpm 11.28.5 以及本机平台的原生编译工具。首次构建会读取锁文件并下载 Electron、Node、Python 和 wheel。调试和打包都从本仓库根目录执行。

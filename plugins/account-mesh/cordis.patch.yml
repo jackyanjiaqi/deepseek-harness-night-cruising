@@ -28,8 +28,14 @@
         # nativeModulePath: ''
         # JLC completed-session memory cache cap; not a model usage gate.
         # cacheMaxBytes: 268435456
-        # Encrypted process-lifetime vault (remote JLC archives); cleared on exit.
+        # Hosted NCV2 vault: viewer chooses a root, remote owner keeps root.key/ledger.
+        # vaultMode: hosted          # hosted | session
         # vaultEnabled: true
+        # vaultRoot: ''              # default base for auto roots; '' = cwd
+        # vaultRelease: auto         # auto | confirm | deny
+        # vaultKeyTtlMs: 600000      # overridden by bottom-bar vault.keyTtl when set
+        # vaultRetentionDays: 30
+        # vaultApprovalTimeoutMs: 60000 # overridden by bottom-bar vault.approvalTimeout
         # vaultMaxBytes: 268435456
         # Test-only: force a device id for two Hosts on one machine.
         # deviceId: ''

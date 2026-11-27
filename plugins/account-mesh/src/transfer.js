@@ -103,12 +103,13 @@ export class TransferManager {
    * @param {object} [options.log] plugin logger
    * @param {object} options.codec CodecController
    */
-  constructor({ ctx, config = {}, log, codec, vault = null }) {
+  constructor({ ctx, config = {}, log, codec, vault = null, hostedVault = null }) {
     this.ctx = ctx
     this.config = config
     this.log = log
     this.codec = codec
     this.vault = vault
+    this.hostedVault = hostedVault
     this.sends = new Map()
     this.recvs = new Map()
     this.jsonlJobs = new Map()
@@ -155,6 +156,17 @@ export class TransferManager {
     }
   }
 
+  /** Session cwd for the hosted-vault workspace-relative path. */
+  async sessionCwd(sessionId) {
+    try {
+      const persistence = this.ctx.get('sessionPersistence')
+      const snapshot = await persistence?.stat?.(sessionId, {})
+      return snapshot?.header?.cwd ?? null
+    } catch {
+      return null
+    }
+  }
+
   /** Sender: read the session artifact and hold its archive in memory. */
   async prepare(params, entry) {
     const native = this.native()
@@ -164,6 +176,24 @@ export class TransferManager {
     const archive = Buffer.from(await native.encodeAsync(raw, String(params?.priority ?? 'dialog')))
     const manifest = JSON.parse(native.manifest(archive))
     const transferId = crypto.randomUUID()
+    let vault
+    if (this.hostedVault) {
+      try {
+        vault = await this.hostedVault.hostPrepare({
+          peerId: entry?.peer?.deviceId ?? '',
+          sessionId,
+          priority: String(params?.priority ?? 'dialog'),
+          kind: 'session',
+          objectId: sessionId,
+          variant: String(params?.priority ?? 'dialog'),
+          archiveSha: crypto.createHash('sha256').update(archive).digest('hex'),
+          archiveBytes: archive.length,
+          sessionCwd: await this.sessionCwd(sessionId),
+        })
+      } catch (error) {
+        this.log?.warn?.(`hosted vault prepare failed: ${error.message}`)
+      }
+    }
     this.sends.set(transferId, {
       peerId: entry?.peer?.deviceId ?? null,
       sessionId,
@@ -179,6 +209,7 @@ export class TransferManager {
       headerBase64: header.toString('base64'),
       headerBytes: header.length,
       archiveBytes: archive.length,
+      vault,
     }
   }
 
@@ -214,9 +245,68 @@ export class TransferManager {
   }
 
   /** Receiver: pull every block, assemble in memory and project it. */
-  async fetch({ peerId, sessionId, priority = 'dialog', call, onProgress }) {
+  async fetch({ peerId, sessionId, priority = 'dialog', call, onProgress, verifyVault }) {
     const native = this.native()
     const vaultKey = this.cacheKey(peerId, sessionId, priority)
+    // Hosted NCV2: try a local container and ask the owner for the generation
+    // key. Only a signed, peer-bound, generation-valid ticket is accepted.
+    if (this.hostedVault) {
+      const local = await this.hostedVault.openLocal(peerId, sessionId, priority)
+      if (local) {
+        try {
+          const challenge = crypto.randomBytes(16).toString('base64url')
+          const ack = await call(peerId, 'vault/open', {
+            depositId: local.header.depositId,
+            gen: local.header.gen,
+            challenge,
+            archiveSha: local.header.archiveSha,
+            priority,
+            kind: 'session',
+            objectId: sessionId,
+            variant: priority,
+          })
+          if (ack?.ok !== true || typeof ack.key !== 'string' || typeof ack.nextKey !== 'string') {
+            throw Object.assign(new Error(String(ack?.error ?? 'vault-open-rejected')), { code: `vault-${String(ack?.error ?? 'rejected')}` })
+          }
+          if (typeof verifyVault === 'function' && !verifyVault(ack)) {
+            throw Object.assign(new Error('vault ticket signature is invalid'), { code: 'vault-bad-signature' })
+          }
+          if (Number(ack.expiresAt) <= Date.now()) {
+            throw Object.assign(new Error('vault ticket has expired'), { code: 'vault-expired' })
+          }
+          const currentKey = Buffer.from(ack.key, 'base64url')
+          const nextKey = Buffer.from(ack.nextKey, 'base64url')
+          const opened = await this.hostedVault.decrypt(local, currentKey)
+          await this.hostedVault.rewrap(local, currentKey, nextKey, Number(ack.nextGen))
+          call(peerId, 'vault/commit', { depositId: local.header.depositId, gen: Number(ack.nextGen) }).catch(error => {
+            this.log?.warn?.(`vault commit failed: ${error.message}`)
+          })
+          const projection = opened.projection
+          const decoded = projection?.archiveSha === local.header.archiveSha && Array.isArray(projection.items)
+            ? { rawBytes: opened.archive.length, archiveBytes: opened.archive.length, items: projection.items, dialogItems: Array.isArray(projection.dialogItems) ? projection.dialogItems : [] }
+            : this.decodeArchive(opened.archive)
+          return {
+            peerId,
+            sessionId,
+            transferId: null,
+            mode: 'jlc',
+            session: { id: sessionId },
+            ...decoded,
+            headerBytes: 0,
+            blocks: 0,
+            dialogReadyIncoming: true,
+            elapsedMs: 0,
+            vaultHit: true,
+            vaultFresh: ack.fresh,
+          }
+        } catch (error) {
+          this.log?.warn?.(`hosted vault open failed: ${error.message}`)
+          if (/^(vault-(revoked|unknown|peer-mismatch|archive-mismatch|kind-mismatch|gen-mismatch|bad-signature|denied))$/.test(String(error.code ?? ''))) {
+            await this.hostedVault.deleteLocal(peerId, sessionId, priority)
+          }
+        }
+      }
+    }
     try {
       const cached = await this.vault?.get(vaultKey)
       if (cached) {
@@ -262,6 +352,7 @@ export class TransferManager {
       error: null,
     }
     this.recvs.set(transferId, incoming)
+    let hostedStored = false
     const progress = () => {
       onProgress?.(this.progressOf(incoming))
     }
@@ -289,8 +380,28 @@ export class TransferManager {
       progress()
       const archive = this.assemble(incoming)
       const decoded = this.decodeArchive(archive)
-      // The encrypted vault is a process-lifetime read cache, not a user store:
-      // no list/read route exists and a normal stop deletes the ciphertext.
+      // Hosted NCV2: persist archive + projection sidecar in the viewer-chosen
+      // root, with DEK wrapped by B's newly issued generation key.
+      if (this.hostedVault && prepare?.vault) {
+        try {
+          await this.hostedVault.store({
+            peerId,
+            sessionId,
+            priority,
+            kind: 'session',
+            objectId: sessionId,
+            variant: priority,
+            archive,
+            items: decoded.items,
+            dialogItems: decoded.dialogItems,
+            vault: prepare.vault,
+            sessionCwd: prepare.vault.sessionCwd ?? null,
+          })
+          hostedStored = true
+        } catch (error) {
+          this.log?.warn?.(`hosted vault store failed: ${error.message}`)
+        }
+      }
       try {
         await this.vault?.put(vaultKey, archive)
       } catch (error) {
@@ -307,6 +418,7 @@ export class TransferManager {
         dialogReadyIncoming: incoming.dialogReady,
         elapsedMs: Date.now() - incoming.startedAt,
         vaultHit: false,
+        vaultStored: hostedStored,
       }
       incoming.phase = 'done'
       incoming.result = result

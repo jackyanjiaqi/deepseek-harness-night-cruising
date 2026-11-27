@@ -139,3 +139,14 @@ rc.13 的保险柜密钥只存在于进程内，重启后只能重拉全量。�
 接入后可用 `mcp__account-mesh__mesh_session_summary` 按会话 id 读取远端会话全文并总结。
 
 状态与信任表保存在 `$DSH_HOME/account-mesh/`（`peers.json`、`identity.json`、`settings.json`、`mesh.log`，权限 0600）。`settings.json` 只保存 JLC 开关意图，不保存令牌或会话内容。
+
+## 托管保险柜（rc.15）
+
+- `vaultMode: hosted` 默认：A 侧在用户选择的本地根目录保存 `<workspace相对路径>/<hash>.hdr` + `.dat`；B 侧只保存 `root.key` + `ledger.json`，按次发放代次钥匙。
+- NCV2：`.dat` 用随机 DEK 加密 archive + 投影 sidecar；`.hdr` 只保存 DEK 的 `K_g` 包裹、depositId、代次、archiveSha。换钥只重写 `.hdr`。
+- `sessions/export/prepare` 首次下发 `depositId/K_0`；再次打开走 `vault/open` 取 K_g/K_{g+1} → 本地重包 `.hdr` → `vault/commit`；失败回退完整 JLC。
+- 本机（A）决定远端数据目录：`vault/host/root` 校验可写；默认目录失败/不可写时产生带倒计时的待确认项（`vault.approvalTimeout`），到期自动拒绝；`vault/host/open` 直接打开目录；`vault/host/delete` 删除内容后才允许更换目录。
+- 本机作为远端（B）可撤销某设备托管（`vault/revoke`），A 下次打开删除本地容器；B 的账本/根密钥保留。过期票据不会触发删除，容器留在本地。
+- 底栏“托管保险柜”入口在设置面板显示两个 scope：`远端在本机的托管`（目录/删除/待确认）和 `本机托管到远端的策略`（撤销/释放策略/钥匙 TTL 跳转超时设置）。`vault.approvalTimeout`、`vault.keyTtl` 在夜间巡航底栏“超时设置”中。
+- 当前 P1 使用已认证 DTLS/Ed25519 RPC 通道直接投递钥匙票据；设计中的额外 X25519 链路包裹尚未实现。`vaultRelease: confirm` 暂只返回拒绝，确认 UI 未实现。
+- `.dat` 成员当前为 archive + projection；未来电台/游戏可使用同对象格式的额外成员，设计见 `docs/托管保险柜与本地缓存.md` §17。

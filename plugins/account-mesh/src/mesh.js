@@ -15,6 +15,7 @@ import { SignalInbox, encodeSignal, parseSignalPayload, roomOf } from './signali
 import { PeerLink, RPC } from './transport.js'
 import { TransferManager } from './transfer.js'
 import { EncryptedVault } from './vault.js'
+import { HostedVault } from './vault2.js'
 import { DataPlane, rpcError } from './data.js'
 import { PendingCalls, requestFrame, toWireError } from './rpc.js'
 import { fingerprintOf, loadOrCreateIdentity, pairCode, signBytes, verifyBytes } from './identity.js'
@@ -67,7 +68,13 @@ export const DEFAULT_CONFIG = {
   deviceId: '',
   // Encrypted process-lifetime cache for remote JLC archives.
   vaultEnabled: true,
+  vaultMode: 'hosted',
   vaultMaxBytes: 268435456,
+  vaultKeyTtlMs: 600000,
+  vaultRetentionDays: 30,
+  vaultApprovalTimeoutMs: 60000,
+  vaultRelease: 'auto',
+  vaultRoot: '',
 }
 
 export class Mesh {
@@ -82,10 +89,19 @@ export class Mesh {
     this.trust = new TrustStore(path.join(this.dataDir, 'peers.json'))
     this.data = new DataPlane(ctx, this.config, log)
     this.codec = codec
-    this.vault = this.config.vaultEnabled === false
-      ? null
-      : new EncryptedVault({ dir: path.join(this.dataDir, 'vault'), maxBytes: this.config.vaultMaxBytes, log })
-    this.transfer = new TransferManager({ ctx, config: this.config, log, codec, vault: this.vault })
+    this.hostedVault = this.config.vaultEnabled !== false && this.config.vaultMode !== 'session'
+      ? new HostedVault({
+          dataDir: this.dataDir,
+          config: this.config,
+          log,
+          identity: this.identity,
+          statSession: sessionId => this.sessionFingerprint(sessionId),
+        })
+      : null
+    this.vault = this.config.vaultEnabled !== false && this.config.vaultMode === 'session'
+      ? new EncryptedVault({ dir: path.join(this.dataDir, 'vault'), maxBytes: this.config.vaultMaxBytes, log })
+      : null
+    this.transfer = new TransferManager({ ctx, config: this.config, log, codec, vault: this.vault, hostedVault: this.hostedVault })
     this.account = { status: 'unknown' }
     this.accountTag = undefined
     this.deviceId = undefined
@@ -109,6 +125,7 @@ export class Mesh {
     if (this.started) return
     this.started = true
     this.vault?.open().catch(error => this.noteError(error))
+    this.hostedVault?.ready.catch(error => this.noteError(error))
     this.timers.push(setInterval(() => this.guard(() => this.refreshAccount()), 15000))
     this.timers.push(setInterval(() => this.guard(() => this.housekeeping()), 3000))
     this.refreshAccount().catch(error => this.noteError(error))
@@ -604,6 +621,9 @@ export class Mesh {
       if (frame.op === 'sessions/export/prepare') result = await this.transfer.prepare(frame.params ?? {}, entry)
       else if (frame.op === 'sessions/export/block') result = await this.transfer.block(frame.params ?? {}, entry)
       else if (frame.op === 'sessions/export/cancel') result = await this.transfer.cancel(frame.params ?? {})
+      else if (frame.op === 'vault/open') result = await this.hostedVault.hostOpen({ ...(frame.params ?? {}), peerId: entry.peer.deviceId })
+      else if (frame.op === 'vault/commit') result = await this.hostedVault.hostCommit({ ...(frame.params ?? {}), peerId: entry.peer.deviceId })
+      else if (frame.op === 'vault/status') result = await this.hostedVault.hostState()
       else result = await this.runOp(frame.op, frame.params ?? {})
       respond({ ok: true, result })
     } catch (error) {
@@ -673,16 +693,34 @@ export class Mesh {
     return promise
   }
 
+  /** Stable size/mtime fingerprint used by the hosted-vault freshness check. */
+  async sessionFingerprint(sessionId) {
+    const persistence = this.ctx.get('sessionPersistence')
+    if (!persistence?.stat) return null
+    const snapshot = await persistence.stat(sessionId, {})
+    let mtimeMs = null
+    if (snapshot?.location?.path) {
+      try {
+        const { stat } = await import('node:fs/promises')
+        mtimeMs = (await stat(snapshot.location.path)).mtimeMs
+      } catch {}
+    }
+    return { bytes: snapshot?.sizeBytes ?? null, mtimeMs }
+  }
+
   /** Pull one remote session with JLC into memory and project it. */
   fetchSession(peerId, sessionId, options = {}) {
     const call = (target, op, params) => this.call(target, op, params, options.signal)
     if (this.codec?.state?.().active === true) {
+      const trusted = this.trust.get(this.resolvePeer(peerId)?.peer.deviceId ?? peerId)
       return this.transfer.fetch({
         peerId,
         sessionId,
         priority: options.priority ?? 'dialog',
         call,
         onProgress: options.onProgress,
+        verifyVault: ack => Boolean(trusted?.publicKey && typeof ack?.payload === 'string' && typeof ack?.sig === 'string'
+          && verifyBytes(trusted.publicKey, ack.payload, ack.sig)),
       })
     }
     // Standard DSH has no JLC native module. Page the projection serially so a
@@ -700,13 +738,49 @@ export class Mesh {
     return this.transfer.cacheState()
   }
 
-  /** Aggregate encrypted-vault status; never lists entries or keys. */
+  /** Aggregate hosted-vault status; never lists entries or keys. */
   vaultState() {
-    return this.vault?.state() ?? null
+    return this.hostedVault?.snapshot() ?? this.vault?.state() ?? null
   }
 
-  /** Clear the encrypted vault; only aggregate state is ever reported. */
+  /** Detailed hosted-vault host/owner state for the settings UI. */
+  async hostedVaultState() {
+    return this.hostedVault?.hostState() ?? null
+  }
+
+  /** Local user approves/changes the root for a remote device's vault. */
+  async setVaultRoot(peerId, root) {
+    return this.hostedVault?.setRoot(peerId, root) ?? null
+  }
+
+  /** Open the current vault root in the OS file manager. */
+  async openVaultDir(peerId) {
+    return this.hostedVault?.openDir(peerId) ?? null
+  }
+
+  /** Deny a pending directory request before its countdown expires. */
+  async denyVaultPending(id) {
+    return this.hostedVault?.denyPending(id) ?? false
+  }
+
+  /** Owner-side revocation of every deposit for one peer. */
+  async revokeVaultPeer(peerId) {
+    return this.hostedVault?.revokePeer(peerId) ?? { ok: false }
+  }
+
+  /** Host-side deletion of all encrypted content for one peer. */
+  async deletePeerVault(peerId) {
+    return this.hostedVault?.deletePeerVault(peerId) ?? { ok: false }
+  }
+
+  /** Owner-side release/retention policy. */
+  async setVaultOwnerPolicy(policy) {
+    return this.hostedVault?.updateOwnerPolicy(policy) ?? null
+  }
+
+  /** Clear local containers; host roots/ledger are intentionally preserved. */
   async clearVault() {
+    if (this.hostedVault) await this.hostedVault.clearLocal()
     await this.vault?.clear()
     return this.vaultState()
   }
@@ -805,7 +879,7 @@ export class Mesh {
       lastError: this.lastError ?? null,
       transfers: this.transferState(),
       cache: this.cacheState(),
-      vault: this.vault?.state() ?? null,
+      vault: this.hostedVault?.snapshot() ?? this.vault?.state() ?? null,
       peers: this.peerViews(),
       pendingTrust: this.pendingTrustRequests(),
     }

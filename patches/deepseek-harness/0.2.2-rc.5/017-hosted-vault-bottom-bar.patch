@@ -1,0 +1,511 @@
+diff --git a/apps/web/index.html b/apps/web/index.html
+index 55097446c99fafb9ef5f6dce384c97c052ce53c3..af4d77ed4c4d46dbc5cab71ca3a8c8de7b64cebc 100644
+--- a/apps/web/index.html
++++ b/apps/web/index.html
+@@ -35,6 +35,22 @@
+           </div>
+         </footer>
+       </section>
++      <section class="night-timeouts night-vault" id="night-vault" hidden aria-label="托管保险柜">
++        <header class="night-timeouts-head">
++          <div class="night-timeouts-title">
++            <strong>托管保险柜</strong>
++            <span>本机决定远端数据放在哪 · 远端决定数据内容和保留时间</span>
++          </div>
++          <button id="night-vault-close" class="night-timeouts-close" type="button">收起</button>
++        </header>
++        <div class="night-vault-body" id="night-vault-body"></div>
++        <footer class="night-timeouts-foot">
++          <span id="night-vault-status" role="status" aria-live="polite"></span>
++          <div class="night-timeouts-actions">
++            <button id="night-vault-refresh" type="button">刷新</button>
++          </div>
++        </footer>
++      </section>
+       <div class="night-cruise-bar">
+         <strong lang="zh-CN">夜间巡航</strong>
+         <button id="night-play" type="button" aria-label="播放或暂停夜间巡航" aria-pressed="false">播放音乐</button>
+@@ -50,6 +66,17 @@
+           <span class="night-timeouts-dot" aria-hidden="true"></span>
+           <span id="night-timeouts-summary">超时</span>
+         </button>
++        <button
++          id="night-vault-toggle"
++          class="night-timeouts-toggle night-vault-toggle"
++          type="button"
++          aria-expanded="false"
++          aria-controls="night-vault"
++          hidden
++        >
++          <span class="night-timeouts-dot" aria-hidden="true"></span>
++          <span id="night-vault-summary">托管保险柜</span>
++        </button>
+         <audio id="night-track" loop preload="none"></audio>
+       </div>
+     </footer>
+diff --git a/apps/web/src/night-cruising.css b/apps/web/src/night-cruising.css
+index 509a7e497109fcc6ee35b14a313e2d9da42275b9..fa76457449d7e626c000333b8f12d4c20b7c4736 100644
+--- a/apps/web/src/night-cruising.css
++++ b/apps/web/src/night-cruising.css
+@@ -403,3 +403,79 @@ body:has(.night-cruise) > #root {
+   .night-timeouts-toggle { transition: none; }
+   .night-timeouts-flash { animation: none; }
+ }
++
++/* Hosted vault panel: two scopes, explicitly separated. */
++.night-vault-toggle { max-width: min(34vw, 260px); }
++.night-vault-body {
++  flex: 1 1 auto;
++  min-height: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 12px;
++  padding: 12px 14px 8px;
++  overflow: auto;
++  overscroll-behavior: contain;
++  color: #f6ead3;
++  font-size: 12px;
++}
++.nv-section {
++  border: 1px solid #ffffff14;
++  border-radius: 10px;
++  padding: 10px 12px;
++  background: #0b111af5;
++}
++.nv-section > h3 {
++  margin: 0 0 3px;
++  color: #e8d5b0;
++  font-size: 12px;
++  letter-spacing: .06em;
++}
++.nv-section > p { margin: 0 0 8px; color: #ffffff80; font-size: 10.5px; line-height: 1.55; }
++.nv-row {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  min-width: 0;
++  padding: 7px 0;
++  border-top: 1px solid #ffffff0d;
++}
++.nv-row:first-of-type { border-top: 0; }
++.nv-peer { flex: 0 0 auto; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
++.nv-path { flex: 1 1 auto; min-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ffffffa8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; direction: rtl; text-align: left; }
++.nv-actions { flex: 0 0 auto; display: flex; gap: 6px; }
++.nv-badge { flex: 0 0 auto; border: 1px solid #ffffff24; border-radius: 999px; padding: 3px 7px; color: #d8c39d; font-size: 9.5px; }
++.nv-pending { border-color: #d5a84f66; background: #1b170df5; }
++.nv-pending-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
++.nv-countdown { margin-left: auto; color: #ffce7a; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-variant-numeric: tabular-nums; }
++.nv-input {
++  box-sizing: border-box;
++  width: 100%;
++  min-width: 180px;
++  padding: 6px 8px;
++  border: 1px solid #ffffff22;
++  border-radius: 7px;
++  background: #070c14;
++  color: #fff;
++  font: inherit;
++  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
++  font-size: 10.5px;
++}
++.nv-actions .nv-input { flex: 1 1 auto; }
++.nv-policy { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 8px; }
++.nv-field { display: flex; flex-direction: column; gap: 4px; color: #ffffff80; font-size: 10px; }
++.nv-field select, .nv-field input {
++  box-sizing: border-box;
++  width: 100%;
++  padding: 5px 7px;
++  border: 1px solid #ffffff22;
++  border-radius: 7px;
++  background: #070c14;
++  color: #fff;
++  font: inherit;
++  font-size: 11px;
++}
++.nv-empty { color: #ffffff70; font-size: 10.5px; padding: 4px 0; }
++.nv-error { color: #ff9d9d; font-size: 10.5px; }
++.night-vault .night-timeouts-foot { border-top: 1px solid #ffffff14; }
++
++.nv-actions button:disabled { opacity: .4; cursor: not-allowed; border-color: #ffffff14; }
+diff --git a/apps/web/src/night-cruising.ts b/apps/web/src/night-cruising.ts
+index 3ecb69c82a1041b3689ba6315ab487ad36c0a2bc..84ed52e86f76d90784808f4ef17b7562dfd9cef3 100644
+--- a/apps/web/src/night-cruising.ts
++++ b/apps/web/src/night-cruising.ts
+@@ -65,6 +65,13 @@ const saveButton = document.querySelector<HTMLButtonElement>('#night-timeouts-sa
+ const resetButton = document.querySelector<HTMLButtonElement>('#night-timeouts-reset')
+ const status = document.querySelector<HTMLElement>('#night-timeouts-status')
+ const footer = document.querySelector<HTMLElement>('.night-cruise')
++const vaultPanel = document.querySelector<HTMLElement>('#night-vault')
++const vaultOpenButton = document.querySelector<HTMLButtonElement>('#night-vault-toggle')
++const vaultCloseButton = document.querySelector<HTMLButtonElement>('#night-vault-close')
++const vaultRefreshButton = document.querySelector<HTMLButtonElement>('#night-vault-refresh')
++const vaultSummary = document.querySelector<HTMLElement>('#night-vault-summary')
++const vaultHost = document.querySelector<HTMLElement>('#night-vault-body')
++const vaultStatus = document.querySelector<HTMLElement>('#night-vault-status')
+ 
+ /** Rows currently rendered, keyed by settings key. */
+ const inputs = new Map<string, HTMLInputElement>()
+@@ -242,6 +249,7 @@ function applyFilter(): void {
+  */
+ function setExpanded(open: boolean, focus: boolean): void {
+   if (panel === null || openButton === null || footer === null) return
++  if (open && vaultPanel !== null && vaultPanel.hidden === false) setVaultExpanded(false, false)
+   panel.hidden = !open
+   footer.dataset.expanded = open ? 'true' : 'false'
+   openButton.setAttribute('aria-expanded', String(open))
+@@ -382,7 +390,301 @@ async function load(attempt = 0): Promise<void> {
+   }
+ }
+ 
++/* --------------------------------------------------------- hosted vault -- */
++
++interface VaultRoot { peerId: string; root: string; approvedAt: number; clearedAt?: number; containers: number; bytes: number }
++interface VaultPending { id: string; peerId: string; reason: string; suggestedRoot?: string; expiresAt: number; createdAt: number; attempts: number }
++interface VaultHostState {
++  roots: VaultRoot[]
++  pending: VaultPending[]
++  ownerPeers: { peerId: string; entries: number; bytes: number; kinds: string[]; lastUsedAt: number }[]
++  policy: { release: 'auto' | 'confirm' | 'deny'; keyTtlMs: number; retentionDays: number }
++}
++
++let vaultState: VaultHostState | null = null
++let vaultTimer: ReturnType<typeof setInterval> | undefined
++
++function vaultEl<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
++  const element = document.createElement(tag)
++  if (className !== undefined) element.className = className
++  if (text !== undefined) element.textContent = text
++  return element
++}
++
++function vaultButton(label: string, action: () => void): HTMLButtonElement {
++  const button = vaultEl('button', undefined, label)
++  button.type = 'button'
++  button.addEventListener('click', action)
++  return button
++}
++
++function setVaultStatus(text: string, tone: 'ok' | 'error' = 'ok'): void {
++  if (vaultStatus === null) return
++  vaultStatus.textContent = text
++  vaultStatus.dataset.tone = tone
++}
++
++async function vaultRequest(method: string, route: string, body?: unknown): Promise<unknown> {
++  const response = await fetch(`/account-mesh/api/${route}`, {
++    method,
++    headers: body === undefined ? { accept: 'application/json' } : { accept: 'application/json', 'content-type': 'application/json' },
++    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
++  })
++  const text = await response.text()
++  let parsed: unknown = text
++  try { parsed = JSON.parse(text) } catch { /* keep text */ }
++  if (!response.ok) {
++    const message = typeof parsed === 'object' && parsed !== null && 'error' in parsed ? String((parsed as { error?: unknown }).error) : `HTTP ${String(response.status)}`
++    throw new Error(message)
++  }
++  return parsed
++}
++
++function remainingText(expiresAt: number): string {
++  const seconds = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000))
++  return seconds > 0 ? `剩余 ${String(seconds)} 秒` : '已到期，自动拒绝'
++}
++
++async function loadVault(): Promise<void> {
++  if (vaultHost === null) return
++  try {
++    const payload = await vaultRequest('GET', 'vault/host')
++    const vault = (payload as { vault?: VaultHostState }).vault
++    if (!vault || !Array.isArray(vault.roots) || !Array.isArray(vault.pending)) {
++      vaultOpenButton?.setAttribute('hidden', '')
++      return
++    }
++    vaultState = vault
++    if (vaultOpenButton !== null) vaultOpenButton.hidden = false
++    renderVault()
++    setVaultStatus('')
++  } catch {
++    // The plugin may not be installed; keep the seat hidden rather than showing
++    // a dead control. A later refresh can reveal it.
++    vaultOpenButton?.setAttribute('hidden', '')
++  }
++}
++
++function renderVault(): void {
++  if (vaultHost === null) return
++  vaultHost.replaceChildren()
++  if (vaultState === null) {
++    vaultHost.append(vaultEl('p', 'nv-empty', '正在读取托管保险柜状态…'))
++    return
++  }
++  const roots = vaultState.roots
++  const pending = vaultState.pending
++  if (vaultSummary !== null) {
++    vaultSummary.textContent = pending.length > 0
++      ? `托管保险柜 · 待确认 ${String(pending.length)}`
++      : roots.length > 0
++        ? `托管保险柜 · ${String(roots.length)} 台设备`
++        : '托管保险柜'
++  }
++
++  const hostSection = vaultEl('section', 'nv-section')
++  hostSection.append(vaultEl('h3', undefined, '远端在本机的托管'))
++  hostSection.append(vaultEl('p', undefined, '本机决定远端设备的数据放在哪；远端决定放什么、放多久。新设备接入时会先检查目录可写，失败或超时会要求本机用户手动选择。'))
++  if (roots.length === 0) hostSection.append(vaultEl('div', 'nv-empty', '还没有远端设备接入托管。'))
++  for (const root of roots) {
++    const row = vaultEl('div', 'nv-row')
++    row.append(vaultEl('span', 'nv-peer', root.peerId))
++    const path = vaultEl('span', 'nv-path', root.root)
++    path.title = root.root
++    row.append(path)
++    row.append(vaultEl('span', 'nv-badge', `${String(root.containers ?? 0)} 份`))
++    const actions = vaultEl('div', 'nv-actions')
++    actions.append(vaultButton('打开目录', () => { void openVaultDir(root.peerId) }))
++    const change = vaultButton('更换目录', () => { promptVaultRoot(root.peerId, root.root) })
++    if ((root.containers ?? 0) > 0) {
++      change.disabled = true
++      change.title = '请先删除该设备在本机的保险柜内容'
++    }
++    actions.append(change)
++    actions.append(vaultButton('删除内容', () => { void deleteVaultContent(root.peerId) }))
++    row.append(actions)
++    hostSection.append(row)
++  }
++  for (const item of pending) {
++    const card = vaultEl('div', 'nv-section nv-pending')
++    card.dataset.expiresAt = String(item.expiresAt)
++    const head = vaultEl('div', 'nv-pending-head')
++    head.append(vaultEl('span', 'nv-peer', item.peerId))
++    const reason = item.reason === 'not-writable' ? '目录不可写' : item.reason === 'default-unwritable' ? '无法自动创建目录' : item.reason
++    head.append(vaultEl('span', 'nv-badge', reason))
++    head.append(vaultEl('span', 'nv-countdown', remainingText(item.expiresAt)))
++    card.append(head)
++    const input = vaultEl('input', 'nv-input')
++    input.type = 'text'
++    input.value = item.suggestedRoot ?? ''
++    input.placeholder = '本机可写目录的绝对路径'
++    input.spellcheck = false
++    card.append(input)
++    const actions = vaultEl('div', 'nv-actions')
++    actions.append(vaultButton('使用此目录', () => { void approveVaultRoot(item.peerId, input.value) }))
++    actions.append(vaultButton('拒绝本次', () => { void denyVaultPending(item.id) }))
++    card.append(actions)
++    hostSection.append(card)
++  }
++  const manual = vaultEl('div', 'nv-row')
++  const peer = vaultEl('input', 'nv-input')
++  peer.placeholder = '远端设备 ID'
++  peer.spellcheck = false
++  const path = vaultEl('input', 'nv-input')
++  path.placeholder = '本机目录绝对路径'
++  path.spellcheck = false
++  manual.append(peer, path, vaultButton('绑定目录', () => { void approveVaultRoot(peer.value.trim(), path.value.trim()) }))
++  hostSection.append(manual)
++  vaultHost.append(hostSection)
++
++  const owner = vaultEl('section', 'nv-section')
++  owner.append(vaultEl('h3', undefined, '本机作为远端：托管给其他设备'))
++  owner.append(vaultEl('p', undefined, '远端本机持有钥匙；你可以随时撤销某台设备的全部托管，让它下一次打开时删除本地密文并回退完整拉取。'))
++  if ((vaultState.ownerPeers ?? []).length === 0) owner.append(vaultEl('div', 'nv-empty', '还没有设备托管本机数据。'))
++  for (const item of vaultState.ownerPeers ?? []) {
++    const row = vaultEl('div', 'nv-row')
++    row.append(vaultEl('span', 'nv-peer', item.peerId))
++    row.append(vaultEl('span', 'nv-path', `${String(item.entries)} 项 · ${String(item.kinds.join(' / '))}`))
++    const actions = vaultEl('div', 'nv-actions')
++    actions.append(vaultButton('撤销托管', () => { void revokeVaultPeer(item.peerId) }))
++    row.append(actions)
++    owner.append(row)
++  }
++  owner.append(vaultEl('h3', undefined, '本机托管到远端的策略'))
++  owner.append(vaultEl('p', undefined, '这是本机作为远端、数据被其他本机托管时的策略：钥匙多久过期、托管账本保留多久、是否需要本机确认。'))
++  const policy = vaultEl('div', 'nv-policy')
++  const releaseLabel = vaultEl('label', 'nv-field', '开柜策略')
++  const release = vaultEl('select')
++  for (const [value, label] of [['auto', '自动放行已信任设备'], ['confirm', '需要本机确认（暂未实现 UI）'], ['deny', '拒绝新开柜']] as const) {
++    const option = vaultEl('option', undefined, label)
++    option.value = value
++    if (vaultState.policy.release === value) option.selected = true
++    release.append(option)
++  }
++  releaseLabel.append(release)
++  const ttlLabel = vaultEl('div', 'nv-field')
++  ttlLabel.append(vaultEl('span', undefined, '钥匙有效期'))
++  ttlLabel.append(vaultEl('span', 'nv-badge', `${String(Math.round(vaultState.policy.keyTtlMs / 1000))} 秒 · 在“超时设置”中修改`))
++  const retentionLabel = vaultEl('label', 'nv-field', '账本保留（天）')
++  const retention = vaultEl('input')
++  retention.type = 'number'
++  retention.min = '1'
++  retention.value = String(vaultState.policy.retentionDays)
++  retentionLabel.append(retention)
++  policy.append(releaseLabel, ttlLabel, retentionLabel)
++  owner.append(policy)
++  const save = vaultButton('保存策略', () => {
++    void vaultRequest('POST', 'vault/host/policy', {
++      release: release.value,
++      retentionDays: Number(retention.value),
++    }).then(async () => { await loadVault(); setVaultStatus('策略已保存') }).catch(error => setVaultStatus(error.message, 'error'))
++  })
++  owner.append(save)
++  const clear = vaultButton('清空本机保险柜密文', () => {
++    if (!window.confirm('清空本机已保存的远端保险柜密文？远端账本不会被删除。')) return
++    void vaultRequest('POST', 'vault/clear', {}).then(async () => { await loadVault(); setVaultStatus('已清空本机密文') }).catch(error => setVaultStatus(error.message, 'error'))
++  })
++  owner.append(clear)
++  vaultHost.append(owner)
++}
++
++function tickVaultCountdown(): void {
++  if (vaultHost === null) return
++  let expired = false
++  for (const node of vaultHost.querySelectorAll<HTMLElement>('.nv-countdown')) {
++    const card = node.closest<HTMLElement>('.nv-pending')
++    const expires = Number(card?.dataset.expiresAt ?? 0)
++    if (expires > 0) {
++      node.textContent = remainingText(expires)
++      if (expires <= Date.now()) expired = true
++    }
++  }
++  if (expired) void loadVault()
++}
++
++async function openVaultDir(peerId: string): Promise<void> {
++  try {
++    await vaultRequest('POST', 'vault/host/open', { peer: peerId })
++  } catch (error) {
++    setVaultStatus(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
++async function revokeVaultPeer(peerId: string): Promise<void> {
++  if (!window.confirm(`撤销 ${peerId} 对本机全部托管项的访问？对方下一次打开会删除本地密文。`)) return
++  try {
++    await vaultRequest('POST', 'vault/revoke', { peer: peerId })
++    await loadVault()
++    setVaultStatus('已撤销该设备的托管')
++  } catch (error) {
++    setVaultStatus(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
++async function deleteVaultContent(peerId: string): Promise<void> {
++  if (!window.confirm(`删除远端设备 ${peerId} 在本机的全部保险柜密文？删除后才能更换目录；远端账本不会自动删除。`)) return
++  try {
++    await vaultRequest('POST', 'vault/host/delete', { peer: peerId })
++    await loadVault()
++    setVaultStatus('已删除该设备在本机的保险柜内容')
++  } catch (error) {
++    setVaultStatus(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
++async function approveVaultRoot(peerId: string, root: string): Promise<void> {
++  if (!peerId || !root) { setVaultStatus('需要设备 ID 和目录', 'error'); return }
++  try {
++    await vaultRequest('POST', 'vault/host/root', { peer: peerId, root })
++    await loadVault()
++    setVaultStatus('目录已绑定')
++  } catch (error) {
++    setVaultStatus(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
++async function denyVaultPending(id: string): Promise<void> {
++  try {
++    await vaultRequest('POST', 'vault/host/deny', { id })
++    await loadVault()
++    setVaultStatus('已拒绝本次申请')
++  } catch (error) {
++    setVaultStatus(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
++function promptVaultRoot(peerId: string, current: string): void {
++  const root = window.prompt(`为远端设备 ${peerId} 选择本机可写目录`, current)
++  if (root !== null && root.trim() !== '') void approveVaultRoot(peerId, root.trim())
++}
++
++function setVaultExpanded(open: boolean, focus: boolean): void {
++  if (vaultPanel === null || vaultOpenButton === null || footer === null) return
++  vaultPanel.hidden = !open
++  vaultOpenButton.setAttribute('aria-expanded', String(open))
++  if (open) {
++    if (panel !== null && panel.hidden === false) {
++      panel.hidden = true
++      openButton?.setAttribute('aria-expanded', 'false')
++    }
++    footer.dataset.expanded = 'true'
++    void loadVault()
++    if (vaultTimer === undefined) vaultTimer = setInterval(tickVaultCountdown, 1000)
++    if (focus) vaultCloseButton?.focus()
++  } else {
++    footer.dataset.expanded = panel?.hidden === false ? 'true' : 'false'
++    if (vaultTimer !== undefined) { clearInterval(vaultTimer); vaultTimer = undefined }
++    vaultOpenButton.focus()
++  }
++}
++
++vaultOpenButton?.addEventListener('click', () => { setVaultExpanded(vaultPanel?.hidden !== false, true) })
++vaultCloseButton?.addEventListener('click', () => { setVaultExpanded(false, false) })
++vaultRefreshButton?.addEventListener('click', () => { void loadVault() })
++void loadVault()
++
+ openButton?.addEventListener('click', () => {
++  if (vaultPanel !== null && vaultPanel.hidden === false) setVaultExpanded(false, false)
+   setExpanded(panel?.hidden !== false, true)
+ })
+ closeButton?.addEventListener('click', () => { setExpanded(false, false) })
+@@ -390,21 +692,27 @@ filterInput?.addEventListener('input', applyFilter)
+ saveButton?.addEventListener('click', () => { void save() })
+ resetButton?.addEventListener('click', resetToDefaults)
+ document.addEventListener('keydown', (event: KeyboardEvent) => {
+-  if (event.key === 'Escape' && panel?.hidden === false) {
+-    event.preventDefault()
+-    setExpanded(false, false)
+-  }
++  if (event.key !== 'Escape') return
++  const timeoutsOpen = panel?.hidden === false
++  const vaultOpen = vaultPanel?.hidden === false
++  if (!timeoutsOpen && !vaultOpen) return
++  event.preventDefault()
++  if (timeoutsOpen) setExpanded(false, false)
++  if (vaultOpen) setVaultExpanded(false, false)
+ })
+ 
+ /* Clicking anywhere outside the footer closes the expanded panel, matching the
+  * conventional popover behavior. Clicks inside the footer (including the
+  * toggle and panel controls) stay untouched; Escape still works above. */
+ document.addEventListener('pointerdown', (event: PointerEvent) => {
+-  if (panel?.hidden !== false) return
++  const timeoutsOpen = panel?.hidden === false
++  const vaultOpen = vaultPanel?.hidden === false
++  if (!timeoutsOpen && !vaultOpen) return
+   const target = event.target
+   if (!(target instanceof Node)) return
+   if (footer?.contains(target)) return
+-  setExpanded(false, false)
++  if (timeoutsOpen) setExpanded(false, false)
++  if (vaultOpen) setVaultExpanded(false, false)
+ }, true)
+ 
+ /* The chat's running indicator disappearing is the one DOM signal every
+diff --git a/packages/bundle/web-app/src/night-timeouts.ts b/packages/bundle/web-app/src/night-timeouts.ts
+index cb7183435528f8ee69d0094ebb413d8f91dea1d8..ca423a956b72935b949703c4dac036e3dacff639 100644
+--- a/packages/bundle/web-app/src/night-timeouts.ts
++++ b/packages/bundle/web-app/src/night-timeouts.ts
+@@ -102,6 +102,15 @@ export const NIGHT_TIMEOUT_GROUPS: readonly TimeoutGroup[] = [
+       { key: 'mcp.tool', label: 'MCP 工具调用', hint: 'MCP tools/call 的上限。', defaultMs: 0, minMs: 0, maxMs: DAY_MS },
+     ],
+   },
++  {
++    id: 'vault',
++    label: '托管保险柜',
++    hint: '目录选择与开柜票据的计时；到期自动拒绝本次申请，不终止在途模型请求。',
++    entries: [
++      { key: 'vault.approvalTimeout', label: '目录选择等待', hint: '本机用户手动选择保险柜目录的倒计时；到期自动拒绝本次申请。', defaultMs: 60_000, minMs: 5_000, maxMs: 600_000 },
++      { key: 'vault.keyTtl', label: '开柜钥匙有效期', hint: '远端数据所有者签发的开柜票据有效期；到期后需要重新申请。', defaultMs: 600_000, minMs: 10_000, maxMs: 86_400_000 },
++    ],
++  },
+   {
+     id: 'observability',
+     label: '运行观测',

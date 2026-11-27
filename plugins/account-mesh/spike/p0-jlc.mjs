@@ -63,7 +63,7 @@ console.log('codecA', codecA.state().mode, codecA.state().active, 'codecB', code
 
 const meshA = new Mesh({
   ctx: makeCtx({ workspace: root, deviceId: 'device-alpha' }),
-  config: { discoveryPort: 48301, staticPeers: ['127.0.0.1:48302'], dataDir: path.join(root, 'mesh-a') },
+  config: { discoveryPort: 48301, staticPeers: ['127.0.0.1:48302'], dataDir: path.join(root, 'mesh-a'), vaultMode: 'hosted', vaultRoot: path.join(root, 'local-vault') },
   log, version: '0.1.0-test', codec: codecA,
 })
 const meshB = new Mesh({
@@ -89,6 +89,8 @@ const check = (label, condition, detail) => {
 
 try {
   meshA.start(); meshB.start()
+  await waitFor('discovered', () => meshA.peerViews().length > 0)
+  meshA.pair('device-beta'); meshB.pair('device-alpha')
   // A first contact waits for the user's explicit answer; this harness answers
   // both sides directly, exactly as the blocking dialog would.
   await waitFor('discovery', () => meshA.peerViews().some(peer => peer.deviceId === 'device-beta'))
@@ -106,11 +108,11 @@ try {
   check('reasoning and tool call survive projection', process.env.JLC_SESSION ? true : result.items[1].text === 'remote answer' && result.items[1].toolCalls?.[0] === 'read')
   check('dialog projection is available', result.dialogItems.length >= 2, String(result.dialogItems.length))
   check('progress reports blocks and bytes', progress.some(state => state.totalBlocks > 0 && state.receivedBlocks === state.totalBlocks) && progress.some(state => state.dialogReady === true), JSON.stringify(progress))
-  check('archive stays in memory only', !fs.existsSync(path.join(root, 'mesh-a', 'incoming')) && !fs.existsSync(path.join(root, 'mesh-a', 'session.jlc')))
+  check('no legacy .part/.jlc files are created', !fs.existsSync(path.join(root, 'mesh-a', 'incoming')) && !fs.existsSync(path.join(root, 'mesh-a', 'session.jlc')))
   check('transfer completed', result.archiveBytes > 0 && result.rawBytes > 0 && elapsed < 20000, `${elapsed}ms ${result.archiveBytes}/${result.rawBytes}`)
   const state = meshA.state()
   check('state exposes cache stats', state.cache?.entries >= 1 && state.cache.bytes > 0, JSON.stringify(state.cache))
-  check('vault reports encrypted entries', state.vault?.entries >= 1 && state.vault.bytes > 0, JSON.stringify(state.vault))
+  check('hosted vault reports encrypted containers', state.vault?.mode === 'hosted' && state.vault.containers >= 1 && state.vault.bytes > 0, JSON.stringify(state.vault))
   const cached = await meshA.fetchSession('device-beta', 'session-remote')
   check('second fetch is a vault hit with the same projection', cached.vaultHit === true && cached.items.length === result.items.length, JSON.stringify({ vaultHit: cached.vaultHit, items: cached.items.length }))
   check('state no longer lists an active transfer', state.transfers.length === 0, JSON.stringify(state.transfers))
@@ -119,8 +121,10 @@ try {
   console.error('HARNESS ERROR', error)
 } finally {
   await meshA.stop(); await meshB.stop(); codecA.stop(); codecB.stop()
-  const vaultDir = path.join(root, 'mesh-a', 'vault')
-  check('stop clears vault ciphertext', fs.existsSync(vaultDir) ? fs.readdirSync(vaultDir).filter(name => name.endsWith('.ncv')).length === 0 : true)
+  const vaultFiles = []
+  const walk = dir => { if (!fs.existsSync(dir)) return; for (const name of fs.readdirSync(dir)) { const file = path.join(dir, name); if (fs.statSync(file).isDirectory()) walk(file); else if (name.endsWith('.hdr') || name.endsWith('.dat')) vaultFiles.push(file) } }
+  walk(path.join(root, 'local-vault'))
+  check('stop preserves hosted ciphertext for the next process', vaultFiles.length >= 2)
   console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`)
   process.exit(failures === 0 ? 0 : 1)
 }

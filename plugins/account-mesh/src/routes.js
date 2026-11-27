@@ -134,6 +134,64 @@ export function registerRoutes(ctx, mesh, log, codec = null) {
           if (!transferId) return json(res, 400, { error: 'transferId is required' })
           return json(res, 200, mesh.transfer.dialog(transferId))
         }
+        if (route === '/api/vault/host' && req.method === 'GET') {
+          return json(res, 200, { ok: true, vault: await mesh.hostedVaultState() })
+        }
+        if (route === '/api/vault/host/root' && req.method === 'POST') {
+          const body = await readBody(req)
+          const peer = String(body.peer ?? '')
+          const root = String(body.root ?? '')
+          if (!peer || !root) return json(res, 400, { error: 'peer and root are required' })
+          try {
+            const saved = await mesh.setVaultRoot(peer, root)
+            return json(res, 200, { ok: true, root: saved, vault: await mesh.hostedVaultState() })
+          } catch (error) {
+            return json(res, 400, { error: error.message, code: error.code ?? 'vault-bad-directory' })
+          }
+        }
+        if (route === '/api/vault/host/open' && req.method === 'POST') {
+          const body = await readBody(req)
+          const peer = String(body.peer ?? '')
+          if (!peer) return json(res, 400, { error: 'peer is required' })
+          try {
+            return json(res, 200, { ok: true, root: await mesh.openVaultDir(peer) })
+          } catch (error) {
+            return json(res, 400, { error: error.message, code: error.code ?? 'vault-no-root' })
+          }
+        }
+        if (route === '/api/vault/host/deny' && req.method === 'POST') {
+          const body = await readBody(req)
+          const id = String(body.id ?? '')
+          if (!id) return json(res, 400, { error: 'id is required' })
+          await mesh.denyVaultPending(id)
+          return json(res, 200, { ok: true, vault: await mesh.hostedVaultState() })
+        }
+        if (route === '/api/vault/host/delete' && req.method === 'POST') {
+          const body = await readBody(req)
+          const peer = String(body.peer ?? '')
+          if (!peer) return json(res, 400, { error: 'peer is required' })
+          const result = await mesh.deletePeerVault(peer)
+          return json(res, 200, { ok: true, ...result, vault: await mesh.hostedVaultState() })
+        }
+        if (route === '/api/vault/host/policy' && req.method === 'POST') {
+          const body = await readBody(req)
+          try {
+            const policy = await mesh.setVaultOwnerPolicy({
+              release: body.release === undefined ? undefined : String(body.release),
+              keyTtlMs: body.keyTtlMs === undefined ? undefined : Number(body.keyTtlMs),
+              retentionDays: body.retentionDays === undefined ? undefined : Number(body.retentionDays),
+            })
+            return json(res, 200, { ok: true, policy, vault: await mesh.hostedVaultState() })
+          } catch (error) {
+            return json(res, 400, { error: error.message, code: error.code ?? 'vault-bad-policy' })
+          }
+        }
+        if (route === '/api/vault/revoke' && req.method === 'POST') {
+          const body = await readBody(req)
+          const peer = String(body.peer ?? '')
+          if (!peer) return json(res, 400, { error: 'peer is required' })
+          return json(res, 200, { ok: true, ...(await mesh.revokeVaultPeer(peer)) })
+        }
         if (route === '/api/vault/clear' && req.method === 'POST') {
           const vault = await mesh.clearVault()
           return json(res, 200, { ok: true, vault })
