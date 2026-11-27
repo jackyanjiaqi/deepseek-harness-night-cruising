@@ -1,0 +1,568 @@
+diff --git a/packages/boot/plugin-manager/src/run-tree.ts b/packages/boot/plugin-manager/src/run-tree.ts
+index f02fe32817062b854bb2404bbd19deb4dd714fee..4105339ce695f18bd2011efa384357fded9c39b0 100644
+--- a/packages/boot/plugin-manager/src/run-tree.ts
++++ b/packages/boot/plugin-manager/src/run-tree.ts
+@@ -1,8 +1,5 @@
+ /** Waiting for one package run's process tree to disappear before its caller touches the profile. */
+ 
+-/** How long a terminated tree may take to disappear before the caller stops waiting. */
+-const TREE_WAIT_MS = 5_000
+-
+ /** Poll cadence while waiting for a terminated tree to disappear. */
+ const TREE_POLL_MS = 15
+ 
+@@ -69,9 +66,7 @@ export function treeAlive(tree: RunTree, internals: RunTreeInternals = {}): bool
+  * @returns Fulfillment once no member remains, or the wait bound elapsed.
+  */
+ export async function awaitTreeGone(tree: RunTree, internals: RunTreeInternals = {}): Promise<void> {
+-  const deadline = Date.now() + (internals.waitMs ?? TREE_WAIT_MS)
+   while (treeAlive(tree, internals)) {
+-    if (Date.now() >= deadline) return
+     await new Promise(resolve => setTimeout(resolve, TREE_POLL_MS))
+   }
+ }
+diff --git a/packages/bundle/base/cordis.patch.yml b/packages/bundle/base/cordis.patch.yml
+index f455fe70c2a4e7e0a0c395c24c6f323eed13e913..6836c213c837a16036176f3779da7803a116954e 100644
+--- a/packages/bundle/base/cordis.patch.yml
++++ b/packages/bundle/base/cordis.patch.yml
+@@ -69,12 +69,6 @@
+       config:
+         targetWords: 5
+         targetCjkCharacters: 10
+-        maxInputBytes: 4096
+-        # A ceiling against runaway output, not a length target: the prompt
+-        # keeps titles short, while reasoning a model cannot switch off also
+-        # counts as output. Stays within common model output limits.
+-        maxOutputTokens: 4096
+-        timeoutMs: 60000
+ 
+     - id: user-questions
+       name: '@deepseek-ai/dsh-user-questions'
+diff --git a/packages/bundle/sdk-app/cordis.patch.yml b/packages/bundle/sdk-app/cordis.patch.yml
+index e53d193129251736d56e1180c546167517470394..d71416b05c42d837cf8b13da57a35794d2c9fcf3 100644
+--- a/packages/bundle/sdk-app/cordis.patch.yml
++++ b/packages/bundle/sdk-app/cordis.patch.yml
+@@ -17,8 +17,6 @@
+     - id: sdk-jsonrpc-server
+       name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+       inject: [sdkAppStartup, loader]
+-      config:
+-        maxTokensAsSuccess: !!js "process.env.DSH_MAX_TOKENS_AS_SUCCESS === undefined ? true : JSON.parse(process.env.DSH_MAX_TOKENS_AS_SUCCESS)"
+ 
+ - id: hmr
+   disabled: true
+diff --git a/packages/bundle/sdk-minimal/cordis.patch.yml b/packages/bundle/sdk-minimal/cordis.patch.yml
+index e46eed1e0fb6520a48e7b9929c5ca343c2e2deba..f59d05981631a2b1d5c8d0e84b99eb0fe012efef 100644
+--- a/packages/bundle/sdk-minimal/cordis.patch.yml
++++ b/packages/bundle/sdk-minimal/cordis.patch.yml
+@@ -11,8 +11,6 @@
+     - id: sdk-jsonrpc-server
+       name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+       inject: [sdkAppStartup, loader]
+-      config:
+-        maxTokensAsSuccess: false
+ 
+     - id: deepseek-llm-api-extensions
+       name: '@deepseek-ai/dsh-deepseek-llm-api-extensions'
+diff --git a/packages/experimental/session-title-all-prompts-llm/src/index.ts b/packages/experimental/session-title-all-prompts-llm/src/index.ts
+index a88ba636950740a71b9123463c9a90abd72f6d90..a96b989b6797a7c678b85e0aad4d20c3a40cbb3a 100644
+--- a/packages/experimental/session-title-all-prompts-llm/src/index.ts
++++ b/packages/experimental/session-title-all-prompts-llm/src/index.ts
+@@ -36,9 +36,6 @@ export interface Config extends SessionTitleLlmConfig {
+ export const Config: z<Config> = z.object({
+   targetWords: z.number().step(1).min(1).required(),
+   targetCjkCharacters: z.number().step(1).min(1).required(),
+-  maxInputBytes: SessionTitleLlmConfigFields.maxInputBytes,
+-  maxOutputTokens: SessionTitleLlmConfigFields.maxOutputTokens,
+-  timeoutMs: SessionTitleLlmConfigFields.timeoutMs,
+   provider: SessionTitleLlmConfigFields.provider,
+   model: SessionTitleLlmConfigFields.model,
+ })
+@@ -129,7 +126,7 @@ function titleFromResponse(response: SessionTitleLlmResponse): string {
+     case 'tool-calls':
+       throw new Error('session-title-llm: title output must contain text only')
+     case 'max-tokens':
+-      throw new Error('session-title-llm: title output reached maxOutputTokens')
++      throw new Error('session-title-llm: provider reported truncated title output')
+     /* v8 ignore next -- closed SessionTitleLlmFinish union exhaustiveness guard */
+     default: return assertNever(response.finish, 'SessionTitleLlmFinish')
+   }
+diff --git a/packages/experimental/session-titles-bundle/cordis.patch.yml b/packages/experimental/session-titles-bundle/cordis.patch.yml
+index ece6ead1bdc1f5bc2655ee71c0db93b8af8f8c86..26e95fa66f4ae94536f6b7ecc420349aea41925a 100644
+--- a/packages/experimental/session-titles-bundle/cordis.patch.yml
++++ b/packages/experimental/session-titles-bundle/cordis.patch.yml
+@@ -7,6 +7,3 @@
+       config:
+         targetWords: 5
+         targetCjkCharacters: 10
+-        maxInputBytes: 4096
+-        maxOutputTokens: 64
+-        timeoutMs: 60000
+diff --git a/packages/sdk/server/src/index.ts b/packages/sdk/server/src/index.ts
+index 3fa37595509d1f519503d70b6f28e0b39ea744eb..6c7a223ffb744dc1dcdca6ed4f6e33044f8fb429 100644
+--- a/packages/sdk/server/src/index.ts
++++ b/packages/sdk/server/src/index.ts
+@@ -22,8 +22,6 @@ export const inject = ['agents', 'workingDirectory']
+ 
+ /** JSON-RPC deployment config plus runtime-only test hooks. */
+ export interface JsonRpcConfig {
+-  /** Report max-token turn/subagent termination as a successful SDK result. */
+-  maxTokensAsSuccess?: boolean
+   /** Transport input override; production uses `process.stdin`. */
+   input?: Readable
+   /** Transport output override; production uses `process.stdout`. */
+@@ -32,9 +30,7 @@ export interface JsonRpcConfig {
+   exit?: (code: number) => void
+ }
+ 
+-export const Config: Schema<JsonRpcConfig> = Schema.object({
+-  maxTokensAsSuccess: Schema.boolean().default(false),
+-})
++export const Config: Schema<JsonRpcConfig> = Schema.object({})
+ 
+ /**
+  * Serve SDK requests over the configured streams. Effect disposal shuts down
+@@ -43,8 +39,6 @@ export const Config: Schema<JsonRpcConfig> = Schema.object({
+  * owns root-context disposal for EOF and signals.
+  */
+ export function apply(ctx: Context, config: JsonRpcConfig): void {
+-  // Cordis applies the schema default before invoking the plugin.
+-  const resolvedConfig = config as JsonRpcConfig & { maxTokensAsSuccess: boolean }
+   // Protocol shutdown owns the complete runtime process, so it must await the
+   // root lifecycle (including persistence) before exiting.
+   const rootFiber = ctx.root.fiber
+@@ -56,9 +50,7 @@ export function apply(ctx: Context, config: JsonRpcConfig): void {
+   const exit = config.exit ?? ((code: number): void => { process.exit(code) })
+ 
+   const transport = new JsonRpcLineTransport(input, output)
+-  const server = new HarnessSdkJsonRpcServer(ctx, transport, {
+-    maxTokensAsSuccess: resolvedConfig.maxTokensAsSuccess,
+-  })
++  const server = new HarnessSdkJsonRpcServer(ctx, transport)
+   // Compositions can order Schedule after its activation handler is installed.
+   // Like the app startup marker, this carries readiness, not another control API.
+   ctx.provide('sdkSessionActivation', { ready: true })
+diff --git a/packages/sdk/server/src/server.ts b/packages/sdk/server/src/server.ts
+index bccfa6634e071c5bf1fad2f6b2fde80b0c8e503b..91091df610a1e87298a211439fecd06756c5895a 100644
+--- a/packages/sdk/server/src/server.ts
++++ b/packages/sdk/server/src/server.ts
+@@ -70,17 +70,6 @@ async function durablePromptContent(ctx: Context, blocks: SessionPromptParams['c
+     : block)
+ }
+ 
+-/** Deployment-specific status mapping for SDK turn and subagent outcomes. */
+-export interface HarnessSdkJsonRpcServerOptions {
+-  /** Report max-token termination as an accepted result instead of an infrastructure error. */
+-  maxTokensAsSuccess?: boolean
+-}
+-
+-function successStatus(reason: string, options: HarnessSdkJsonRpcServerOptions): 'ok' | 'error' {
+-  if (reason === 'completed') return 'ok'
+-  return reason === 'max-tokens' && options.maxTokensAsSuccess === true ? 'ok' : 'error'
+-}
+-
+ /**
+  * SDK server over one booted harness context and transport peer. Construction
+  * subscribes to session, agent, and subagent lifecycle events until shutdown;
+@@ -113,7 +102,6 @@ export class HarnessSdkJsonRpcServer {
+   constructor(
+     private readonly ctx: Context,
+     private readonly transport: JsonRpcTransportPeer,
+-    private readonly options: HarnessSdkJsonRpcServerOptions = {},
+   ) {
+     this.goalLifetime = ctx.inject(['goals'], (goalCtx) => {
+       goalCtx.effect(() => () => {
+@@ -138,7 +126,6 @@ export class HarnessSdkJsonRpcServer {
+       }
+       return result.outcome
+     }))
+-    const serverOptions = this.options
+     this.userQuestions = new SdkUserQuestionBridge(ctx, transport, agent =>
+       this.sessions.get(agent.session.id)?.handle.agent === agent)
+     this.disposers.push(ctx.on('schedule/resolve-agent', async (sessionId) => {
+@@ -197,7 +184,7 @@ export class HarnessSdkJsonRpcServer {
+         agentId: String(info.id),
+         parentSessionId: String(info.parentSessionId),
+         childSessionId: String(info.id),
+-        status: successStatus(info.stopReason, serverOptions),
++        status: info.stopReason === 'completed' ? 'ok' : 'error',
+         stopReason: info.stopReason,
+         ...(info.lastAssistantMessage === undefined
+           ? {}
+diff --git a/packages/session/session-title-first-prompt-llm/src/index.ts b/packages/session/session-title-first-prompt-llm/src/index.ts
+index 1cd6aa26ea23be4b45142a8ef6de52a164a23dda..b8be83f82af67c86aa55700f135a793239dbaee2 100644
+--- a/packages/session/session-title-first-prompt-llm/src/index.ts
++++ b/packages/session/session-title-first-prompt-llm/src/index.ts
+@@ -36,9 +36,6 @@ export interface Config extends SessionTitleLlmConfig {
+ export const Config: z<Config> = z.object({
+   targetWords: z.number().step(1).min(1).required(),
+   targetCjkCharacters: z.number().step(1).min(1).required(),
+-  maxInputBytes: SessionTitleLlmConfigFields.maxInputBytes,
+-  maxOutputTokens: SessionTitleLlmConfigFields.maxOutputTokens,
+-  timeoutMs: SessionTitleLlmConfigFields.timeoutMs,
+   provider: SessionTitleLlmConfigFields.provider,
+   model: SessionTitleLlmConfigFields.model,
+ })
+@@ -120,7 +117,7 @@ function titleFromResponse(response: SessionTitleLlmResponse): string {
+     case 'tool-calls':
+       throw new Error('session-title-llm: title output must contain text only')
+     case 'max-tokens':
+-      throw new Error('session-title-llm: title output reached maxOutputTokens')
++      throw new Error('session-title-llm: provider reported truncated title output')
+     /* v8 ignore next -- closed SessionTitleLlmFinish union exhaustiveness guard */
+     default: return assertNever(response.finish, 'SessionTitleLlmFinish')
+   }
+diff --git a/packages/session/session-title-llm/src/index.ts b/packages/session/session-title-llm/src/index.ts
+index 0e09938fe31927ebebe164da1fbb4b7b3b0cf3ec..bc2e1ce05a21852f87b9120220c373ca1163c53a 100644
+--- a/packages/session/session-title-llm/src/index.ts
++++ b/packages/session/session-title-llm/src/index.ts
+@@ -30,7 +30,6 @@ import type {
+   Message,
+   ReasoningEffortId,
+ } from '@deepseek-ai/dsh-llm'
+-import { deadline, MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
+ import { assertNever, deepFreeze } from '@deepseek-ai/dsh-util-values'
+ import type { SessionSeq } from '@deepseek-ai/dsh-session'
+ import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
+@@ -51,8 +50,6 @@ export interface SessionTitleLlmRequestEventData {
+   readonly system: string
+   /** Exact auxiliary message list. */
+   readonly messages: Message[]
+-  /** Exact auxiliary output-token cap. */
+-  readonly maxTokens: number
+   /** Resolved reasoning effort when recorded; older requests can omit it. */
+   readonly reasoningEffort?: ReasoningEffortId
+ }
+@@ -69,12 +66,6 @@ export const SESSION_TITLE_TIMEOUT_CODE = 'SESSION_TITLE_TIMEOUT'
+ 
+ /** Required execution controls for one model-backed title request. */
+ export interface SessionTitleLlmConfig {
+-  /** Maximum UTF-8 bytes in the provider-prepared user input. */
+-  readonly maxInputBytes: number
+-  /** Output-token cap for the title request, independent of conversation requests. */
+-  readonly maxOutputTokens: number
+-  /** End-to-end auxiliary request deadline in milliseconds. */
+-  readonly timeoutMs: number
+   /** Optional explicit provider route; must be paired with `model`. */
+   readonly provider?: string
+   /** Optional explicit model id; must be paired with `provider`. */
+@@ -86,9 +77,6 @@ export interface ResolvedSessionTitleLlmConfig extends SessionTitleLlmConfig {}
+ 
+ /** Shared Loader field schemas with no library defaults. */
+ export const SessionTitleLlmConfigFields = {
+-  maxInputBytes: z.number().step(1).min(1).required(),
+-  maxOutputTokens: z.number().step(1).min(1).required(),
+-  timeoutMs: z.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).required(),
+   provider: z.string(),
+   model: z.string(),
+ }
+@@ -98,20 +86,10 @@ export const SessionTitleLlmConfigSchema: z<SessionTitleLlmConfig> = z.object(Se
+ 
+ /** Complete execution-control key set for direct construction validation. */
+ const CONFIG_KEYS: ReadonlySet<string> = new Set([
+-  'maxInputBytes',
+-  'maxOutputTokens',
+-  'timeoutMs',
+   'provider',
+   'model',
+ ])
+ 
+-/** Validate one positive integer limit. */
+-function assertPositiveInteger(name: string, value: number): void {
+-  if (!Number.isInteger(value) || value <= 0) {
+-    throw new Error(`session-title-llm: ${name} must be a positive integer`)
+-  }
+-}
+-
+ /**
+  * Validate and detach required execution controls.
+  * @param config - untrusted execution configuration.
+@@ -128,12 +106,6 @@ export function resolveSessionTitleLlmConfig(
+   for (const key of Object.keys(value)) {
+     if (!CONFIG_KEYS.has(key)) throw new Error(`session-title-llm: unknown config key "${key}"`)
+   }
+-  assertPositiveInteger('maxInputBytes', value.maxInputBytes)
+-  assertPositiveInteger('maxOutputTokens', value.maxOutputTokens)
+-  assertPositiveInteger('timeoutMs', value.timeoutMs)
+-  if (value.timeoutMs > MAX_TIMER_DELAY_MS) {
+-    throw new Error(`session-title-llm: timeoutMs must not exceed ${MAX_TIMER_DELAY_MS}`)
+-  }
+   const hasProvider = value.provider !== undefined
+   const hasModel = value.model !== undefined
+   if (hasProvider !== hasModel) {
+@@ -244,21 +216,14 @@ export async function executeSessionTitleLlm(
+   if (prepared.messageSeqs.length === 0) {
+     throw new Error('session-title-llm: at least one source message is required')
+   }
+-  const inputBytes = Buffer.byteLength(prepared.input, 'utf8')
+-  if (inputBytes > config.maxInputBytes) {
+-    throw new Error(`session-title-llm: input is ${inputBytes} bytes, exceeding maxInputBytes ${config.maxInputBytes}`)
+-  }
+   const route = resolveRoute(config, request)
+   const messages: Message[] = [createUserMessage({
+     content: [{ type: 'text', text: prepared.input }],
+     source: { kind: 'dsh-session-title-llm' },
+   })]
+-  using callDeadline = deadline(request.signal, config.timeoutMs, SESSION_TITLE_TIMEOUT_CODE)
+-  const maxTokens = config.maxOutputTokens
+   const call = await ctx.llm.prepareCall({
+     ...route,
+-    maxTokens,
+-  }, callDeadline.signal, (controls, model) => {
++  }, request.signal, (controls, model) => {
+     const effort = prepared.selectReasoningEffort(model)
+     return { ...controls, ...effort === undefined ? {} : { reasoningEffort: effort } }
+   })
+@@ -268,7 +233,7 @@ export async function executeSessionTitleLlm(
+     system: prepared.system,
+     sessionId: request.session.id,
+     purpose: 'session-title',
+-    signal: callDeadline.signal,
++    signal: request.signal,
+   })
+   request.session.append('session/title-llm-request', {
+     titleProvider,
+@@ -276,16 +241,15 @@ export async function executeSessionTitleLlm(
+     route,
+     system: prepared.system,
+     messages,
+-    maxTokens,
+     ...call.config.reasoningEffort === undefined ? {} : { reasoningEffort: call.config.reasoningEffort },
+   })
+-  callDeadline.signal.throwIfAborted()
++  request.signal.throwIfAborted()
+   const assembler = new BlockAssembler()
+   for await (const chunk of call.stream(options)) {
+-    callDeadline.signal.throwIfAborted()
++    request.signal.throwIfAborted()
+     assembler.push(chunk)
+   }
+-  callDeadline.signal.throwIfAborted()
++  request.signal.throwIfAborted()
+   const finish = terminalFinish(assembler.finish)
+   return { blocks: assembler.blocks(), finish, model: route }
+ }
+diff --git a/packages/workflow/tool-workflow/src/record.ts b/packages/workflow/tool-workflow/src/record.ts
+index 48c5e6ba68c5ca02e289412492a6e09c1088fe03..9a78a07b494c288ddb84f1ebc138d7f80baba681 100644
+--- a/packages/workflow/tool-workflow/src/record.ts
++++ b/packages/workflow/tool-workflow/src/record.ts
+@@ -49,6 +49,12 @@ export function createWorkflowRecordMirror(ctx: Context): WorkflowRecordMirror {
+   ctx.on('workflow/agent-start', (info, agent) => {
+     active.get(info.id)?.append(`agent #${agent.seq} ${agent.label} started\n`, { channel: 'log' })
+   })
++  ctx.on('workflow/agent-progress', (info, agent) => {
++    const job = active.get(info.id)
++    if (job === undefined) return
++    const prefix = agent.phase === undefined ? '' : `${agent.phase} · `
++    job.updateProgress(`${prefix}step ${agent.step}`)
++  })
+   ctx.on('workflow/agent-end', (info, agent) => {
+     active.get(info.id)?.append(`agent #${agent.seq} ${agent.outcome}\n`, { channel: 'log' })
+   })
+diff --git a/packages/workflow/tool-workflow/tests/tool-workflow.spec.ts b/packages/workflow/tool-workflow/tests/tool-workflow.spec.ts
+index 1502b428cd3e25021da6071bfdfd466855921b8b..ef2d2a81be4808bff9b1292488edd2cde0a7c718 100644
+--- a/packages/workflow/tool-workflow/tests/tool-workflow.spec.ts
++++ b/packages/workflow/tool-workflow/tests/tool-workflow.spec.ts
+@@ -78,6 +78,13 @@ class StubEngine extends WorkflowEngine {
+     }, agent)
+   }
+ 
++  agentProgress(id: WorkflowRunIdType, agent: WorkflowAgentInfo & { step: number }): void {
++    this.emitWorkflowEvent('workflow/agent-progress', {
++      id,
++      meta: this.requests[Number(String(id).slice(4)) - 1]!.meta,
++    }, agent)
++  }
++
+   agentEnd(id: WorkflowRunIdType, agent: WorkflowAgentEndInfo): void {
+     this.emitWorkflowEvent('workflow/agent-end', {
+       id,
+@@ -497,9 +504,11 @@ describe('dsh-tool-workflow', () => {
+       engine.phase(runId, 'Scan')
+       engine.logLine(runId, '3/10 found')
+       engine.agentStart(runId, { seq: 1, label: 'scan a.ts', phase: 'Scan', childId: SessionId('child-1') })
++      engine.agentProgress(runId, { seq: 1, label: 'scan a.ts', phase: 'Scan', childId: SessionId('child-1'), step: 12 })
++      expect(jobs.get(job.id, parent.id).progress).toBe('Scan · step 12')
+       engine.agentEnd(runId, { seq: 1, label: 'scan a.ts', phase: 'Scan', childId: SessionId('child-1'), outcome: 'completed' })
+       expect(retained(ctx, job.id, parent)).toBe('▸ Scan\n3/10 found\nagent #1 scan a.ts started\nagent #1 completed\n')
+-      expect(jobs.get(job.id, parent.id).progress).toBe('Scan')
++      expect(jobs.get(job.id, parent.id).progress).toBe('Scan · step 12')
+       // Narration is observer-only: every chunk rides the log channel, so the
+       // model's job_output before settlement sees status only.
+       expect(jobs.readAt(job.id, 0, parent.id).chunks.map(chunk => chunk.channel)).toEqual(['log', 'log', 'log', 'log'])
+@@ -510,7 +519,7 @@ describe('dsh-tool-workflow', () => {
+         arguments: { job_id: jobId },
+         agent: parent,
+       })
+-      expect((early.content[0] as { text: string }).text).toBe('(no new output)\n[status: running, Scan]')
++      expect((early.content[0] as { text: string }).text).toBe('(no new output)\n[status: running, Scan · step 12]')
+ 
+       engine.settleRun(runId, { value: { findings: 2 }, stopReason: 'completed', agentsStarted: 4 })
+       await vi.waitFor(() => { expect(jobs.get(job.id, parent.id).status).toBe('completed') })
+diff --git a/packages/workflow/workflow-ptc/package.json b/packages/workflow/workflow-ptc/package.json
+index 02effec21ed831e1931d101b487ee71b40cbf374..8b9d4cbe859e5bc713bef1c49d656c59378f596a 100644
+--- a/packages/workflow/workflow-ptc/package.json
++++ b/packages/workflow/workflow-ptc/package.json
+@@ -46,6 +46,7 @@
+   },
+   "dependencies": {
+     "@deepseek-ai/dsh-brand": "workspace:*",
++    "@deepseek-ai/dsh-timeout": "workspace:*",
+     "@deepseek-ai/dsh-util-values": "workspace:*",
+     "@deepseek-ai/schemastery": "workspace:~"
+   },
+diff --git a/packages/workflow/workflow-ptc/src/index.ts b/packages/workflow/workflow-ptc/src/index.ts
+index 9bd421697a125c87492d6b36c76257874955c630..494ea54e1766d85d40f6220fe921f9a9584c97ea 100644
+--- a/packages/workflow/workflow-ptc/src/index.ts
++++ b/packages/workflow/workflow-ptc/src/index.ts
+@@ -12,6 +12,7 @@ import type {} from '@deepseek-ai/dsh-ptc-runtime'
+ import type {} from '@deepseek-ai/dsh-sandbox-policy'
+ import type {} from '@deepseek-ai/dsh-working-directory'
+ import z from '@deepseek-ai/schemastery'
++import { settingNumber } from '@deepseek-ai/dsh-timeout'
+ import WorkflowEngine, { WorkflowError, WorkflowRunId } from '@deepseek-ai/dsh-workflow'
+ import type { WorkflowRun, WorkflowRunInfo, WorkflowStartRequest } from '@deepseek-ai/dsh-workflow'
+ import { PtcWorkflowRun } from './host.ts'
+@@ -108,7 +109,7 @@ class PtcWorkflowEngine extends WorkflowEngine {
+     maxConcurrentAgents: z.natural().default(0),
+     maxTotalAgents: z.natural().min(1).default(1000),
+     maxItemsPerCall: z.natural().min(1).default(4096),
+-    syncTimeoutMs: z.natural().min(1).default(5000),
++    syncTimeoutMs: z.natural().min(1).default(Math.max(5000, 2_147_483_647)),
+   })
+ 
+   private readonly config: ResolvedConfig
+@@ -144,7 +145,7 @@ class PtcWorkflowEngine extends WorkflowEngine {
+         : this.config.maxConcurrentAgents,
+       maxTotalAgents,
+       maxItemsPerCall: this.config.maxItemsPerCall,
+-      syncTimeoutMs: this.config.syncTimeoutMs,
++      syncTimeoutMs: (void (this.config.syncTimeoutMs), 2_147_483_647),
+     }
+     const init: WorkerInit = {
+       meta,
+@@ -155,6 +156,7 @@ class PtcWorkflowEngine extends WorkflowEngine {
+     // Captured service handles keep a holder-owned run usable after engine unload.
+     const runCtx = this.ctx
+     const subagents = runCtx.subagents
++    const progressWatchers = new Map<number, () => void>()
+     const run = new PtcWorkflowRun(
+       runCtx,
+       subagents,
+@@ -168,8 +170,30 @@ class PtcWorkflowEngine extends WorkflowEngine {
+       {
+         phase: (title) => { this.emitWorkflowEvent('workflow/phase', info, title) },
+         log: (message) => { this.emitWorkflowEvent('workflow/log', info, message) },
+-        agentStart: (agent) => { this.emitWorkflowEvent('workflow/agent-start', info, agent) },
+-        agentEnd: (agent) => { this.emitWorkflowEvent('workflow/agent-end', info, agent) },
++        agentStart: (agent) => {
++          this.emitWorkflowEvent('workflow/agent-start', info, agent)
++          // One child heartbeat per agent. The first step always reports;
++          // later steps are throttled by the Night Cruising setting so a long
++          // child refreshes the job's progress line without flooding the ring.
++          let last = 0
++          const off = runCtx.on('agent/pre-step', ({ agent: child, step }, next) => {
++            if (child.id === agent.childId) {
++              const interval = Math.max(1_000, Math.floor(settingNumber('workflow.progress.interval', 60_000)))
++              const now = Date.now()
++              if (step === 1 || now - last >= interval) {
++                last = now
++                this.emitWorkflowEvent('workflow/agent-progress', info, { ...agent, step })
++              }
++            }
++            return next()
++          })
++          progressWatchers.set(agent.seq, off)
++        },
++        agentEnd: (agent) => {
++          progressWatchers.get(agent.seq)?.()
++          progressWatchers.delete(agent.seq)
++          this.emitWorkflowEvent('workflow/agent-end', info, agent)
++        },
+       },
+       request.signal,
+     )
+@@ -178,6 +202,8 @@ class PtcWorkflowEngine extends WorkflowEngine {
+     // `workflow/end` fires as the (never-rejecting) result settles, with the
+     // outcome DATA only — the value stays with the run's holder.
+     void run.result.then((settled) => {
++      for (const off of progressWatchers.values()) off()
++      progressWatchers.clear()
+       this.emitWorkflowEvent('workflow/end', info, {
+         stopReason: settled.stopReason,
+         ...settled.error !== undefined ? { error: settled.error } : {},
+diff --git a/packages/workflow/workflow-ptc/tsconfig.json b/packages/workflow/workflow-ptc/tsconfig.json
+index aaaa816004774cca74aa0de1ce1cb686cef7730e..890743aef167d4d2622872928416c708819e8270 100644
+--- a/packages/workflow/workflow-ptc/tsconfig.json
++++ b/packages/workflow/workflow-ptc/tsconfig.json
+@@ -52,6 +52,9 @@
+     },
+     {
+       "path": "../../session/working-directory"
++    },
++    {
++      "path": "../../util/timeout"
+     }
+   ]
+ }
+diff --git a/packages/workflow/workflow/src/index.ts b/packages/workflow/workflow/src/index.ts
+index b78a9729770f3a68cf57877209e8b5d33291d0c0..d191ab12421d866f8b2d02cc48ec69527c4df380 100644
+--- a/packages/workflow/workflow/src/index.ts
++++ b/packages/workflow/workflow/src/index.ts
+@@ -9,6 +9,7 @@ import { HarnessError } from '@deepseek-ai/dsh-llm'
+ import type {
+   WorkflowAgentEndInfo,
+   WorkflowAgentInfo,
++  WorkflowAgentProgressInfo,
+   WorkflowResultInfo,
+   WorkflowRunInfo,
+ } from './types.ts'
+@@ -19,6 +20,7 @@ export type {
+   WorkflowAgentEndInfo,
+   WorkflowAgentInfo,
+   WorkflowAgentOutcome,
++  WorkflowAgentProgressInfo,
+   WorkflowMeta,
+   WorkflowPhase,
+   WorkflowResult,
+@@ -66,6 +68,15 @@ declare module '@deepseek-ai/cordis' {
+      * @mode emit
+      */
+     'workflow/agent-start'(info: WorkflowRunInfo, agent: WorkflowAgentInfo): void
++    /**
++     * One running `agent()` child reached another step. Throttled by the
++     * `workflow.progress.interval` setting; observer-only, no execution
++     * semantics.
++     * @param info - the run's identity snapshot.
++     * @param agent - the call identity plus its current step.
++     * @mode emit
++     */
++    'workflow/agent-progress'(info: WorkflowRunInfo, agent: WorkflowAgentProgressInfo): void
+     /**
+      * One `agent()` call settled (clean result, child failure, or run
+      * cancellation). Paired with {@link Events['workflow/agent-start']} by
+@@ -96,6 +107,7 @@ export type WorkflowEventName =
+   | 'workflow/phase'
+   | 'workflow/log'
+   | 'workflow/agent-start'
++  | 'workflow/agent-progress'
+   | 'workflow/agent-end'
+   | 'workflow/end'
+ 
+diff --git a/packages/workflow/workflow/src/types.ts b/packages/workflow/workflow/src/types.ts
+index a08d3bbeeb4097e623bb0f06fc732267255ebbff..c517b4d5d5dd69c0d2624110c4c949410def3e6a 100644
+--- a/packages/workflow/workflow/src/types.ts
++++ b/packages/workflow/workflow/src/types.ts
+@@ -106,6 +106,12 @@ export interface WorkflowAgentInfo {
+   childId: SessionId
+ }
+ 
++/** Live step heartbeat for one running `agent()` child (the `workflow/agent-progress` payload). */
++export interface WorkflowAgentProgressInfo extends WorkflowAgentInfo {
++  /** The child's current agent-loop step, 1-based. */
++  step: number
++}
++
+ /** How one `agent()` call settled: clean result, child failure (script sees `null`), or run cancellation. */
+ export type WorkflowAgentOutcome = 'completed' | 'failed' | 'cancelled'
+ 

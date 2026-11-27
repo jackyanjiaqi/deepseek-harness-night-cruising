@@ -1,0 +1,1647 @@
+diff --git a/apps/desktop/renderer/welcome.css b/apps/desktop/renderer/welcome.css
+index 3b4da2defb30ff1db2cfaa8e4a1b00313bc40027..869fedc77ba1384b25c719458e6cf7d85f319136 100644
+--- a/apps/desktop/renderer/welcome.css
++++ b/apps/desktop/renderer/welcome.css
+@@ -341,3 +341,13 @@ body {
+ .actions .welcome-loading { color: inherit; }
+ 
+ .auth-waiting .copy-link:disabled { cursor: default; }
++
++#root {
++  background: linear-gradient(180deg, #0c111bef, #101626ce 60%, #10162670), url('./assets/night-ride.jpg') center / cover;
++  --dsw-alias-label-primary: #f4efdf;
++  --dsw-alias-label-secondary: #d2d4dd;
++  --dsw-alias-label-primary-inverted: #161b27;
++  --dsw-alias-button-elevated-fill: #2f3544;
++  --dsw-alias-border-l2: #ffffff32;
++}
++.night-brand { color: #fff0d3; font: 600 28px/40px 'PingFang SC', sans-serif; letter-spacing: .18em; }
+diff --git a/apps/web/index.html b/apps/web/index.html
+index ff3ca620b7350989052ab9afe86697734ff021af..af4d77ed4c4d46dbc5cab71ca3a8c8de7b64cebc 100644
+--- a/apps/web/index.html
++++ b/apps/web/index.html
+@@ -13,6 +13,73 @@
+   </head>
+   <body>
+     <div id="root"></div>
++    <footer class="night-cruise" aria-label="夜间巡航控制栏">
++      <section class="night-timeouts" id="night-timeouts" hidden aria-label="超时设置">
++        <header class="night-timeouts-head">
++          <div class="night-timeouts-title">
++            <strong>超时设置</strong>
++            <span id="night-timeouts-note">修改立即生效 · 0 表示不限制</span>
++          </div>
++          <label class="night-timeouts-filter">
++            <span class="night-timeouts-sr">筛选超时项</span>
++            <input id="night-timeouts-filter" type="search" placeholder="筛选超时项…" autocomplete="off" />
++          </label>
++          <button id="night-timeouts-close" class="night-timeouts-close" type="button">收起</button>
++        </header>
++        <div class="night-timeouts-groups" id="night-timeouts-groups"></div>
++        <footer class="night-timeouts-foot">
++          <span id="night-timeouts-status" role="status" aria-live="polite"></span>
++          <div class="night-timeouts-actions">
++            <button id="night-timeouts-reset" type="button">恢复默认</button>
++            <button id="night-timeouts-save" class="night-timeouts-save" type="button">保存</button>
++          </div>
++        </footer>
++      </section>
++      <section class="night-timeouts night-vault" id="night-vault" hidden aria-label="托管保险柜">
++        <header class="night-timeouts-head">
++          <div class="night-timeouts-title">
++            <strong>托管保险柜</strong>
++            <span>本机决定远端数据放在哪 · 远端决定数据内容和保留时间</span>
++          </div>
++          <button id="night-vault-close" class="night-timeouts-close" type="button">收起</button>
++        </header>
++        <div class="night-vault-body" id="night-vault-body"></div>
++        <footer class="night-timeouts-foot">
++          <span id="night-vault-status" role="status" aria-live="polite"></span>
++          <div class="night-timeouts-actions">
++            <button id="night-vault-refresh" type="button">刷新</button>
++          </div>
++        </footer>
++      </section>
++      <div class="night-cruise-bar">
++        <strong lang="zh-CN">夜间巡航</strong>
++        <button id="night-play" type="button" aria-label="播放或暂停夜间巡航" aria-pressed="false">播放音乐</button>
++        <span class="night-cruise-spacer"></span>
++        <button
++          id="night-timeouts-toggle"
++          class="night-timeouts-toggle"
++          type="button"
++          aria-expanded="false"
++          aria-controls="night-timeouts"
++          hidden
++        >
++          <span class="night-timeouts-dot" aria-hidden="true"></span>
++          <span id="night-timeouts-summary">超时</span>
++        </button>
++        <button
++          id="night-vault-toggle"
++          class="night-timeouts-toggle night-vault-toggle"
++          type="button"
++          aria-expanded="false"
++          aria-controls="night-vault"
++          hidden
++        >
++          <span class="night-timeouts-dot" aria-hidden="true"></span>
++          <span id="night-vault-summary">托管保险柜</span>
++        </button>
++        <audio id="night-track" loop preload="none"></audio>
++      </div>
++    </footer>
+     <script type="module" src="/src/main.ts"></script>
+   </body>
+ </html>
+diff --git a/apps/web/src/main.ts b/apps/web/src/main.ts
+index 5f4786acb78e8aff68919ec0dc529e93b81357ab..2c8f721ea4278497773f3dc96b97065ac1ee50c5 100644
+--- a/apps/web/src/main.ts
++++ b/apps/web/src/main.ts
+@@ -1,4 +1,5 @@
+ /** Browser entry for the Web client. */
++import './night-cruising.ts'
+ import '@deepseek-ai/dsh-client-ui-theme/brand-font.css'
+ import { AppWebEntry, applyIndexInjections } from '@deepseek-ai/dsh-client-web'
+ 
+diff --git a/apps/web/src/night-cruising.css b/apps/web/src/night-cruising.css
+new file mode 100644
+index 0000000000000000000000000000000000000000..6b39177194d57828785e45f14c67078768d0b6ad
+--- /dev/null
++++ b/apps/web/src/night-cruising.css
+@@ -0,0 +1,507 @@
++/* Night Cruising shell footer: a collapsible timeout settings bar.
++ *
++ * Collapsed it is only the 46–62 px night-ride bar. Expanded it grows upward
++ * inside the body grid (never over the app), so every sidebar, composer and
++ * right panel keeps its own layout; `max-height` reserves at least 260 px for
++ * the application on short windows. The panel scrolls its groups and uses an
++ * auto-fit grid so plugin-added rows keep working as the catalog grows. */
++
++body:has(.night-cruise) {
++  display: grid;
++  grid-template-rows: minmax(0, 1fr) auto;
++  height: 100%;
++  min-height: 100%;
++}
++
++body:has(.night-cruise) > #root {
++  min-height: 0;
++  height: 100%;
++  overflow: hidden;
++}
++
++.night-cruise {
++  --nc-bar-height: clamp(46px, 7vh, 62px);
++  --nc-radius: 14px;
++  --nc-hairline: #ffffff14;
++  --nc-ink: #ffffff;
++  box-sizing: border-box;
++  display: flex;
++  flex-direction: column;
++  min-width: 0;
++  color: #fff6de;
++  background: #070b12;
++  border-top: 1px solid #756853;
++  padding-bottom: env(safe-area-inset-bottom, 0px);
++}
++
++/* Reserve room for the conversation and both side panels; the panel scrolls
++ * instead of squeezing the app below ~300 px. */
++.night-cruise[data-expanded='true'] {
++  height: clamp(220px, 52vh, 540px);
++  max-height: calc(100dvh - 300px);
++}
++
++.night-cruise-bar {
++  flex: 0 0 var(--nc-bar-height);
++  min-height: var(--nc-bar-height);
++  box-sizing: border-box;
++  display: flex;
++  align-items: center;
++  gap: 14px;
++  padding-inline: clamp(16px, 4vw, 64px);
++  background:
++    linear-gradient(90deg, #101523 0%, #101523ee 19%, #10152350 39%, transparent 66%),
++    url('./night-ride.jpg') center 59% / cover;
++}
++
++.night-cruise-bar strong {
++  font-family: 'PingFang SC', sans-serif;
++  font-size: clamp(16px, 2vw, 24px);
++  letter-spacing: .12em;
++  white-space: nowrap;
++}
++
++.night-cruise-spacer { flex: 1 1 auto; }
++
++#night-play {
++  flex: 0 0 auto;
++  color: #fff1d5;
++  background: #18202cef;
++  border: 1px solid #b5a280;
++  border-radius: 20px;
++  font: inherit;
++  font-size: 12px;
++  padding: 7px 14px;
++  cursor: pointer;
++}
++
++#night-play:focus-visible,
++.night-timeouts-toggle:focus-visible,
++.night-timeouts button:focus-visible,
++.night-timeouts input:focus-visible {
++  outline: 2px solid white;
++  outline-offset: 2px;
++}
++
++/* The timeout seat is deliberately quiet: bare white text, a small phosphor
++ * dot, and no capsule. It is the only always-visible value in the bar. */
++.night-timeouts-toggle {
++  flex: 0 0 auto;
++  display: inline-flex;
++  align-items: center;
++  gap: 7px;
++  max-width: min(48vw, 360px);
++  padding: 6px 2px;
++  border: 0;
++  background: transparent;
++  color: var(--nc-ink);
++  font: inherit;
++  font-size: 11px;
++  letter-spacing: .02em;
++  font-variant-numeric: tabular-nums;
++  opacity: .72;
++  cursor: pointer;
++  transition: opacity .16s ease;
++}
++
++.night-timeouts-toggle:hover { opacity: 1; }
++
++.night-timeouts-dot {
++  flex: 0 0 auto;
++  width: 5px;
++  height: 5px;
++  border-radius: 50%;
++  background: #fff;
++  opacity: .55;
++  box-shadow: 0 0 8px #ffffffaa;
++}
++
++#night-timeouts-summary {
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++/* A completed turn re-states the active wait as the same minimal white text. */
++.night-timeouts-flash {
++  animation: night-timeouts-flash 1.6s ease;
++}
++
++@keyframes night-timeouts-flash {
++  0%, 100% { text-shadow: none; }
++  18% { text-shadow: 0 0 12px #ffffffcc; }
++}
++
++/* Expanded panel */
++.night-timeouts {
++  flex: 1 1 auto;
++  min-height: 0;
++  display: flex;
++  flex-direction: column;
++  margin: 10px clamp(12px, 3vw, 40px) 8px;
++  border: 1px solid var(--nc-hairline);
++  border-radius: var(--nc-radius);
++  background: linear-gradient(180deg, #101620f5 0%, #0a0f17fb 100%);
++  box-shadow: 0 -18px 50px #00000055;
++  overflow: hidden;
++}
++
++.night-timeouts[hidden] { display: none; }
++
++.night-timeouts-head {
++  flex: 0 0 auto;
++  display: flex;
++  align-items: center;
++  gap: 12px;
++  padding: 12px 14px 10px;
++  border-bottom: 1px solid var(--nc-hairline);
++}
++
++.night-timeouts-title {
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++  min-width: 0;
++}
++
++.night-timeouts-title strong {
++  font-size: 13px;
++  font-weight: 600;
++  letter-spacing: .08em;
++  color: #fff;
++}
++
++.night-timeouts-title span {
++  font-size: 10.5px;
++  color: #ffffff80;
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
++}
++
++.night-timeouts-filter {
++  margin-left: auto;
++  min-width: 0;
++}
++
++.night-timeouts-filter input {
++  box-sizing: border-box;
++  width: clamp(130px, 18vw, 210px);
++  padding: 5px 8px;
++  border: 1px solid #ffffff1c;
++  border-radius: 8px;
++  background: #0a0f18;
++  color: #fff;
++  font: inherit;
++  font-size: 11px;
++}
++
++.night-timeouts-filter input::placeholder { color: #ffffff55; }
++
++.night-timeouts button {
++  color: #fff1d5;
++  background: #141b26;
++  border: 1px solid #ffffff22;
++  border-radius: 8px;
++  font: inherit;
++  font-size: 11px;
++  padding: 5px 10px;
++  cursor: pointer;
++}
++
++.night-timeouts button:hover { border-color: #ffffff44; }
++
++.night-timeouts-close { flex: 0 0 auto; }
++
++.night-timeouts-groups {
++  flex: 1 1 auto;
++  min-height: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 14px;
++  padding: 10px 14px 6px;
++  overflow: auto;
++  overscroll-behavior: contain;
++  scrollbar-gutter: stable;
++}
++
++.night-timeouts-group { min-width: 0; }
++
++.night-timeouts-group h3 {
++  position: sticky;
++  top: -10px;
++  z-index: 1;
++  margin: 0 0 4px;
++  padding: 4px 0;
++  background: #0c121bf2;
++  color: #c9b99a;
++  font-size: 10.5px;
++  font-weight: 600;
++  letter-spacing: .1em;
++}
++
++.night-timeouts-group p {
++  margin: 0 0 6px;
++  color: #ffffff66;
++  font-size: 10px;
++}
++
++.night-timeouts-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
++  gap: 4px 18px;
++}
++
++.night-timeout-row {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 12px;
++  min-width: 0;
++  padding: 6px 8px;
++  border: 1px solid transparent;
++  border-radius: 8px;
++}
++
++.night-timeout-row:hover {
++  background: #ffffff08;
++  border-color: #ffffff0d;
++}
++
++.night-timeout-row[hidden] { display: none; }
++.night-timeout-row[data-locked] { opacity: .55; }
++
++.night-timeout-copy {
++  display: flex;
++  flex-direction: column;
++  gap: 1px;
++  min-width: 0;
++}
++
++.night-timeout-copy strong {
++  color: #fff;
++  font-size: 11.5px;
++  font-weight: 500;
++}
++
++.night-timeout-copy small {
++  color: #ffffff66;
++  font-size: 10px;
++  line-height: 1.35;
++}
++
++/* 0 on a budget row means "no local limit": make it read as a warning. */
++.night-timeout-copy small.night-timeout-zero {
++  color: #ffcc00;
++  font-size: 10px;
++  font-weight: 700;
++  letter-spacing: .01em;
++}
++
++.night-timeout-row[data-unlimited] {
++  border-color: #ffcc0088;
++  background: #ffcc0010;
++}
++
++.night-timeout-row[data-unlimited] input {
++  border-color: #ffcc00cc;
++  color: #ffcc00;
++  box-shadow: 0 0 0 1px #ffcc0033;
++}
++
++.night-timeout-row[data-unlimited] .night-timeout-copy small.night-timeout-zero {
++  padding: 1px 6px;
++  border: 1px solid #ffcc0088;
++  border-radius: 999px;
++  background: #ffcc001f;
++}
++
++.night-timeout-input {
++  flex: 0 0 auto;
++  display: inline-flex;
++  align-items: center;
++  gap: 4px;
++}
++
++.night-timeout-input input {
++  box-sizing: border-box;
++  width: 76px;
++  padding: 5px 6px;
++  border: 1px solid #ffffff20;
++  border-radius: 7px;
++  background: #0a0f18;
++  color: #fff;
++  font: inherit;
++  font-size: 11.5px;
++  font-variant-numeric: tabular-nums;
++  text-align: right;
++}
++
++.night-timeout-input input:disabled {
++  color: #ffffff88;
++  background: #0a0f1880;
++}
++
++.night-timeout-input span {
++  color: #ffffff66;
++  font-size: 10px;
++}
++
++.night-timeouts-foot {
++  flex: 0 0 auto;
++  display: flex;
++  align-items: center;
++  gap: 12px;
++  padding: 8px 14px;
++  border-top: 1px solid var(--nc-hairline);
++  background: #080d15;
++}
++
++#night-timeouts-status {
++  min-width: 0;
++  min-height: 1em;
++  color: #9fd6b0;
++  font-size: 10.5px;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++#night-timeouts-status[data-tone='error'] { color: #f0a59b; }
++
++.night-timeouts-actions {
++  flex: 0 0 auto;
++  display: flex;
++  gap: 8px;
++  margin-left: auto;
++}
++
++.night-timeouts-save {
++  color: #151a22 !important;
++  background: #e8dcc0 !important;
++  border-color: #e8dcc0 !important;
++}
++
++.night-timeouts-sr {
++  position: absolute;
++  width: 1px;
++  height: 1px;
++  margin: -1px;
++  padding: 0;
++  overflow: hidden;
++  clip: rect(0 0 0 0);
++  white-space: nowrap;
++  border: 0;
++}
++
++@media (max-width: 640px) {
++  .night-cruise[data-expanded='true'] {
++    height: clamp(240px, 62vh, 520px);
++    max-height: calc(100dvh - 260px);
++  }
++
++  .night-timeouts-head { flex-wrap: wrap; }
++  .night-timeouts-filter { order: 3; width: 100%; margin-left: 0; }
++  .night-timeouts-filter input { width: 100%; }
++  .night-timeouts-title span { display: none; }
++  .night-timeouts-toggle { max-width: 42vw; }
++}
++
++@media (max-width: 420px) {
++  .night-cruise-bar {
++    gap: 8px;
++    padding-inline: 12px;
++    overflow: hidden;
++  }
++
++  .night-cruise-bar strong {
++    font-size: 14px;
++    letter-spacing: .06em;
++  }
++
++  #night-play {
++    padding: 6px 9px;
++    font-size: 11px;
++  }
++}
++
++@media (prefers-reduced-motion: reduce) {
++  .night-timeouts-toggle { transition: none; }
++  .night-timeouts-flash { animation: none; }
++}
++
++/* Hosted vault panel: two scopes, explicitly separated. */
++.night-vault-toggle { max-width: min(34vw, 260px); }
++.night-vault-body {
++  flex: 1 1 auto;
++  min-height: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 12px;
++  padding: 12px 14px 8px;
++  overflow: auto;
++  overscroll-behavior: contain;
++  color: #f6ead3;
++  font-size: 12px;
++}
++.nv-section {
++  border: 1px solid #ffffff14;
++  border-radius: 10px;
++  padding: 10px 12px;
++  background: #0b111af5;
++}
++.nv-section > h3 {
++  margin: 0 0 3px;
++  color: #e8d5b0;
++  font-size: 12px;
++  letter-spacing: .06em;
++}
++.nv-section > p { margin: 0 0 8px; color: #ffffff80; font-size: 10.5px; line-height: 1.55; }
++.nv-row {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  min-width: 0;
++  padding: 7px 0;
++  border-top: 1px solid #ffffff0d;
++}
++.nv-row:first-of-type { border-top: 0; }
++.nv-peer { flex: 0 0 auto; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
++.nv-path { flex: 1 1 auto; min-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ffffffa8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; direction: rtl; text-align: left; }
++.nv-actions { flex: 0 0 auto; display: flex; gap: 6px; }
++.nv-badge { flex: 0 0 auto; border: 1px solid #ffffff24; border-radius: 999px; padding: 3px 7px; color: #d8c39d; font-size: 9.5px; }
++.nv-pending { border-color: #d5a84f66; background: #1b170df5; }
++.nv-pending-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
++.nv-countdown { margin-left: auto; color: #ffce7a; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-variant-numeric: tabular-nums; }
++.nv-input {
++  box-sizing: border-box;
++  width: 100%;
++  min-width: 180px;
++  padding: 6px 8px;
++  border: 1px solid #ffffff22;
++  border-radius: 7px;
++  background: #070c14;
++  color: #fff;
++  font: inherit;
++  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
++  font-size: 10.5px;
++}
++.nv-actions .nv-input { flex: 1 1 auto; }
++.nv-policy { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 8px; }
++.nv-field { display: flex; flex-direction: column; gap: 4px; color: #ffffff80; font-size: 10px; }
++.nv-field select, .nv-field input {
++  box-sizing: border-box;
++  width: 100%;
++  padding: 5px 7px;
++  border: 1px solid #ffffff22;
++  border-radius: 7px;
++  background: #070c14;
++  color: #fff;
++  font: inherit;
++  font-size: 11px;
++}
++.nv-empty { color: #ffffff70; font-size: 10.5px; padding: 4px 0; }
++.nv-error { color: #ff9d9d; font-size: 10.5px; }
++.night-vault .night-timeouts-foot { border-top: 1px solid #ffffff14; }
++
++.nv-actions button:disabled { opacity: .4; cursor: not-allowed; border-color: #ffffff14; }
+diff --git a/apps/web/src/night-cruising.ts b/apps/web/src/night-cruising.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff548e1090c8879874b18f498a61215e836cd229
+--- /dev/null
++++ b/apps/web/src/night-cruising.ts
+@@ -0,0 +1,761 @@
++import './night-cruising.css'
++
++/** One editable timeout row served by `/night-cruising/timeouts`. */
++interface TimeoutEntry {
++  key: string
++  label: string
++  hint?: string
++  defaultMs: number
++  minMs: number
++  maxMs: number
++  /** Display/input unit; absent means milliseconds. */
++  unit?: 'ms' | 'count'
++  /** `0` is a legal value here: it disables the local timer. */
++  allowOff?: boolean
++  locked?: boolean
++}
++
++/** One visual section of the timeout panel. */
++interface TimeoutGroup {
++  id: string
++  label: string
++  hint?: string
++  entries: readonly TimeoutEntry[]
++}
++
++const ROUTE = '/night-cruising/timeouts'
++
++/* ------------------------------------------------------------------ music -- */
++
++const player = document.querySelector<HTMLAudioElement>('#night-track')
++const toggle = document.querySelector<HTMLButtonElement>('#night-play')
++if (player && toggle) {
++  const track = new URL('./night-cruising.wav', import.meta.url)
++  player.volume = 0.35
++  const refresh = (): void => {
++    toggle.textContent = player.paused ? '播放音乐' : '暂停音乐'
++    toggle.setAttribute('aria-pressed', String(!player.paused))
++  }
++  toggle.addEventListener('click', async () => {
++    if (!player.paused) { player.pause(); return }
++    toggle.disabled = true
++    try {
++      // A blob has a known length even when Electron's custom protocol streams the asset.
++      if (!player.src) {
++        const response = await fetch(track)
++        if (!response.ok) throw new Error('夜间巡航音频读取失败')
++        player.src = URL.createObjectURL(await response.blob())
++      }
++      await player.play()
++    } catch {
++      toggle.textContent = '播放失败 · 重试'
++    } finally { toggle.disabled = false }
++  })
++  player.addEventListener('play', refresh)
++  player.addEventListener('pause', refresh)
++}
++
++/* --------------------------------------------------------------- timeouts -- */
++
++const panel = document.querySelector<HTMLElement>('#night-timeouts')
++const openButton = document.querySelector<HTMLButtonElement>('#night-timeouts-toggle')
++const closeButton = document.querySelector<HTMLButtonElement>('#night-timeouts-close')
++const summary = document.querySelector<HTMLElement>('#night-timeouts-summary')
++const groupsHost = document.querySelector<HTMLElement>('#night-timeouts-groups')
++const filterInput = document.querySelector<HTMLInputElement>('#night-timeouts-filter')
++const saveButton = document.querySelector<HTMLButtonElement>('#night-timeouts-save')
++const resetButton = document.querySelector<HTMLButtonElement>('#night-timeouts-reset')
++const status = document.querySelector<HTMLElement>('#night-timeouts-status')
++const footer = document.querySelector<HTMLElement>('.night-cruise')
++const vaultPanel = document.querySelector<HTMLElement>('#night-vault')
++const vaultOpenButton = document.querySelector<HTMLButtonElement>('#night-vault-toggle')
++const vaultCloseButton = document.querySelector<HTMLButtonElement>('#night-vault-close')
++const vaultRefreshButton = document.querySelector<HTMLButtonElement>('#night-vault-refresh')
++const vaultSummary = document.querySelector<HTMLElement>('#night-vault-summary')
++const vaultHost = document.querySelector<HTMLElement>('#night-vault-body')
++const vaultStatus = document.querySelector<HTMLElement>('#night-vault-status')
++
++/** Rows currently rendered, keyed by settings key. */
++const inputs = new Map<string, HTMLInputElement>()
++/** Catalog rows by settings key, for unit-aware form conversion. */
++const entriesByKey = new Map<string, TimeoutEntry>()
++/** Catalog returned by the Host; empty until the first successful load. */
++let groups: readonly TimeoutGroup[] = []
++/** Last persisted milliseconds, keyed by settings key. */
++let values: Readonly<Record<string, number>> = {}
++
++/**
++ * Render one duration as compact Chinese text.
++ * @param ms - Duration in milliseconds; `0` means unlimited.
++ * @returns `不限`, `30 秒`, `10 分`, or `1 小时`.
++ */
++function formatDuration(ms: number | undefined): string {
++  if (ms === undefined || ms === 0) return '不限'
++  if (ms < 60_000) return `${Math.round(ms / 1000)} 秒`
++  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} 分`
++  return `${Math.round(ms / 3_600_000)} 小时`
++}
++
++/**
++ * Convert a stored number to the value shown in an input: milliseconds become
++ * seconds, counts stay whole numbers.
++ * @param entry - catalog row that owns the value.
++ * @param value - stored milliseconds or count.
++ * @returns the input text.
++ */
++function toInput(entry: TimeoutEntry, value: number): string {
++  return entry.unit === 'count' ? String(Math.round(value)) : String(Math.round(value / 1000))
++}
++
++/**
++ * Convert an input's number back to the stored unit.
++ * @param entry - catalog row that owns the value.
++ * @param value - input number in seconds or count.
++ * @returns stored milliseconds or count.
++ */
++function fromInput(entry: TimeoutEntry, value: number): number {
++  return entry.unit === 'count' ? Math.round(value) : Math.round(value * 1000)
++}
++
++/**
++ * Project the primary wait value into the collapsed bar's one-line summary.
++ * The line stays minimal: the first value users tune, plus its cap when it
++ * differs.
++ */
++function refreshSummary(): void {
++  if (summary === null || groups.length === 0) return
++  const primary = formatDuration(values['wait.job.default'])
++  const cap = values['wait.job.max']
++  summary.textContent = cap === undefined || cap === 0
++    ? `超时 ${primary}`
++    : `超时 ${primary} · 上限 ${formatDuration(cap)}`
++}
++
++/**
++ * Set the panel's inline status line.
++ * @param text - Message to show; empty clears it.
++ * @param tone - `ok` for the saved state, `error` for a refused save.
++ */
++function setStatus(text: string, tone: 'ok' | 'error' = 'ok'): void {
++  if (status === null) return
++  status.textContent = text
++  status.dataset.tone = tone
++}
++
++/** Mark the save button actionable while any input differs from the store. */
++function markDirty(): void {
++  if (saveButton === null) return
++  let dirty = false
++  for (const [key, input] of inputs) {
++    if (input.disabled) continue
++    const entry = entriesByKey.get(key)
++    if (entry === undefined) continue
++    if (fromInput(entry, Number(input.value)) !== (values[key] ?? 0)) { dirty = true; break }
++  }
++  saveButton.dataset.dirty = dirty ? 'true' : 'false'
++  saveButton.disabled = !dirty
++}
++
++/**
++ * Flag a row whose value is 0 on a setting that treats 0 as "no local limit".
++ * The row itself turns yellow so "no limit" never looks like a normal value.
++ */
++function refreshZeroWarning(row: HTMLElement, entry: TimeoutEntry, input: HTMLInputElement): void {
++  if (entry.allowOff !== true) return
++  row.toggleAttribute('data-unlimited', Number(input.value) === 0)
++}
++
++/**
++ * Render the catalog exactly as the Host served it. Entries are created as
++ * DOM nodes (never HTML strings), so labels from future plugins stay text.
++ */
++function renderGroups(): void {
++  if (groupsHost === null) return
++  groupsHost.replaceChildren()
++  inputs.clear()
++  entriesByKey.clear()
++  for (const group of groups) {
++    const section = document.createElement('section')
++    section.className = 'night-timeouts-group'
++    const heading = document.createElement('h3')
++    heading.textContent = group.label
++    section.append(heading)
++    if (group.hint !== undefined) {
++      const hint = document.createElement('p')
++      hint.textContent = group.hint
++      section.append(hint)
++    }
++    const grid = document.createElement('div')
++    grid.className = 'night-timeouts-grid'
++    for (const entry of group.entries) {
++      const row = document.createElement('label')
++      row.className = 'night-timeout-row'
++      row.dataset.key = entry.key
++      if (entry.locked) row.dataset.locked = ''
++      const copy = document.createElement('span')
++      copy.className = 'night-timeout-copy'
++      const name = document.createElement('strong')
++      name.textContent = entry.label
++      copy.append(name)
++      if (entry.hint !== undefined) {
++        const hint = document.createElement('small')
++        hint.textContent = entry.hint
++        copy.append(hint)
++      }
++      if (entry.allowOff === true) {
++        const zero = document.createElement('small')
++        zero.className = 'night-timeout-zero'
++        zero.textContent = '⚠ 0 = 不设限制，只能手动取消'
++        zero.title = '填 0 不会让任务更快结束，而是取消时间上限：任务会一直运行，直到你手动停止'
++        copy.append(zero)
++      }
++      const field = document.createElement('span')
++      field.className = 'night-timeout-input'
++      const input = document.createElement('input')
++      input.type = 'number'
++      input.inputMode = 'numeric'
++      input.step = '1'
++      input.min = toInput(entry, entry.minMs)
++      input.max = toInput(entry, entry.maxMs)
++      input.value = toInput(entry, values[entry.key] ?? entry.defaultMs)
++      input.dataset.unit = entry.unit ?? 'ms'
++      input.setAttribute('aria-label', `${entry.label}（${entry.unit === 'count' ? '次' : '秒'}）`)
++      if (entry.locked) {
++        input.disabled = true
++        input.value = '0'
++      }
++      input.addEventListener('input', () => {
++        refreshZeroWarning(row, entry, input)
++        markDirty()
++      })
++      const unit = document.createElement('span')
++      unit.textContent = entry.locked ? '不限' : entry.unit === 'count' ? '次' : '秒'
++      field.append(input, unit)
++      refreshZeroWarning(row, entry, input)
++      row.append(copy, field)
++      grid.append(row)
++      inputs.set(entry.key, input)
++      entriesByKey.set(entry.key, entry)
++    }
++    section.append(grid)
++    groupsHost.append(section)
++  }
++  markDirty()
++  applyFilter()
++}
++
++/**
++ * Hide rows and sections that do not match the filter box.
++ */
++function applyFilter(): void {
++  if (filterInput === null || groupsHost === null) return
++  const needle = filterInput.value.trim().toLocaleLowerCase()
++  for (const section of groupsHost.querySelectorAll<HTMLElement>('.night-timeouts-group')) {
++    let visible = 0
++    for (const row of section.querySelectorAll<HTMLElement>('.night-timeout-row')) {
++      const match = needle === '' || (row.textContent ?? '').toLocaleLowerCase().includes(needle)
++      row.hidden = !match
++      if (match) visible += 1
++    }
++    section.hidden = visible === 0
++    const hint = section.querySelector<HTMLElement>('p')
++    if (hint !== null) hint.hidden = needle !== ''
++  }
++}
++
++/**
++ * Open or close the panel. Expanded state lives on the footer so the body grid
++ * gives the extra height to the footer, never over the application.
++ * @param open - Desired expanded state.
++ * @param focus - Whether to move focus into the filter box.
++ */
++function setExpanded(open: boolean, focus: boolean): void {
++  if (panel === null || openButton === null || footer === null) return
++  if (open && vaultPanel !== null && vaultPanel.hidden === false) setVaultExpanded(false, false)
++  panel.hidden = !open
++  footer.dataset.expanded = open ? 'true' : 'false'
++  openButton.setAttribute('aria-expanded', String(open))
++  if (open && focus) filterInput?.focus()
++  if (!open) openButton.focus()
++}
++
++/** Flash the collapsed summary after a completed save or turn. */
++function flashSummary(): void {
++  if (summary === null) return
++  summary.classList.remove('night-timeouts-flash')
++  // Reading offsetWidth restarts the CSS animation on repeated completions.
++  void summary.offsetWidth
++  summary.classList.add('night-timeouts-flash')
++}
++
++/**
++ * Send every editable row to the Host. The route validates, persists atomically
++ * and republishes the values to the timeout library, so a save applies without
++ * restarting the Host.
++ */
++async function save(): Promise<void> {
++  if (groups.length === 0) return
++  const next: Record<string, number> = { ...values }
++  for (const [key, input] of inputs) {
++    const entry = entriesByKey.get(key)
++    if (entry === undefined || entry.locked) continue
++    const entered = Number(input.value)
++    if (!Number.isFinite(entered) || entered < 0) {
++      setStatus(`${entry.label} 需要一个不小于 0 的${entry.unit === 'count' ? '整数' : '秒数'}`, 'error')
++      input.focus()
++      return
++    }
++    next[key] = fromInput(entry, entered)
++  }
++  if (saveButton !== null) saveButton.disabled = true
++  try {
++    const response = await fetch(ROUTE, {
++      method: 'PUT',
++      headers: { 'content-type': 'application/json' },
++      body: JSON.stringify({ values: next }),
++    })
++    const payload: unknown = await response.json().catch(() => undefined)
++    if (!response.ok) {
++      const message = typeof payload === 'object' && payload !== null && 'error' in payload
++        ? String((payload as { error: unknown }).error)
++        : `保存失败（HTTP ${String(response.status)}）`
++      setStatus(message, 'error')
++      markDirty()
++      return
++    }
++    const saved = typeof payload === 'object' && payload !== null && 'values' in payload
++      ? (payload as { values?: unknown }).values
++      : undefined
++    if (typeof saved === 'object' && saved !== null && !Array.isArray(saved)) {
++      values = saved as Record<string, number>
++    } else {
++      values = next
++    }
++    setStatus('已保存，立即生效')
++    refreshSummary()
++    markDirty()
++  } catch {
++    setStatus('无法连接夜间巡航设置服务', 'error')
++    markDirty()
++  }
++}
++
++/** Restore every row to its catalog default in the form (a save still confirms). */
++function resetToDefaults(): void {
++  for (const group of groups) {
++    for (const entry of group.entries) {
++      const input = inputs.get(entry.key)
++      if (input === undefined || entry.locked) continue
++      input.value = toInput(entry, entry.defaultMs)
++    }
++  }
++  setStatus('已填入默认值，点击保存生效')
++  markDirty()
++}
++
++/** One pending bootstrap retry; a Host route may register just after the page mounts. */
++let loadRetry: ReturnType<typeof setTimeout> | undefined
++
++/**
++ * Retry the settings bootstrap after the Host has had time to mount its route.
++ * A standalone page that never serves the route gives up after ~20 seconds.
++ * @param attempt - zero-based attempt count.
++ */
++function retryLoad(attempt: number): void {
++  if (loadRetry !== undefined || attempt >= 20) return
++  loadRetry = setTimeout(() => {
++    loadRetry = undefined
++    void load(attempt + 1)
++  }, 1_000)
++}
++
++/**
++ * Load the catalog and persisted values, then reveal the timeout seat.
++ * The route can register a moment after the page mounts, so a failed first
++ * read is retried instead of permanently hiding the seat. A standalone page
++ * that never serves the route stays a music player after the retry window.
++ * @param attempt - zero-based attempt count.
++ */
++async function load(attempt = 0): Promise<void> {
++  try {
++    const response = await fetch(ROUTE, { headers: { accept: 'application/json' } })
++    if (!response.ok) {
++      retryLoad(attempt)
++      return
++    }
++    const payload: unknown = await response.json()
++    if (typeof payload !== 'object' || payload === null || !('groups' in payload) || !('values' in payload)) {
++      retryLoad(attempt)
++      return
++    }
++    const candidate = payload as { groups?: unknown; values?: unknown }
++    if (!Array.isArray(candidate.groups) || typeof candidate.values !== 'object' || candidate.values === null) {
++      retryLoad(attempt)
++      return
++    }
++    groups = candidate.groups as TimeoutGroup[]
++    values = candidate.values as Record<string, number>
++    if (groups.length === 0) {
++      retryLoad(attempt)
++      return
++    }
++    if (loadRetry !== undefined) {
++      clearTimeout(loadRetry)
++      loadRetry = undefined
++    }
++    renderGroups()
++    refreshSummary()
++    if (openButton !== null) openButton.hidden = false
++    document.documentElement.dataset.ncTimeouts = 'ready'
++  } catch {
++    retryLoad(attempt)
++  }
++}
++
++/* --------------------------------------------------------- hosted vault -- */
++
++interface VaultRoot { peerId: string; root: string; approvedAt: number; clearedAt?: number; containers: number; bytes: number }
++interface VaultPending { id: string; peerId: string; reason: string; suggestedRoot?: string; expiresAt: number; createdAt: number; attempts: number }
++interface VaultHostState {
++  roots: VaultRoot[]
++  pending: VaultPending[]
++  ownerPeers: { peerId: string; entries: number; bytes: number; kinds: string[]; lastUsedAt: number }[]
++  policy: { release: 'auto' | 'confirm' | 'deny'; keyTtlMs: number; retentionDays: number }
++}
++
++let vaultState: VaultHostState | null = null
++let vaultTimer: ReturnType<typeof setInterval> | undefined
++
++function vaultEl<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
++  const element = document.createElement(tag)
++  if (className !== undefined) element.className = className
++  if (text !== undefined) element.textContent = text
++  return element
++}
++
++function vaultButton(label: string, action: () => void): HTMLButtonElement {
++  const button = vaultEl('button', undefined, label)
++  button.type = 'button'
++  button.addEventListener('click', action)
++  return button
++}
++
++function setVaultStatus(text: string, tone: 'ok' | 'error' = 'ok'): void {
++  if (vaultStatus === null) return
++  vaultStatus.textContent = text
++  vaultStatus.dataset.tone = tone
++}
++
++async function vaultRequest(method: string, route: string, body?: unknown): Promise<unknown> {
++  const response = await fetch(`/account-mesh/api/${route}`, {
++    method,
++    headers: body === undefined ? { accept: 'application/json' } : { accept: 'application/json', 'content-type': 'application/json' },
++    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
++  })
++  const text = await response.text()
++  let parsed: unknown = text
++  try { parsed = JSON.parse(text) } catch { /* keep text */ }
++  if (!response.ok) {
++    const message = typeof parsed === 'object' && parsed !== null && 'error' in parsed ? String((parsed as { error?: unknown }).error) : `HTTP ${String(response.status)}`
++    throw new Error(message)
++  }
++  return parsed
++}
++
++function remainingText(expiresAt: number): string {
++  const seconds = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000))
++  return seconds > 0 ? `剩余 ${String(seconds)} 秒` : '已到期，自动拒绝'
++}
++
++async function loadVault(): Promise<void> {
++  if (vaultHost === null) return
++  try {
++    const payload = await vaultRequest('GET', 'vault/host')
++    const vault = (payload as { vault?: VaultHostState }).vault
++    if (!vault || !Array.isArray(vault.roots) || !Array.isArray(vault.pending)) {
++      vaultOpenButton?.setAttribute('hidden', '')
++      return
++    }
++    vaultState = vault
++    if (vaultOpenButton !== null) vaultOpenButton.hidden = false
++    renderVault()
++    setVaultStatus('')
++  } catch {
++    // The plugin may not be installed; keep the seat hidden rather than showing
++    // a dead control. A later refresh can reveal it.
++    vaultOpenButton?.setAttribute('hidden', '')
++  }
++}
++
++function renderVault(): void {
++  if (vaultHost === null) return
++  vaultHost.replaceChildren()
++  if (vaultState === null) {
++    vaultHost.append(vaultEl('p', 'nv-empty', '正在读取托管保险柜状态…'))
++    return
++  }
++  const roots = vaultState.roots
++  const pending = vaultState.pending
++  if (vaultSummary !== null) {
++    vaultSummary.textContent = pending.length > 0
++      ? `托管保险柜 · 待确认 ${String(pending.length)}`
++      : roots.length > 0
++        ? `托管保险柜 · ${String(roots.length)} 台设备`
++        : '托管保险柜'
++  }
++
++  const hostSection = vaultEl('section', 'nv-section')
++  hostSection.append(vaultEl('h3', undefined, '远端在本机的托管'))
++  hostSection.append(vaultEl('p', undefined, '本机决定远端设备的数据放在哪；远端决定放什么、放多久。新设备接入时会先检查目录可写，失败或超时会要求本机用户手动选择。'))
++  if (roots.length === 0) hostSection.append(vaultEl('div', 'nv-empty', '还没有远端设备接入托管。'))
++  for (const root of roots) {
++    const row = vaultEl('div', 'nv-row')
++    row.append(vaultEl('span', 'nv-peer', root.peerId))
++    const path = vaultEl('span', 'nv-path', root.root)
++    path.title = root.root
++    row.append(path)
++    row.append(vaultEl('span', 'nv-badge', `${String(root.containers ?? 0)} 份`))
++    const actions = vaultEl('div', 'nv-actions')
++    actions.append(vaultButton('打开目录', () => { void openVaultDir(root.peerId) }))
++    const change = vaultButton('更换目录', () => { promptVaultRoot(root.peerId, root.root) })
++    if ((root.containers ?? 0) > 0) {
++      change.disabled = true
++      change.title = '请先删除该设备在本机的保险柜内容'
++    }
++    actions.append(change)
++    actions.append(vaultButton('删除内容', () => { void deleteVaultContent(root.peerId) }))
++    row.append(actions)
++    hostSection.append(row)
++  }
++  for (const item of pending) {
++    const card = vaultEl('div', 'nv-section nv-pending')
++    card.dataset.expiresAt = String(item.expiresAt)
++    const head = vaultEl('div', 'nv-pending-head')
++    head.append(vaultEl('span', 'nv-peer', item.peerId))
++    const reason = item.reason === 'not-writable' ? '目录不可写' : item.reason === 'default-unwritable' ? '无法自动创建目录' : item.reason
++    head.append(vaultEl('span', 'nv-badge', reason))
++    head.append(vaultEl('span', 'nv-countdown', remainingText(item.expiresAt)))
++    card.append(head)
++    const input = vaultEl('input', 'nv-input')
++    input.type = 'text'
++    input.value = item.suggestedRoot ?? ''
++    input.placeholder = '本机可写目录的绝对路径'
++    input.spellcheck = false
++    card.append(input)
++    const actions = vaultEl('div', 'nv-actions')
++    actions.append(vaultButton('使用此目录', () => { void approveVaultRoot(item.peerId, input.value) }))
++    actions.append(vaultButton('拒绝本次', () => { void denyVaultPending(item.id) }))
++    card.append(actions)
++    hostSection.append(card)
++  }
++  const manual = vaultEl('div', 'nv-row')
++  const peer = vaultEl('input', 'nv-input')
++  peer.placeholder = '远端设备 ID'
++  peer.spellcheck = false
++  const path = vaultEl('input', 'nv-input')
++  path.placeholder = '本机目录绝对路径'
++  path.spellcheck = false
++  manual.append(peer, path, vaultButton('绑定目录', () => { void approveVaultRoot(peer.value.trim(), path.value.trim()) }))
++  hostSection.append(manual)
++  vaultHost.append(hostSection)
++
++  const owner = vaultEl('section', 'nv-section')
++  owner.append(vaultEl('h3', undefined, '本机作为远端：托管给其他设备'))
++  owner.append(vaultEl('p', undefined, '远端本机持有钥匙；你可以随时撤销某台设备的全部托管，让它下一次打开时删除本地密文并回退完整拉取。'))
++  if ((vaultState.ownerPeers ?? []).length === 0) owner.append(vaultEl('div', 'nv-empty', '还没有设备托管本机数据。'))
++  for (const item of vaultState.ownerPeers ?? []) {
++    const row = vaultEl('div', 'nv-row')
++    row.append(vaultEl('span', 'nv-peer', item.peerId))
++    row.append(vaultEl('span', 'nv-path', `${String(item.entries)} 项 · ${String(item.kinds.join(' / '))}`))
++    const actions = vaultEl('div', 'nv-actions')
++    actions.append(vaultButton('撤销托管', () => { void revokeVaultPeer(item.peerId) }))
++    row.append(actions)
++    owner.append(row)
++  }
++  owner.append(vaultEl('h3', undefined, '本机托管到远端的策略'))
++  owner.append(vaultEl('p', undefined, '这是本机作为远端、数据被其他本机托管时的策略：钥匙多久过期、托管账本保留多久、是否需要本机确认。'))
++  const policy = vaultEl('div', 'nv-policy')
++  const releaseLabel = vaultEl('label', 'nv-field', '开柜策略')
++  const release = vaultEl('select')
++  for (const [value, label] of [['auto', '自动放行已信任设备'], ['confirm', '需要本机确认（暂未实现 UI）'], ['deny', '拒绝新开柜']] as const) {
++    const option = vaultEl('option', undefined, label)
++    option.value = value
++    if (vaultState.policy.release === value) option.selected = true
++    release.append(option)
++  }
++  releaseLabel.append(release)
++  const ttlLabel = vaultEl('div', 'nv-field')
++  ttlLabel.append(vaultEl('span', undefined, '钥匙有效期'))
++  ttlLabel.append(vaultEl('span', 'nv-badge', `${String(Math.round(vaultState.policy.keyTtlMs / 1000))} 秒 · 在“超时设置”中修改`))
++  const retentionLabel = vaultEl('label', 'nv-field', '账本保留（天）')
++  const retention = vaultEl('input')
++  retention.type = 'number'
++  retention.min = '1'
++  retention.value = String(vaultState.policy.retentionDays)
++  retentionLabel.append(retention)
++  policy.append(releaseLabel, ttlLabel, retentionLabel)
++  owner.append(policy)
++  const save = vaultButton('保存策略', () => {
++    void vaultRequest('POST', 'vault/host/policy', {
++      release: release.value,
++      retentionDays: Number(retention.value),
++    }).then(async () => { await loadVault(); setVaultStatus('策略已保存') }).catch(error => setVaultStatus(error.message, 'error'))
++  })
++  owner.append(save)
++  const clear = vaultButton('清空本机保险柜密文', () => {
++    if (!window.confirm('清空本机已保存的远端保险柜密文？远端账本不会被删除。')) return
++    void vaultRequest('POST', 'vault/clear', {}).then(async () => { await loadVault(); setVaultStatus('已清空本机密文') }).catch(error => setVaultStatus(error.message, 'error'))
++  })
++  owner.append(clear)
++  vaultHost.append(owner)
++}
++
++function tickVaultCountdown(): void {
++  if (vaultHost === null) return
++  let expired = false
++  for (const node of vaultHost.querySelectorAll<HTMLElement>('.nv-countdown')) {
++    const card = node.closest<HTMLElement>('.nv-pending')
++    const expires = Number(card?.dataset.expiresAt ?? 0)
++    if (expires > 0) {
++      node.textContent = remainingText(expires)
++      if (expires <= Date.now()) expired = true
++    }
++  }
++  if (expired) void loadVault()
++}
++
++async function openVaultDir(peerId: string): Promise<void> {
++  try {
++    await vaultRequest('POST', 'vault/host/open', { peer: peerId })
++  } catch (error) {
++    setVaultStatus(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
++async function revokeVaultPeer(peerId: string): Promise<void> {
++  if (!window.confirm(`撤销 ${peerId} 对本机全部托管项的访问？对方下一次打开会删除本地密文。`)) return
++  try {
++    await vaultRequest('POST', 'vault/revoke', { peer: peerId })
++    await loadVault()
++    setVaultStatus('已撤销该设备的托管')
++  } catch (error) {
++    setVaultStatus(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
++async function deleteVaultContent(peerId: string): Promise<void> {
++  if (!window.confirm(`删除远端设备 ${peerId} 在本机的全部保险柜密文？删除后才能更换目录；远端账本不会自动删除。`)) return
++  try {
++    await vaultRequest('POST', 'vault/host/delete', { peer: peerId })
++    await loadVault()
++    setVaultStatus('已删除该设备在本机的保险柜内容')
++  } catch (error) {
++    setVaultStatus(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
++async function approveVaultRoot(peerId: string, root: string): Promise<void> {
++  if (!peerId || !root) { setVaultStatus('需要设备 ID 和目录', 'error'); return }
++  try {
++    await vaultRequest('POST', 'vault/host/root', { peer: peerId, root })
++    await loadVault()
++    setVaultStatus('目录已绑定')
++  } catch (error) {
++    setVaultStatus(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
++async function denyVaultPending(id: string): Promise<void> {
++  try {
++    await vaultRequest('POST', 'vault/host/deny', { id })
++    await loadVault()
++    setVaultStatus('已拒绝本次申请')
++  } catch (error) {
++    setVaultStatus(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
++function promptVaultRoot(peerId: string, current: string): void {
++  const root = window.prompt(`为远端设备 ${peerId} 选择本机可写目录`, current)
++  if (root !== null && root.trim() !== '') void approveVaultRoot(peerId, root.trim())
++}
++
++function setVaultExpanded(open: boolean, focus: boolean): void {
++  if (vaultPanel === null || vaultOpenButton === null || footer === null) return
++  vaultPanel.hidden = !open
++  vaultOpenButton.setAttribute('aria-expanded', String(open))
++  if (open) {
++    if (panel !== null && panel.hidden === false) {
++      panel.hidden = true
++      openButton?.setAttribute('aria-expanded', 'false')
++    }
++    footer.dataset.expanded = 'true'
++    void loadVault()
++    if (vaultTimer === undefined) vaultTimer = setInterval(tickVaultCountdown, 1000)
++    if (focus) vaultCloseButton?.focus()
++  } else {
++    footer.dataset.expanded = panel?.hidden === false ? 'true' : 'false'
++    if (vaultTimer !== undefined) { clearInterval(vaultTimer); vaultTimer = undefined }
++    vaultOpenButton.focus()
++  }
++}
++
++vaultOpenButton?.addEventListener('click', () => { setVaultExpanded(vaultPanel?.hidden !== false, true) })
++vaultCloseButton?.addEventListener('click', () => { setVaultExpanded(false, false) })
++vaultRefreshButton?.addEventListener('click', () => { void loadVault() })
++void loadVault()
++
++openButton?.addEventListener('click', () => {
++  if (vaultPanel !== null && vaultPanel.hidden === false) setVaultExpanded(false, false)
++  setExpanded(panel?.hidden !== false, true)
++})
++closeButton?.addEventListener('click', () => { setExpanded(false, false) })
++filterInput?.addEventListener('input', applyFilter)
++saveButton?.addEventListener('click', () => { void save() })
++resetButton?.addEventListener('click', resetToDefaults)
++document.addEventListener('keydown', (event: KeyboardEvent) => {
++  if (event.key !== 'Escape') return
++  const timeoutsOpen = panel?.hidden === false
++  const vaultOpen = vaultPanel?.hidden === false
++  if (!timeoutsOpen && !vaultOpen) return
++  event.preventDefault()
++  if (timeoutsOpen) setExpanded(false, false)
++  if (vaultOpen) setVaultExpanded(false, false)
++})
++
++/* Clicking anywhere outside the footer closes the expanded panel, matching the
++ * conventional popover behavior. Clicks inside the footer (including the
++ * toggle and panel controls) stay untouched; Escape still works above. */
++document.addEventListener('pointerdown', (event: PointerEvent) => {
++  const timeoutsOpen = panel?.hidden === false
++  const vaultOpen = vaultPanel?.hidden === false
++  if (!timeoutsOpen && !vaultOpen) return
++  const target = event.target
++  if (!(target instanceof Node)) return
++  if (footer?.contains(target)) return
++  if (timeoutsOpen) setExpanded(false, false)
++  if (vaultOpen) setVaultExpanded(false, false)
++}, true)
++
++/* The chat's running indicator disappearing is the one DOM signal every
++ * conversation view shares (the stop button's localized label is a fallback).
++ * Re-state the timeout as the same minimal white line when output completes;
++ * a rAF gate keeps the observer cheap on streaming updates. */
++const root = document.querySelector<HTMLElement>('#root')
++if (root !== null) {
++  let running = false
++  let scheduled = false
++  const observe = (): void => {
++    scheduled = false
++    const nowRunning = root.querySelector('[data-chat-running]:not([data-holding]), button[aria-label="停止"], button[aria-label="Stop"]') !== null
++    if (running && !nowRunning) flashSummary()
++    running = nowRunning
++  }
++  new MutationObserver(() => {
++    if (scheduled) return
++    scheduled = true
++    requestAnimationFrame(observe)
++  }).observe(root, { childList: true, subtree: true })
++}
++
++void load()
+diff --git a/apps/web/vite.config.ts b/apps/web/vite.config.ts
+index 984f53cb20aed2ab1124ee6296014590d88670fd..48d6c14786f306b2c336f6ac67dec1e42ccd1256 100644
+--- a/apps/web/vite.config.ts
++++ b/apps/web/vite.config.ts
+@@ -12,7 +12,7 @@ const src = (rel: string): string => fileURLToPath(new URL(rel, import.meta.url)
+ const STANDALONE_ERROR = 'apps/web is not a standalone application: bare Vite cannot inject window.__DSH_BOOT__. '
+   + 'From a repository checkout, run `pnpm dsh web`; an installed package uses `dsh web`. '
+   + 'For client-plugin HMR, run `pnpm run dev:web`, which starts `dsh web` and the rebuild watchers together.'
+-const DEFAULT_CLIENT_TITLE = 'DSH Local Build'
++const DEFAULT_CLIENT_TITLE = '夜间巡航 · DeepSeek Harness'
+ 
+ /** Escape build-time text before placing it in the HTML title element. */
+ function escapeHtmlText(value: string): string {
+diff --git a/packages/bundle/web-app/package.json b/packages/bundle/web-app/package.json
+index 7ca54d9702b7bf6214b28747e8062841cde5fee9..fa3acb7ba48c656af441ede7eeae91e77ce8cd6c 100644
+--- a/packages/bundle/web-app/package.json
++++ b/packages/bundle/web-app/package.json
+@@ -175,6 +175,7 @@
+     "@deepseek-ai/dsh-terminal": "workspace:*",
+     "@deepseek-ai/dsh-terminal-bash": "workspace:*",
+     "@deepseek-ai/dsh-time-context": "workspace:*",
++    "@deepseek-ai/dsh-timeout": "workspace:*",
+     "@deepseek-ai/dsh-tool-ask-user": "workspace:*",
+     "@deepseek-ai/dsh-tool-bash": "workspace:*",
+     "@deepseek-ai/dsh-tool-bash-persistent": "workspace:*",
+diff --git a/packages/bundle/web-app/src/index.ts b/packages/bundle/web-app/src/index.ts
+index b93b559620fe9a064b6ff24e0b2ed3bf22b3f6dd..13b3d8045dd33388e5acf9e8bd25c1467d5d3419 100644
+--- a/packages/bundle/web-app/src/index.ts
++++ b/packages/bundle/web-app/src/index.ts
+@@ -26,6 +26,7 @@ import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
+ import type {} from '@deepseek-ai/cordis-plugin-loader'
+ import type {} from '@deepseek-ai/dsh-shell-env'
+ import { parsePublicUrl } from './public-url.ts'
++import { installNightTimeouts } from './night-timeouts.ts'
+ 
+ /** The Web GUI this process serves, provided by the `web-runtime` row. */
+ export interface WebApp {
+@@ -204,6 +205,10 @@ export function apply(ctx: Context, config: Config): void {
+   const appRootUrl = (): string => publicUrl ?? ctx.webServer.getOrigin()
+   ctx.provide('webApp', { getAdvertisedUrl: appRootUrl } satisfies WebApp)
+   ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
++  // One editable timeout store for the Night Cruising footer. It publishes to
++  // every capability that consults `@deepseek-ai/dsh-timeout`; model requests
++  // stay outside it by policy.
++  installNightTimeouts(ctx)
+   if (config.surfaceContext) {
+     ctx.inject(['shellEnv'], (runtimeCtx) => {
+       runtimeCtx.shellEnv.register({
+diff --git a/packages/bundle/web-app/tsconfig.json b/packages/bundle/web-app/tsconfig.json
+index 2f7f148e6020e0b9a162949edff87f4ebdb9108c..f993925023ed08a8ef3c85930e7de0df96987091 100644
+--- a/packages/bundle/web-app/tsconfig.json
++++ b/packages/bundle/web-app/tsconfig.json
+@@ -40,6 +40,9 @@
+     },
+     {
+       "path": "../../subprocess/subprocess"
++    },
++    {
++      "path": "../../util/timeout"
+     }
+   ]
+ }
+diff --git a/packages/client/locale/src/locales/en.ts b/packages/client/locale/src/locales/en.ts
+index b649bbc3dcca65bb3c9aafd76dc2f01b6b6ac2dd..2e95708c6442e7854eee0262c7fa91aaa6904d7c 100644
+--- a/packages/client/locale/src/locales/en.ts
++++ b/packages/client/locale/src/locales/en.ts
+@@ -33,7 +33,7 @@ export const en = {
+   'collapse': 'Collapse',
+   'expand': 'Expand',
+   'back': 'Back',
+-  'brand.localBuild': 'DSH Local Build',
++  'brand.localBuild': 'Night Cruising',
+   'workspace.defaultName': 'Default workspace',
+   'unknown': 'Unknown',
+   'none': 'None',
+diff --git a/packages/client/locale/src/locales/zh.ts b/packages/client/locale/src/locales/zh.ts
+index 11ff789b8aa632caa1834faa9b23f8a68d0bebc7..1e86d2aca9505f4f5a55b65d34708275afdb789c 100644
+--- a/packages/client/locale/src/locales/zh.ts
++++ b/packages/client/locale/src/locales/zh.ts
+@@ -31,7 +31,7 @@ export const zh = {
+   'collapse': '收起',
+   'expand': '展开',
+   'back': '返回',
+-  'brand.localBuild': 'DSH 本地构建',
++  'brand.localBuild': '夜间巡航',
+   'workspace.defaultName': '默认工作区',
+   'unknown': '未知',
+   'none': '无',
+diff --git a/packages/client/ui-conversation/src/client/apply.ts b/packages/client/ui-conversation/src/client/apply.ts
+index 37420f7fc2ffc77e74074f553312c3910552594f..456ef499992f0ce6df031f077b1ffd7833b23888 100644
+--- a/packages/client/ui-conversation/src/client/apply.ts
++++ b/packages/client/ui-conversation/src/client/apply.ts
+@@ -228,6 +228,21 @@ export function apply(ctx: Context, config: Config = Config({})): void {
+     activateView(sessionId, readConversationViewPreference(sessionId))
+   }
+   const conversationViews = createSnapshotStore<readonly ViewTab[]>(viewTabs())
++  // A mounted Conversation shell publishes its bound store actions here, so
++  // an extension can select a View for a Session that is already rendered.
++  const sessionViewActions = new Map<SessionId, BoundActions<typeof conversationStore>>()
++  const sessionViewSelectors = new Set<SessionId>()
++  const ensureSessionViewSelector = (sessionId: SessionId): void => {
++    if (sessionViewSelectors.has(sessionId)) return
++    sessionViewSelectors.add(sessionId)
++    uiConversation.registerViewSelector(sessionId, (view) => {
++      const actions = sessionViewActions.get(sessionId)
++      if (actions === undefined) return
++      if (!viewTabs().some(tab => tab.id === view)) return
++      activateView(sessionId, view)
++      actions.setView(view)
++    })
++  }
+   const viewPins = createViewPins()
+   const viewActions = {
+     getSnapshot: () => slots.entriesOfSlot('conversation.session.header.views.actions').length > 0,
+@@ -400,6 +415,8 @@ export function apply(ctx: Context, config: Config = Config({})): void {
+     },
+     store: conversationStore,
+     inject: (sessionId: SessionId, actions: BoundActions<typeof conversationStore>): ConversationSessionInjected => {
++      sessionViewActions.set(sessionId, actions)
++      ensureSessionViewSelector(sessionId)
+       const openView = (view: string, focus: string): void => {
+         if (!viewTabs().some(tab => tab.id === view)) return
+         activateView(sessionId, view)
+diff --git a/packages/client/ui-conversation/src/client/conversation/assembly.ts b/packages/client/ui-conversation/src/client/conversation/assembly.ts
+index 233a72e23ffcb9e4a8f985eb77083d714e057fd1..db1044d499a82a1a3dadf68e2ac744fc938ed38c 100644
+--- a/packages/client/ui-conversation/src/client/conversation/assembly.ts
++++ b/packages/client/ui-conversation/src/client/conversation/assembly.ts
+@@ -26,6 +26,7 @@ import { ConversationViewRegistry } from './view-registry.ts'
+ import { ConversationGroupRegistry } from './group-registry.ts'
+ import { ConversationInteractionRegistry } from './interaction-registry.ts'
+ import { UserTextRegistry } from './user-text-registry.ts'
++import { persistConversationViewPreference } from '../stores.ts'
+ 
+ /** Observable faces published for one Session's Conversation assembly. */
+ export interface ConversationBinding {
+@@ -213,6 +214,10 @@ export class UiConversation extends Service {
+   readonly interactions: ConversationInteractionRegistry
+   private readonly bindings = new WeakMapWithValues<SessionBinding, BindingRecord>()
+   private readonly images: HistoricalImageCache
++  /** Mounted shell View-selection actions, keyed by Session. */
++  private readonly viewSelectors = new Map<SessionId, (view: string) => void>()
++  /** Selections made before the Session shell mounted, consumed on mount. */
++  private readonly pendingViewSelections = new Map<SessionId, string>()
+ 
+   /**
+    * @param ctx - owning Client context.
+@@ -280,6 +285,44 @@ export class UiConversation extends Service {
+     return binding
+   }
+ 
++  /**
++   * Select one registered Conversation View for a Session. When the shell is
++   * mounted the selection is applied immediately; otherwise it is remembered
++   * and applied when the Session body mounts, and the persisted preference is
++   * updated so a later materialization starts on the same View.
++   * @param sessionId - Session whose View tab changes.
++   * @param view - registered `conversation.view` entry id.
++   */
++  selectView(sessionId: SessionId, view: string): void {
++    const select = this.viewSelectors.get(sessionId)
++    if (select !== undefined) {
++      select(view)
++      return
++    }
++    this.pendingViewSelections.set(sessionId, view)
++    persistConversationViewPreference(sessionId, view)
++  }
++
++  /**
++   * Register the mounted shell's View-selection action for one Session.
++   * @param sessionId - Session whose shell mounted.
++   * @param select - callback that activates and persists one View id.
++   * @returns removal of this selector.
++   */
++  registerViewSelector(sessionId: SessionId, select: (view: string) => void): () => void {
++    this.viewSelectors.set(sessionId, select)
++    const pending = this.pendingViewSelections.get(sessionId)
++    if (pending !== undefined) {
++      this.pendingViewSelections.delete(sessionId)
++      // The shell registers during render; leaving the store write until the
++      // current render completes avoids a publish inside React's render pass.
++      queueMicrotask(() => select(pending))
++    }
++    return () => {
++      if (this.viewSelectors.get(sessionId) === select) this.viewSelectors.delete(sessionId)
++    }
++  }
++
+   /**
+    * Resolve one Gateway-authorized durable image URL, cached per Session so
+    * every Conversation target shares one read and one browser URL.
+diff --git a/packages/client/ui-conversation/src/client/stores.ts b/packages/client/ui-conversation/src/client/stores.ts
+index 34e4261a264e43793a270d9aaad57dce7312cdd6..49b9a9cc6bd7be464637171e965bae1fed9fa376 100644
+--- a/packages/client/ui-conversation/src/client/stores.ts
++++ b/packages/client/ui-conversation/src/client/stores.ts
+@@ -35,6 +35,30 @@ export function createConversationStore(): EngineStoreHandle<ConversationStoreSt
+   })
+ }
+ 
++/** Write one Session's preferred View without a mounted Conversation shell. */
++export function persistConversationViewPreference(sessionId: SessionId, view: string): void {
++  if (typeof localStorage === 'undefined') return
++  try {
++    const key = `${CONVERSATION_STORE_KEY}.${sessionId}`
++    const raw = localStorage.getItem(key)
++    const parsed: unknown = raw === null ? {} : JSON.parse(raw)
++    // The engine replaces the whole state on rehydration instead of merging
++    // over init(); keep the full Conversation shape so a preference written
++    // before the store materializes never drops the draft or view request.
++    const state: Record<string, unknown> = {
++      draft: '',
++      view: null,
++      viewRequest: null,
++      ...(typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}),
++    }
++    state.view = view
++    localStorage.setItem(key, JSON.stringify(state))
++  } catch (_error: unknown) {
++    // Unavailable storage only disables the preference; the live shell path
++    // remains authoritative.
++  }
++}
++
+ /**
+  * Read a Session's draft before its input source is published to React.
+  * @param sessionId - Session-scoped persistence suffix.
+diff --git a/packages/client/ui-theme/src/client/settings-store.ts b/packages/client/ui-theme/src/client/settings-store.ts
+index 93cef0efdcb1e03959b2f0d378152d841b107d67..36b5ed9172d265ecc131e03716b5a5d0ff2c0db4 100644
+--- a/packages/client/ui-theme/src/client/settings-store.ts
++++ b/packages/client/ui-theme/src/client/settings-store.ts
+@@ -4,7 +4,7 @@
+  * row components read via props.useStore.
+  */
+ import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
+-import { DEFAULT_FONT_SIZES, type FontFamilies, type FontSizes, type ThemePreference } from '../theme-settings.ts'
++import { DEFAULT_PREFERENCE, DEFAULT_FONT_SIZES, type FontFamilies, type FontSizes, type ThemePreference } from '../theme-settings.ts'
+ 
+ /** Store state mirrored from the theme snapshot. */
+ export interface AppearanceRowState {
+@@ -25,7 +25,7 @@ type AppearanceRowActions = {
+  */
+ export function createAppearanceRowStore(): EngineStoreHandle<AppearanceRowState, AppearanceRowActions> {
+   return defineStore({
+-    init: (): AppearanceRowState => ({ preference: 'system', revision: -1 }),
++    init: (): AppearanceRowState => ({ preference: DEFAULT_PREFERENCE, revision: -1 }),
+     actions: {
+       sync: (d, preference: ThemePreference, revision: number) => {
+         if (revision <= d.revision) return
+diff --git a/packages/client/ui-theme/src/theme-settings.ts b/packages/client/ui-theme/src/theme-settings.ts
+index af7d1d22b61f1d18286b8a17b12185eb4d910ef9..8bdd63cf89a4d1f149f15fe5eb289ac450d33f74 100644
+--- a/packages/client/ui-theme/src/theme-settings.ts
++++ b/packages/client/ui-theme/src/theme-settings.ts
+@@ -18,7 +18,7 @@ export const FONT_SIZE_FIELD = 'fontSize'
+ export type ThemePreference = typeof THEME_PREFERENCES[number]
+ 
+ /** Default preference when the user-settings document has no override. */
+-export const DEFAULT_PREFERENCE: ThemePreference = 'system'
++export const DEFAULT_PREFERENCE: ThemePreference = 'dark'
+ 
+ /** Smallest accepted content font size (px). */
+ export const FONT_SIZE_MIN = 10

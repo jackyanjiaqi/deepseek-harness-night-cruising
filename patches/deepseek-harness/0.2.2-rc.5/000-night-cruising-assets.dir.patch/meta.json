@@ -1,0 +1,12 @@
+{
+  "type": "dir-patch",
+  "added": [
+    "apps/desktop/renderer/assets/night-ride.jpg",
+    "apps/desktop/resources/icon-linux-512.png",
+    "apps/web/src/night-cruising.wav",
+    "apps/web/src/night-ride.jpg"
+  ],
+  "deleted": [],
+  "modes": {},
+  "before": {}
+}

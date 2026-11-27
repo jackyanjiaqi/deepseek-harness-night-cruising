@@ -44,6 +44,7 @@
     "library": "deepseek-harness",
     "version": "0.2.2-rc.5",
     "versions": {
+      "0.2.2-rc.5-deprecated": "9c2670d3bce5275e0d1610272958121af87787bb",
       "0.2.2-rc.5": "9c2670d3bce5275e0d1610272958121af87787bb"
     }
   },

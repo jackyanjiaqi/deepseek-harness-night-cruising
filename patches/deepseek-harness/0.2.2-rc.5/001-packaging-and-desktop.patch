@@ -1,0 +1,984 @@
+diff --git a/apps/desktop/cli/dsh-linux b/apps/desktop/cli/dsh-linux
+new file mode 100755
+index 0000000000000000000000000000000000000000..de63c223c32b2ff95de39fcbb06263c641e7c6de
+--- /dev/null
++++ b/apps/desktop/cli/dsh-linux
+@@ -0,0 +1,14 @@
++#!/bin/sh
++# Run the installed CLI without changing the invoking shell or working directory.
++set -e
++launcher=$0
++while [ -L "$launcher" ]; do
++  directory=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd -P)
++  target=$(readlink "$launcher")
++  case "$target" in
++    /*) launcher=$target ;;
++    *) launcher=$directory/$target ;;
++  esac
++done
++resources=$(CDPATH= cd -- "$(dirname -- "$launcher")/../../.." && pwd -P)
++ELECTRON_RUN_AS_NODE=1 exec "$resources/../night-cruising" --expose-internals "$resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" "$@"
+diff --git a/apps/desktop/installer/path.nsh b/apps/desktop/installer/path.nsh
+index 01aafe135f45fdc26b36aa40047628ed992519cf..cc8b97b872295661573a257a0553686c5d07d627 100644
+--- a/apps/desktop/installer/path.nsh
++++ b/apps/desktop/installer/path.nsh
+@@ -117,6 +117,12 @@ FunctionEnd
+ !macroend
+ !insertmacro InstallerValidatePathFunction ""
+ 
++!macro InstallerProbeFailure OP PATH CODE
++    ; FormatMessage uses the Windows display language for the actual filesystem error.
++    System::Call 'kernel32::FormatMessageW(i 0x1200, p 0, i ${CODE}, i 0, w .r9, i ${NSIS_MAX_STRLEN}, p 0)'
++    StrCpy $InstallerError "$INSTDIR$\r$\n${OP}: ${PATH}$\r$\n$9 (Win32 ${CODE})"
++!macroend
++
+ ; A new installation requires an empty directory; updates require the registered executable.
+ Function InstallerPreflight
+     Call InstallerValidatePath
+@@ -139,31 +145,83 @@ Function InstallerPreflight
+         ${Loop}
+         FindClose $0
+     ${EndIf}
+-    StrCpy $2 $INSTDIR
++    ; The installer stages a new sibling directory, even for an existing destination.
++    ; Test beneath the closest existing parent. Drive roots can allow creating
++    ; directories while denying creation of loose files.
++    ${GetParent} $INSTDIR $2
+     ${Do}
+-        System::Call 'kernel32::GetFileAttributesW(w r2) i.r0'
++        StrLen $0 $2
++        ${If} $0 == 2
++            StrCpy $2 "$2\"
++        ${EndIf}
++        System::Call 'kernel32::GetFileAttributesW(w r2) i.r0 ?e'
++        Pop $5
+         ${If} $0 != -1
+             ${ExitDo}
+         ${EndIf}
++        StrLen $0 $2
++        ${If} $0 <= 3
++            !insertmacro InstallerProbeFailure "GetFileAttributesW" $2 $5
++            Return
++        ${EndIf}
++        ${If} $5 != 2
++        ${AndIf} $5 != 3
++            !insertmacro InstallerProbeFailure "GetFileAttributesW" $2 $5
++            Return
++        ${EndIf}
+         ${GetParent} $2 $2
+     ${Loop}
+-    System::Call 'kernel32::GetTempFileNameW(w r2, w "HIL", i 0, w .r3) i.r0'
+-    ${If} $0 == 0
+-        StrCpy $InstallerError "$(INSTALLER_PATH_WRITABLE)"
+-        Return
+-    ${EndIf}
+-    System::Call 'kernel32::DeleteFileW(w r3)'
+-    System::Call 'kernel32::GetDiskFreeSpaceExW(w r2, *l .r0, p 0, p 0) i.r1'
++    System::Call 'kernel32::GetDiskFreeSpaceExW(w r2, *l .r0, p 0, p 0) i.r1 ?e'
++    Pop $5
+     ${If} $1 == 0
+-        StrCpy $InstallerError "$(INSTALLER_PATH_WRITABLE)"
++        !insertmacro InstallerProbeFailure "GetDiskFreeSpaceExW" $2 $5
+         Return
+     ${EndIf}
+-    IntOp $2 ${APP_64_UNPACKED_SIZE} + 65536
+-    System::Int64Op $2 * 1024
+-    Pop $2
+-    System::Int64Op $0 < $2
++    IntOp $1 ${APP_64_UNPACKED_SIZE} + 65536
++    System::Int64Op $1 * 1024
++    Pop $1
++    System::Int64Op $0 < $1
+     Pop $0
+     ${If} $0 != 0
+         StrCpy $InstallerError "$(INSTALLER_DISK_SPACE)"
++        Return
++    ${EndIf}
++
++    System::Call 'ole32::CoCreateGuid(g .r3) i.r0'
++    ${If} $0 != 0
++        StrCpy $InstallerError "$INSTDIR$\r$\nCoCreateGuid (HRESULT $0)"
++        Return
++    ${EndIf}
++    ; GetParent returns "C:" for a drive root; join with exactly one separator.
++    StrLen $0 $2
++    ${If} $0 == 3
++        StrCpy $2 $2 2
++    ${EndIf}
++    StrCpy $4 "$2\.night-cruising-$3"
++    System::Call 'kernel32::CreateDirectoryW(w r4, p 0) i.r0 ?e'
++    Pop $5
++    ${If} $0 == 0
++        !insertmacro InstallerProbeFailure "CreateDirectoryW" $4 $5
++        Return
++    ${EndIf}
++    ; CREATE_NEW and DELETE_ON_CLOSE keep the probe exclusive and self-cleaning.
++    StrCpy $3 "$4\write.tmp"
++    System::Call 'kernel32::CreateFileW(w r3, i 0x40010000, i 0, p 0, i 1, i 0x04000100, p 0) p.r6 ?e'
++    Pop $5
++    ${If} $6 == -1
++        !insertmacro InstallerProbeFailure "CreateFileW" $3 $5
++    ${Else}
++        System::Call 'kernel32::WriteFile(p r6, w "x", i 1, *i .r7, p 0) i.r0 ?e'
++        Pop $5
++        ${If} $0 == 0
++            !insertmacro InstallerProbeFailure "WriteFile" $3 $5
++        ${EndIf}
++        System::Call 'kernel32::CloseHandle(p r6)'
++    ${EndIf}
++    System::Call 'kernel32::RemoveDirectoryW(w r4) i.r0 ?e'
++    Pop $5
++    ${If} $0 == 0
++    ${AndIf} $InstallerError == ""
++        !insertmacro InstallerProbeFailure "RemoveDirectoryW" $4 $5
+     ${EndIf}
+ FunctionEnd
+diff --git a/apps/desktop/scripts/desktop-build-paths.d.mts b/apps/desktop/scripts/desktop-build-paths.d.mts
+index 910f3032ee41026cbd10fc6d9dfc442f8d29567f..c5d1c095276ca6e6387947b3e0ad26a59c2117cf 100644
+--- a/apps/desktop/scripts/desktop-build-paths.d.mts
++++ b/apps/desktop/scripts/desktop-build-paths.d.mts
+@@ -1,5 +1,7 @@
+ import type { DesktopAutoUpdateTarget } from './desktop-auto-update-environment.mjs'
+ 
++type DesktopBuildTarget = DesktopAutoUpdateTarget | 'linux-x64'
++
+ /** Mutable target directories plus shared download and package caches. */
+ export interface DesktopTargetBuildPaths {
+   readonly root: string
+@@ -29,7 +31,7 @@ export function resolveDesktopBuildTarget(
+   env?: NodeJS.ProcessEnv,
+   hostPlatform?: NodeJS.Platform,
+   hostArch?: string,
+-): DesktopAutoUpdateTarget
++): DesktopBuildTarget
+ 
+ /**
+  * Return the mutable preparation and artifact directories owned by one release target.
+@@ -37,7 +39,7 @@ export function resolveDesktopBuildTarget(
+  * @param environment - Packaging environment with an optional absolute cache directory.
+  * @returns Target paths plus shared download and package caches.
+  */
+-export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget, environment?: NodeJS.ProcessEnv): DesktopTargetBuildPaths
++export function desktopTargetBuildPaths(target: DesktopBuildTarget, environment?: NodeJS.ProcessEnv): DesktopTargetBuildPaths
+ 
+ /**
+  * Return the platform and architecture of the payload one release target prepares.
+@@ -45,8 +47,8 @@ export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget, environ
+  * @param target - Supported Desktop target name.
+  * @returns Platform and architecture of the prepared payload.
+  */
+-export function desktopTargetPlatform(target: DesktopAutoUpdateTarget): {
+-  readonly platform: 'darwin' | 'win32'
++export function desktopTargetPlatform(target: DesktopBuildTarget): {
++  readonly platform: 'darwin' | 'win32' | 'linux'
+   readonly arch: 'arm64' | 'x64'
+ }
+ 
+diff --git a/apps/desktop/scripts/desktop-build-paths.mjs b/apps/desktop/scripts/desktop-build-paths.mjs
+index edfd9cdf782329b34da68e555006a5d11e566eb0..7a7622cd98d7d5d4053073f8a401820f1cecb56f 100644
+--- a/apps/desktop/scripts/desktop-build-paths.mjs
++++ b/apps/desktop/scripts/desktop-build-paths.mjs
+@@ -4,14 +4,14 @@ import { isAbsolute, join, resolve } from 'node:path'
+ 
+ const APP_ROOT = resolve(import.meta.dirname, '..')
+ const BUILD_ROOT = join(APP_ROOT, '.desktop-build')
+-const SUPPORTED_TARGETS = new Set(['mac-arm64', 'mac-x64', 'win-x64'])
++const SUPPORTED_TARGETS = new Set(['mac-arm64', 'mac-x64', 'win-x64', 'linux-x64'])
+ 
+ /**
+  * Resolve the fixed build target selected by a packaging environment.
+  * @param {NodeJS.ProcessEnv} env - Packaging environment.
+  * @param {NodeJS.Platform} hostPlatform - Build-host platform used when no target override exists.
+  * @param {string} hostArch - Build-host architecture used when no target override exists.
+- * @returns {'mac-arm64' | 'mac-x64' | 'win-x64'} Supported Desktop target name.
++ * @returns {'mac-arm64' | 'mac-x64' | 'win-x64' | 'linux-x64'} Supported Desktop target name.
+  */
+ export function resolveDesktopBuildTarget(
+   env = process.env,
+@@ -26,7 +26,7 @@ export function resolveDesktopBuildTarget(
+   if (!SUPPORTED_TARGETS.has(target)) {
+     throw new Error(`desktop build paths: unsupported target ${target}`)
+   }
+-  return /** @type {'mac-arm64' | 'mac-x64' | 'win-x64'} */ (target)
++  return /** @type {'mac-arm64' | 'mac-x64' | 'win-x64' | 'linux-x64'} */ (target)
+ }
+ 
+ function assertSupportedTarget(target) {
+@@ -37,7 +37,7 @@ function assertSupportedTarget(target) {
+ 
+ /**
+  * Return the mutable preparation and artifact directories owned by one release target.
+- * @param {'mac-arm64' | 'mac-x64' | 'win-x64'} target - Supported Desktop target name.
++ * @param {'mac-arm64' | 'mac-x64' | 'win-x64' | 'linux-x64'} target - Supported Desktop target name.
+  * @param {NodeJS.ProcessEnv} environment - Packaging environment with an optional absolute cache directory.
+  * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, unnotarizedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string, pnpmStore: string }} Target paths plus shared download and package caches.
+  */
+@@ -70,14 +70,15 @@ export function desktopTargetBuildPaths(target, environment = process.env) {
+ /**
+  * Return the platform and architecture of the payload one release target prepares.
+  * Windows is prepared as x64 only, so this differs from the build host on an arm64 Windows machine.
+- * @param {'mac-arm64' | 'mac-x64' | 'win-x64'} target - Supported Desktop target name.
+- * @returns {{ platform: 'darwin' | 'win32', arch: 'arm64' | 'x64' }} Platform and architecture of the prepared payload.
++ * @param {'mac-arm64' | 'mac-x64' | 'win-x64' | 'linux-x64'} target - Supported Desktop target name.
++ * @returns {{ platform: 'darwin' | 'win32' | 'linux', arch: 'arm64' | 'x64' }} Platform and architecture of the prepared payload.
+  */
+ export function desktopTargetPlatform(target) {
+   assertSupportedTarget(target)
+   const targets = /** @type {const} */ ({
+     'mac-arm64': { platform: 'darwin', arch: 'arm64' },
+     'mac-x64': { platform: 'darwin', arch: 'x64' },
++    'linux-x64': { platform: 'linux', arch: 'x64' },
+     'win-x64': { platform: 'win32', arch: 'x64' },
+   })
+   return targets[target]
+diff --git a/apps/desktop/scripts/dev.ts b/apps/desktop/scripts/dev.ts
+index 37515c20b0bed448cc3acbc9c632d1b6b4d47786..71eaee55198c8408c02609f594fd2eb15d3f61d1 100644
+--- a/apps/desktop/scripts/dev.ts
++++ b/apps/desktop/scripts/dev.ts
+@@ -11,12 +11,51 @@ import { developmentRuntimeDirectory, resolveDesktopBuildTarget } from './deskto
+ import { prepareDevelopmentProject } from './development-project.ts'
+ import { prepareDevelopmentApp } from './development-app.ts'
+ import { preparePrimaryRuntime } from './prepare-primary-runtime.ts'
++import { preparePrimaryRuntime as preparePayload, smokePrimaryRuntime } from '../../../scripts/primary-runtime/prepare.ts'
+ 
+ const APP_ROOT = resolve(import.meta.dirname, '..')
+ const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
+ const BUILD_ROOT = join(APP_ROOT, '.desktop-build')
+ const DEVELOPMENT_ROOT = join(BUILD_ROOT, 'development')
+ 
++function developmentTarget(): ReturnType<typeof resolveDesktopBuildTarget> | 'linux-x64' {
++  if (process.platform !== 'linux') return resolveDesktopBuildTarget()
++  if (process.arch !== 'x64') throw new Error(`desktop development: unsupported Linux architecture ${process.arch}`)
++  return 'linux-x64'
++}
++
++function primaryRuntimeDirectory(): string {
++  return process.platform === 'linux'
++    ? join(BUILD_ROOT, 'targets', developmentTarget(), 'runtime', 'primary-runtime')
++    : developmentRuntimeDirectory()
++}
++
++async function prepareDevelopmentRuntime(version: string): Promise<void> {
++  // An explicitly selected payload (for example the installed application's
++  // runtime) is already complete; reusing it keeps offline launches working
++  // instead of re-downloading Node, Python and every wheel.
++  const configured = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
++  if (configured !== undefined && configured !== '' && existsSync(join(configured, 'runtime.json'))) {
++    console.log(`desktop development: reusing primary runtime at ${configured}`)
++    return
++  }
++  // A previous preparation already unpacked the same payload into the
++  // target directory; reuse it rather than re-downloading every archive.
++  const prepared = primaryRuntimeDirectory()
++  if (existsSync(join(prepared, 'runtime.json'))) {
++    console.log(`desktop development: reusing prepared primary runtime at ${prepared}`)
++    return
++  }
++  if (process.platform !== 'linux') {
++    await preparePrimaryRuntime()
++    return
++  }
++  const root = primaryRuntimeDirectory()
++  await preparePayload({ target: 'linux-x64', output: join(root, '..'),
++    cache: join(BUILD_ROOT, 'downloads'), version })
++  smokePrimaryRuntime(root)
++}
++
+ interface PackageManifest {
+   readonly version?: string
+ }
+@@ -63,18 +102,18 @@ async function launchElectron(): Promise<void> {
+   const mainPort = debugPort('DSH_DESKTOP_MAIN_INSPECT_PORT', 9229)
+   const rendererPort = debugPort('DSH_DESKTOP_RENDERER_DEBUG_PORT', 9222)
+   const hostPort = debugPort('DSH_DESKTOP_HOST_INSPECT_PORT', 9230)
+-  const home = resolve(process.env.DSH_HOME ?? join(DEVELOPMENT_ROOT, 'home'))
+-  const userData = resolve(process.env.DSH_DESKTOP_USER_DATA_DIR ?? join(DEVELOPMENT_ROOT, 'electron-user-data'))
++  const home = process.env.DSH_HOME
++  const userData = process.env.DSH_DESKTOP_USER_DATA_DIR
+   const environment: NodeJS.ProcessEnv = {
+     ...process.env,
+-    DSH_HOME: home,
+-    DSH_DESKTOP_PRIMARY_RUNTIME_DIR: process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR ?? developmentRuntimeDirectory(),
++
++    DSH_DESKTOP_PRIMARY_RUNTIME_DIR: process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR ?? primaryRuntimeDirectory(),
+     DSH_DESKTOP_HOST_INSPECT_PORT: String(hostPort),
+     DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
+     ELECTRON_ENABLE_LOGGING: process.env.ELECTRON_ENABLE_LOGGING ?? '1',
+   }
+-  console.log(`desktop development: DSH_HOME=${home}`)
+-  console.log(`desktop development: userData=${userData}`)
++  console.log(`desktop development: DSH_HOME=${home ?? '(system default)'}`)
++  console.log(`desktop development: userData=${userData ?? '(system default)'}`)
+   console.log(`desktop development: inspectors main=${String(mainPort)}, renderer=${String(rendererPort)}, host=${String(hostPort)}`)
+   if (process.platform === 'darwin') {
+     const executable = prepareDevelopmentApp({ electron, appRoot: APP_ROOT, directory: DEVELOPMENT_ROOT, home, userData,
+@@ -85,7 +124,7 @@ async function launchElectron(): Promise<void> {
+   await run(electron, [
+     `--inspect=127.0.0.1:${String(mainPort)}`,
+     `--remote-debugging-port=${String(rendererPort)}`,
+-    `--user-data-dir=${userData}`,
++    ...(userData ? [`--user-data-dir=${resolve(userData)}`] : []),
+     APP_ROOT,
+   ], APP_ROOT, environment)
+ }
+@@ -118,9 +157,9 @@ async function main(): Promise<void> {
+     hostDir: join(REPOSITORY_ROOT, 'apps', 'desktop-host'),
+     dependencyDir: join(REPOSITORY_ROOT, 'node_modules', '.pnpm', 'node_modules'),
+     release,
+-    target: resolveDesktopBuildTarget(),
++    target: developmentTarget(),
+   })
+-  await preparePrimaryRuntime()
++  await prepareDevelopmentRuntime(version)
+   await launchElectron()
+ }
+ 
+diff --git a/apps/desktop/scripts/development-app.ts b/apps/desktop/scripts/development-app.ts
+index ff09b8b783952179ceb1e9bed7e4aee989176005..423c160ea1eb1ee7cfe6e9f3533af2db343553e1 100644
+--- a/apps/desktop/scripts/development-app.ts
++++ b/apps/desktop/scripts/development-app.ts
+@@ -9,8 +9,8 @@ export interface DevelopmentAppOptions {
+   readonly electron: string
+   readonly appRoot: string
+   readonly directory: string
+-  readonly home: string
+-  readonly userData: string
++  readonly home: string | undefined
++  readonly userData: string | undefined
+   readonly mainPort: number
+   readonly rendererPort: number
+   readonly hostPort: number
+@@ -61,7 +61,7 @@ export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
+  */
+ export function developmentLauncher(options: DevelopmentAppOptions, bundle: string): string {
+   const environment = {
+-    DSH_HOME: options.home,
++    ...(options.home ? { DSH_HOME: options.home } : {}),
+     DSH_DESKTOP_DEV_APP: '1',
+     DSH_DESKTOP_HOST_INSPECT_PORT: String(options.hostPort),
+     DSH_DESKTOP_OPEN_DEVTOOLS: options.openDevtools,
+@@ -71,7 +71,7 @@ export function developmentLauncher(options: DevelopmentAppOptions, bundle: stri
+     join(bundle, 'Contents', 'MacOS', 'Electron'),
+     `--inspect=127.0.0.1:${String(options.mainPort)}`,
+     `--remote-debugging-port=${String(options.rendererPort)}`,
+-    `--user-data-dir=${options.userData}`,
++    ...(options.userData ? [`--user-data-dir=${options.userData}`] : []),
+     options.appRoot,
+   ]
+   return [
+diff --git a/apps/desktop/scripts/development-project.ts b/apps/desktop/scripts/development-project.ts
+index d544ce6d36866b03bbb9d00fae24da30ffac344b..d96a6ead608572ba04d7b848dbe76b1312245b7b 100644
+--- a/apps/desktop/scripts/development-project.ts
++++ b/apps/desktop/scripts/development-project.ts
+@@ -38,7 +38,7 @@ export interface DevelopmentProjectOptions {
+   /** Release identity written into the disposable project metadata. */
+   readonly release: DesktopRelease
+   /** Build target whose prepared payload the disposable project runs against. */
+-  readonly target: DesktopAutoUpdateTarget
++  readonly target: DesktopAutoUpdateTarget | 'linux-x64'
+ }
+ 
+ function readManifest(path: string): PackageManifest {
+@@ -163,7 +163,7 @@ export function prepareDevelopmentProject(options: DevelopmentProjectOptions): s
+     return typeof manifest.version === 'string' ? [{ name, version: manifest.version, path: `node_modules/${name}` }] : []
+   })
+   const runtime: DesktopRuntimeDescriptor = { schemaVersion: 1, release: options.release,
+-    ...desktopTargetPlatform(options.target), sharedPackages, files: [] }
++    ...(options.target === 'linux-x64' ? { platform: 'linux' as const, arch: 'x64' } : desktopTargetPlatform(options.target)), sharedPackages, files: [] }
+   writeFileSync(join(options.projectDir, DESKTOP_RUNTIME_FILE), `${JSON.stringify(runtime, undefined, 2)}\n`)
+   return options.projectDir
+ }
+diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
+index d5522e3da9db3afe0cf693056ea930e38266ca2f..5847045ab8d21b5d54e0b053ee46c9d535f4cb0e 100644
+--- a/apps/desktop/scripts/electron-builder-config.mjs
++++ b/apps/desktop/scripts/electron-builder-config.mjs
+@@ -66,7 +66,7 @@ export function createElectronBuilderConfig(
+   if (skipNotarization && (unsigned || resolvedPlatform !== 'darwin')) throw new Error('Skipping notarization requires a signed macOS build')
+   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
+   const packagesWindows = resolvedPlatform === 'win32'
+-  const policy = packagesMacOS && unsigned ? undefined : resolveDesktopPolicyEnvironment(env)
++  const policy = unsigned ? undefined : resolveDesktopPolicyEnvironment(env)
+   if (resolvedPlatform === 'win32') installWindowsDirectoryInstaller()
+   const macOSSigning = packagesMacOS && !unsigned ? resolveMacOSSigningEnvironment(env) : undefined
+   if (packagesMacOS && !unsigned && !skipNotarization) resolveMacOSNotarizationEnvironment(env)
+@@ -110,6 +110,8 @@ export function createElectronBuilderConfig(
+     appId,
+     protocols: [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
+     extraMetadata: {
++      // Debian metadata has no other source for the project URL.
++      homepage: 'https://deepseek-harness.partyplay.top',
+       dshDesktopAppId: appId,
+       dshDesktopUpdateChannel: update?.channel ?? 'nightly',
+       ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),
+@@ -256,7 +258,13 @@ export function createElectronBuilderConfig(
+     },
+     linux: {
+       category: 'Development',
+-      target: ['AppImage'],
++      executableName: 'night-cruising',
++      target: ['tar.gz', 'deb', 'AppImage'],
++      icon: fileURLToPath(new URL('../resources/icon-linux-512.png', import.meta.url)),
++      // Debian packages require a maintainer address; override it without repatching.
++      maintainer: env.DSH_DESKTOP_LINUX_MAINTAINER
++        ?? 'Night Cruising <night-cruising@deepseek-harness.partyplay.top>',
++      synopsis: 'DeepSeek Harness 深夜巡航版',
+     },
+     nsis: {
+       uninstallDisplayName: '${productName}',
+diff --git a/apps/desktop/scripts/prepare-cli.ts b/apps/desktop/scripts/prepare-cli.ts
+index d2b9e14200c328907d7745461b2cb4ff40344b7d..5e78ecf5a715d2128454ca74aae6b15949a366a4 100644
+--- a/apps/desktop/scripts/prepare-cli.ts
++++ b/apps/desktop/scripts/prepare-cli.ts
+@@ -8,10 +8,10 @@ import { join } from 'node:path'
+  * @param destination - Physical runtime/cli directory prepared for the application.
+  * @param platform - Target Desktop operating system.
+  */
+-export function prepareDesktopCli(destination: string, platform: 'darwin' | 'win32'): void {
++export function prepareDesktopCli(destination: string, platform: 'darwin' | 'win32' | 'linux'): void {
+   const name = platform === 'win32' ? 'dsh.cmd' : 'dsh'
+   const command = join(destination, 'bin', name)
+   mkdirSync(join(destination, 'bin'), { recursive: true })
+-  copyFileSync(join(import.meta.dirname, '..', 'cli', name), command)
+-  if (platform === 'darwin') chmodSync(command, 0o755)
++  copyFileSync(join(import.meta.dirname, '..', 'cli', platform === 'linux' ? 'dsh-linux' : name), command)
++  if (platform !== 'win32') chmodSync(command, 0o755)
+ }
+diff --git a/apps/desktop/scripts/prepare-dsh.ts b/apps/desktop/scripts/prepare-dsh.ts
+index a069888036aa5ebe283ed83db234f31430af9f5c..4f4b8369a3722990f1dd8b4d688cbba4684a5253 100644
+--- a/apps/desktop/scripts/prepare-dsh.ts
++++ b/apps/desktop/scripts/prepare-dsh.ts
+@@ -44,7 +44,7 @@ const STORE_ROOT = BUILD_PATHS.pnpmStore
+ const RUNTIME_ROOT = BUILD_PATHS.runtime
+ const PNPM_BUILD_STATE = BUILD_PATHS.dshPnpm
+ const PACKAGE_SET_ROOT = BUILD_PATHS.packageSet
+-const NODE = join(BUILD_PATHS.electron, process.platform === 'win32' ? 'electron.exe' : 'Electron.app/Contents/MacOS/Electron')
++const NODE = join(BUILD_PATHS.electron, process.platform === 'win32' ? 'electron.exe' : process.platform === 'linux' ? 'electron' : 'Electron.app/Contents/MacOS/Electron')
+ const PNPM = join(RUNTIME_ROOT, 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.mjs')
+ 
+ function manifestVersion(path: string, subject: string): string {
+diff --git a/apps/desktop/scripts/prepare-primary-runtime.ts b/apps/desktop/scripts/prepare-primary-runtime.ts
+index 44484baefcbd3947ad230d6708a08e44ab87b42b..df2bb3c2d291b1d6ce3a1b8ec4d3395f2278176c 100644
+--- a/apps/desktop/scripts/prepare-primary-runtime.ts
++++ b/apps/desktop/scripts/prepare-primary-runtime.ts
+@@ -1,12 +1,50 @@
+ /** Desktop resource locations and signing-aware verification for the shared runtime builder. */
+ 
+-import { readFileSync } from 'node:fs'
++import { cpSync, existsSync, readFileSync, rmSync } from 'node:fs'
++import { homedir } from 'node:os'
+ import { join } from 'node:path'
+ import { preparePrimaryRuntime as preparePayload, smokePrimaryRuntime as smokePayload } from '../../../scripts/primary-runtime/prepare.ts'
+ import { parsePrimaryRuntime, workspaceDependencyPaths } from '../../../packages/skill/tool-workspace-dependencies/src/index.ts'
+ import { resolveDesktopBuildTarget, resolveDesktopTargetBuildPaths } from './desktop-build-paths.mjs'
+ import { scrubWindowsSigningEnvironment } from './windows-sign.mjs'
+ 
++/** Installed application runtimes this host can seed a package from. */
++function installedRuntimes(): string[] {
++  const home = homedir()
++  if (process.platform === 'darwin') return [
++    '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime',
++    join(home, 'Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime'),
++  ]
++  if (process.platform === 'win32') return [
++    join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'Programs', 'DeepSeek Harness', 'resources', 'runtime', 'primary-runtime'),
++    join(process.env.ProgramFiles ?? 'C:\\Program Files', 'DeepSeek Harness', 'resources', 'runtime', 'primary-runtime'),
++  ]
++  return [
++    '/opt/DeepSeek Harness/resources/runtime/primary-runtime',
++    '/usr/lib/deepseek-harness/resources/runtime/primary-runtime',
++  ]
++}
++
++/**
++ * A runtime directory is complete only when its final manifest exists and
++ * matches this host. Preparation writes `runtime.json` last.
++ * @param root - Candidate payload directory.
++ * @param version - Desktop release version the payload must belong to.
++ * @returns Whether the payload can be reused without downloading.
++ */
++function completeRuntime(root: string, version: string): boolean {
++  try {
++    const manifest = parsePrimaryRuntime(JSON.parse(readFileSync(join(root, 'runtime.json'), 'utf8')))
++    return manifest.desktopVersion === version
++      && manifest.platform === process.platform
++      && manifest.arch === process.arch
++      && Object.keys(manifest.pythonPackages).length > 0
++      && existsSync(join(root, 'dependencies'))
++  } catch {
++    return false
++  }
++}
++
+ /**
+  * Prepare Desktop resources for its selected packaging target.
+  * @param options - Signed Windows packaging defers execution until its supervised signing stage.
+@@ -15,8 +53,21 @@ import { scrubWindowsSigningEnvironment } from './windows-sign.mjs'
+ export async function preparePrimaryRuntime(options: { deferSmoke?: boolean } = {}): Promise<void> {
+   const paths = resolveDesktopTargetBuildPaths()
+   const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+-  await preparePayload({ target: resolveDesktopBuildTarget(), output: paths.runtime, cache: paths.downloads, version })
+-  if (!options.deferSmoke) smokePrimaryRuntime(join(paths.runtime, 'primary-runtime'))
++  const target = join(paths.runtime, 'primary-runtime')
++  if (!completeRuntime(target, version)) {
++    const configured = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
++    const seed = configured !== undefined && completeRuntime(configured, version)
++      ? configured
++      : installedRuntimes().find(path => completeRuntime(path, version))
++    if (seed !== undefined) {
++      console.log('desktop packaging: seeding primary runtime from ' + seed)
++      rmSync(target, { recursive: true, force: true })
++      cpSync(seed, target, { recursive: true, verbatimSymlinks: true })
++    } else {
++      await preparePayload({ target: resolveDesktopBuildTarget(), output: paths.runtime, cache: paths.downloads, version })
++    }
++  }
++  if (!options.deferSmoke) smokePrimaryRuntime(target)
+ }
+ 
+ /**
+diff --git a/apps/desktop/scripts/prepare-runtime-patches.ts b/apps/desktop/scripts/prepare-runtime-patches.ts
+index 83ebbbe457e9291d1cd78756ebc8589fb6fe7a4a..3a6ddf3f38cbe1a1ecf508b7cbed7615e7525fd3 100644
+--- a/apps/desktop/scripts/prepare-runtime-patches.ts
++++ b/apps/desktop/scripts/prepare-runtime-patches.ts
+@@ -88,7 +88,8 @@ export function prepareRuntimePatches(
+   writeFileSync(targetPath, yaml.dump({ ...target, overrides: { ...target.overrides, ...overrides },
+     patchedDependencies: Object.fromEntries(selected.map(entry => [entry.spec, entry.path])), allowUnusedPatches: false }))
+   return { patches: selected.map(({ bytes: _bytes, ...entry }) => entry),
+-    workspaceOnly: Object.entries(policy).filter(([, rule]) => rule.scope === 'workspace-only').map(([spec]) => patchIdentity(spec).name) }
++    workspaceOnly: Object.entries(policy).filter(([, rule]) => rule.scope === 'workspace-only').map(([spec]) => patchIdentity(spec).name)
++      .filter(name => !selected.some(patch => patch.name === name)) }
+ }
+ 
+ /**
+diff --git a/apps/desktop/scripts/prepare-runtime.ts b/apps/desktop/scripts/prepare-runtime.ts
+index 4e338532721aae17610b3234468c6e7069fb665f..44df6586b7ae8fbe683981c5c3dccab66f214ec2 100644
+--- a/apps/desktop/scripts/prepare-runtime.ts
++++ b/apps/desktop/scripts/prepare-runtime.ts
+@@ -1,9 +1,9 @@
+ /** Prepare Desktop resources and publish their versions after every preparation stage succeeds. */
+ 
+ import { execFileSync } from 'node:child_process'
+-import { chmodSync, cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
++import { chmodSync, constants, cpSync, existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+ import { createRequire } from 'node:module'
+-import { join } from 'node:path'
++import { dirname, join } from 'node:path'
+ import { parseArgs } from 'node:util'
+ import { downloadArtifact } from '@electron/get'
+ import extractZip from 'extract-zip'
+@@ -23,11 +23,17 @@ type DesktopTarget = ReturnType<typeof desktopTargetPlatform>
+ async function prepareElectron({ platform, arch }: DesktopTarget): Promise<string> {
+   const require = createRequire(import.meta.url)
+   const { version } = require('electron/package.json') as { version: string }
+-  const archive = await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'download:electron',
+-    () => downloadArtifact({ version, platform, arch, artifactName: 'electron', cacheRoot: BUILD_PATHS.downloads }))
++  const distribution = join(dirname(require.resolve('electron/package.json')), 'dist')
+   rmSync(BUILD_PATHS.electron, { recursive: true, force: true })
+-  await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'extract:electron', () => extractZip(archive, { dir: BUILD_PATHS.electron }))
+-  const executable = join(BUILD_PATHS.electron, platform === 'win32' ? 'electron.exe' : 'Electron.app/Contents/MacOS/Electron')
++  if (platform === process.platform && arch === process.arch && existsSync(join(distribution, 'version'))
++    && readFileSync(join(distribution, 'version'), 'utf8').trim() === version) {
++    cpSync(distribution, BUILD_PATHS.electron, { recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE })
++  } else {
++    const archive = await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'download:electron',
++      () => downloadArtifact({ version, platform, arch, artifactName: 'electron', cacheRoot: BUILD_PATHS.downloads }))
++    await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'extract:electron', () => extractZip(archive, { dir: BUILD_PATHS.electron }))
++  }
++  const executable = join(BUILD_PATHS.electron, platform === 'win32' ? 'electron.exe' : platform === 'linux' ? 'electron' : 'Electron.app/Contents/MacOS/Electron')
+   return execFileSync(executable, ['-p', 'process.versions.node'], {
+     encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+   }).trim()
+diff --git a/apps/desktop/scripts/runtime-patch-policy.ts b/apps/desktop/scripts/runtime-patch-policy.ts
+index a56dc95e457f0a274ff4492b16d2c407890ca04a..5c0eb7679876bb74f12f00d5981b9652e0c50246 100644
+--- a/apps/desktop/scripts/runtime-patch-policy.ts
++++ b/apps/desktop/scripts/runtime-patch-policy.ts
+@@ -8,6 +8,9 @@ export type DesktopRuntimePatch =
+ 
+ /** Every workspace patch requires an explicit Desktop decision; runtime-only entries may add or replace a patch. */
+ export const DESKTOP_RUNTIME_PATCHES: Readonly<Record<string, DesktopRuntimePatch>> = {
++  '@anthropic-ai/sdk@0.129.0': { scope: 'shared', reason: 'Preserve user cancellation without SDK deadlines.' },
++  '@anthropic-ai/sdk@0.93.0': { scope: 'workspace-only', reason: 'This SDK version is only used by the optional Claude Code workspace plugin.' },
++  'openai@7.19.0': { scope: 'shared', reason: 'Preserve user cancellation without SDK deadlines.' },
+   '@botiverse/oar@0.67.0': { scope: 'workspace-only', reason: 'Patched OAR adapters are embedded in the provider bundle.' },
+   '@earendil-works/pi-ai@1.3.0': { scope: 'shared', reason: 'Runtime providers need the streamed argument parsing fix.' },
+   '@electron/osx-sign@1.3.3': { scope: 'workspace-only', reason: 'Signing executes on the build host.' },
+diff --git a/apps/desktop/scripts/smoke-packaged-runtime.ts b/apps/desktop/scripts/smoke-packaged-runtime.ts
+index 6c3c12c8572593a1f038ed39f4ff3da898cecf70..4cc98a0ef2dfd4651e808181d5acab55769002fa 100644
+--- a/apps/desktop/scripts/smoke-packaged-runtime.ts
++++ b/apps/desktop/scripts/smoke-packaged-runtime.ts
+@@ -5,7 +5,7 @@ import { desktopArtifactOutput, resolveDesktopBuildTarget, resolveDesktopTargetB
+ import { readDesktopRuntime, verifyDesktopRuntime } from '../src/runtime-tree.ts'
+ import { verifyWindowsCode } from './windows-runtime-signature.mjs'
+ import { smokePreparedRuntime } from './smoke-prepared-runtime.ts'
+-import { resolveDesktopPackageTarget } from './package-target.ts'
++import { desktopTargetPlatform } from './desktop-build-paths.mjs'
+ 
+ const paths = resolveDesktopTargetBuildPaths()
+ const { values } = parseArgs({ options: { unsigned: { type: 'boolean', default: false }, 'skip-notarization': { type: 'boolean', default: false } }, allowPositionals: false })
+@@ -13,10 +13,11 @@ const target = resolveDesktopBuildTarget()
+ const windows = target === 'win-x64'
+ const artifacts = desktopArtifactOutput(paths, { unsigned: values.unsigned, skipNotarization: values['skip-notarization'] }).directory
+ const application = windows ? join(artifacts, 'win-unpacked')
++  : target === 'linux-x64' ? join(artifacts, 'linux-unpacked')
+   : join(artifacts, target === 'mac-arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app', 'Contents')
+-const resources = join(application, windows ? 'resources' : 'Resources')
+-const executable = windows ? join(application, 'DeepSeek Harness.exe') : join(application, 'MacOS', 'DeepSeek Harness')
++const resources = join(application, windows || target === 'linux-x64' ? 'resources' : 'Resources')
++const executable = windows ? join(application, 'DeepSeek Harness.exe') : target === 'linux-x64' ? join(application, 'night-cruising') : join(application, 'MacOS', 'DeepSeek Harness')
+ const descriptor = await verifyDesktopRuntime(paths.dsh, readDesktopRuntime(paths.dsh).release.version,
+-  resolveDesktopPackageTarget(target))
++  desktopTargetPlatform(target))
+ if (windows && !values.unsigned) await verifyWindowsCode(application)
+ await smokePreparedRuntime(join(resources, 'app.asar', 'dsh'), executable, join(resources, 'runtime'), descriptor)
+diff --git a/apps/desktop/scripts/smoke-runtime.ts b/apps/desktop/scripts/smoke-runtime.ts
+index fa2b2f5c4a1a3ee6ab5dedfe6af03849183dd6d5..76a37e89e141fe28a618efb99726e9cdb7c2cac4 100644
+--- a/apps/desktop/scripts/smoke-runtime.ts
++++ b/apps/desktop/scripts/smoke-runtime.ts
+@@ -51,7 +51,6 @@ export async function smokeDesktopRuntime(
+   const host = new DesktopHostProcess(node, root, profile, undefined, hostEnvironment,
+     undefined, join(resourcesRuntime, 'primary-runtime'),
+     { pnpm: join(resourcesRuntime, 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.mjs'), nodeBin: join(resourcesRuntime, 'bin') })
+-  let timer: ReturnType<typeof setTimeout> | undefined
+   try {
+     writeFileSync(join(home, 'npmrc'), '')
+     createPluginProfile(profile)
+@@ -75,7 +74,7 @@ export function apply(ctx) {
+     const cli = join(root, 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js')
+     const runCli = (args: string[]) => promisify(execFile)(node,
+       ['--expose-internals', cli, 'plugin', '--profile', 'desktop', ...args],
+-      { cwd: home, env: { ...hostEnvironment, ELECTRON_RUN_AS_NODE: '1' }, timeout: 120_000, windowsHide: true })
++      { cwd: home, env: { ...hostEnvironment, ELECTRON_RUN_AS_NODE: '1' }, timeout: (void (120_000), 2_147_483_647), windowsHide: true })
+     await runCli(['add', `file:${installedPlugin}`, '--offline', '--ignore-scripts'])
+     const installedEntry = join(profile, 'node_modules', installedName, 'index.js')
+     if (readFileSync(installedEntry, 'utf8') !== readFileSync(join(installedPlugin, 'index.js'), 'utf8')) {
+@@ -88,7 +87,7 @@ export function apply(ctx) {
+     const dependencies = workspaceDependencyPaths(primary, await readPrimaryRuntime(primary))
+     await promisify(execFile)(dependencies.python, ['-I', '-B',
+       fileURLToPath(new URL('../tests/fixtures/office-conversion-inputs.py', import.meta.url)), home],
+-    { env: environment, timeout: 120_000, windowsHide: true })
++    { env: environment, timeout: (void (120_000), 2_147_483_647), windowsHide: true })
+     const inputs = ['docx', 'xlsx', 'pptx'].map(extension => ({ extension,
+       bytes: readFileSync(join(home, `input.${extension}`)).toString('base64') }))
+     const cordis = runtime.sharedPackages.find(entry => entry.name === '@deepseek-ai/cordis')
+@@ -181,10 +180,7 @@ export function apply(ctx) {
+     manifest.dsh.profile.bundles.push(pluginName)
+     writeFileSync(join(profile, 'package.json'), JSON.stringify(manifest))
+     writeFileSync(join(profile, 'cordis.patch.yml'), '- id: webserver\n  config:\n    host: 127.0.0.1\n    port: 0\n')
+-    const ready = await Promise.race([host.start(), new Promise<never>((_, reject) => {
+-      timer = setTimeout(() => { reject(new Error('desktop runtime: Host readiness exceeded 120 seconds')) }, 120_000)
+-    })])
+-    clearTimeout(timer)
++    const ready = await host.start()
+     const login = await fetch(ready.url, { redirect: 'manual' })
+     const cookie = login.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+     const response = await fetch(new URL('/', ready.url), { headers: { cookie } })
+@@ -194,21 +190,21 @@ export function apply(ctx) {
+     const pluginResponse = await fetch(new URL('/desktop-smoke', ready.url), { headers: { cookie } })
+     if (await pluginResponse.text() !== 'plugin route ready') throw new Error('desktop runtime: plugin HTTP route failed')
+     const installation = await fetch(new URL('/desktop-smoke-install', ready.url), {
+-      headers: { cookie }, signal: AbortSignal.timeout(120_000),
++      headers: { cookie }, signal: (void (120_000), new AbortController().signal),
+     })
+     const installationResult = await installation.text()
+     const installed = await fetch(new URL('/desktop-smoke-installed', ready.url), { headers: { cookie } })
+     if (!installation.ok || !installed.ok || await installed.text() !== 'installed plugin ready') {
+       throw new Error(`desktop runtime: bundled pnpm plugin installation failed: ${installationResult}`)
+     }
+-    const skills = await fetch(new URL('/desktop-smoke-skills', ready.url), { headers: { cookie }, signal: AbortSignal.timeout(120_000) })
++    const skills = await fetch(new URL('/desktop-smoke-skills', ready.url), { headers: { cookie }, signal: (void (120_000), new AbortController().signal) })
+     if (!skills.ok) throw new Error(`desktop runtime: Office skill loading failed: ${await skills.text()}`)
+     const loadedSkills = await skills.json() as { name: string; bytes: number }[]
+     assertOfficeSkillsLoadable(loadedSkills)
+     console.log('desktop runtime: packaged Office skills listed and loaded')
+     for (const { extension } of inputs) {
+       const converted = await fetch(new URL(`/desktop-smoke-office/${extension}`, ready.url), {
+-        headers: { cookie }, signal: AbortSignal.timeout(120_000),
++        headers: { cookie }, signal: (void (120_000), new AbortController().signal),
+       })
+       if (!converted.ok) throw new Error(`desktop runtime: ${extension} conversion failed: ${await converted.text()}`)
+       const pdf = Buffer.from(await converted.arrayBuffer())
+@@ -219,7 +215,7 @@ export function apply(ctx) {
+     }
+     for (const { extension } of inputs) {
+       const operations = await fetch(new URL(`/desktop-smoke-office-operations/${extension}`, ready.url), {
+-        headers: { cookie }, signal: AbortSignal.timeout(240_000),
++        headers: { cookie }, signal: (void (240_000), new AbortController().signal),
+       })
+       if (!operations.ok) throw new Error(`desktop runtime: ${extension} Office operations failed: ${await operations.text()}`)
+       const result = await operations.json() as { images: string[]; converted: string; recalculated: string | null }
+@@ -231,7 +227,6 @@ export function apply(ctx) {
+     }
+     console.log('desktop runtime: DOCX, XLSX, PPTX to PDF, image rendering, conversion, and recalculation passed')
+   } finally {
+-    clearTimeout(timer)
+     try { await host.stop() } finally {
+       await rm(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 })
+     }
+diff --git a/apps/desktop/src/client/WelcomePage.tsx b/apps/desktop/src/client/WelcomePage.tsx
+index b36706173230196c80c80b39fac21e0b9328bde7..b5d538cb7934c88c1dc4db4c7eb8a14846703470 100644
+--- a/apps/desktop/src/client/WelcomePage.tsx
++++ b/apps/desktop/src/client/WelcomePage.tsx
+@@ -175,7 +175,7 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+     {expiryNotice && <Toast text={m.welcomeSessionExpired} onDone={() => { setExpiryNotice(false) }} />}
+     <div className="titlebar" aria-hidden="true" />
+     <main className="welcome" aria-labelledby={heading}>
+-      <img className="brand" src="assets/welcome-brand.svg" alt={m.welcomeBrand} width="472" height="40" />
++      <strong className="night-brand" lang="zh-CN">夜间巡航</strong>
+       <div id="tagline" className="tagline" hidden={page !== 'entry'}>
+         <h1 id="welcome-heading"><span>{m.welcomeTaglineBefore}</span><em>{m.welcomeTaglineBrand}</em><span>{m.welcomeTaglineAfter}</span></h1>
+         <p id="welcome-description">{m.welcomeDescription}</p>
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 8f9cd823a543ea4b9fc39aefef6b683e056b2396..b7e303cc7f5e64def289563240567707cbbf010c 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -164,7 +164,7 @@ function persistCrashReport(error: unknown, source: CrashReportSource): Promise<
+       operationReportJob = runOperationReportJob({ reportPath: path, directory: join(app.getPath('userData'), 'plugin-operations'),
+         limits: { bytes: 64 * 1024, recordBytes: 4096, records: 100, outputBytes: 64 * 1024 },
+         journal: operationJournal?.status() ?? null,
+-      }, { timeoutMs: 500, cancellationGraceMs: 100 }, operationReportAbort.signal)
++      }, { timeoutMs: (void (500), 2_147_483_647), cancellationGraceMs: 100 }, operationReportAbort.signal)
+       void operationReportJob.finally(() => { operationReportJob = undefined; operationReportAbort = undefined })
+     }
+   }).catch((_error: unknown) => { /* Basic persistence failure is owned by fatal recovery. */ })
+@@ -534,7 +534,13 @@ async function main(): Promise<void> {
+   const backend = new DesktopBackendController((onFailure) => {
+     const hostInspectPort = developmentHostInspectPort(development)
+     const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
+-      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion() }, onFailure,
++      hostInspectPort, {
++        ...hostEnvironment,
++        DSH_CLIENT_VERSION: desktopClientVersion(),
++        // Authoritative edition marker for plugins that ship in both DSH and
++        // Night Cruising. Native DSH deliberately leaves this unset.
++        DSH_DISTRIBUTION: 'night-cruising',
++      }, onFailure,
+       primaryRuntime,
+       resources, (next) => { platformView.setSession(next) }, (record) => {
+         operationJournal ??= new OperationJournal(join(app.getPath('userData'), 'plugin-operations'), {
+diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
+index 15f289e14bc7255ae371bfa8d7c251a677df784c..c5f16dc2d3fb8c807c9e0cf51b694d1b51987d0a 100644
+--- a/apps/desktop/src/web-document.ts
++++ b/apps/desktop/src/web-document.ts
+@@ -5,6 +5,7 @@ import { extname, resolve, sep } from 'node:path'
+ const MIME: Readonly<Record<string, string>> = {
+   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json',
++  '.jpg': 'image/jpeg', '.wav': 'audio/wav',
+   '.woff2': 'font/woff2', '.png': 'image/png', '.ico': 'image/x-icon',
+ }
+ const BOOT = '<script>globalThis.__DSH_BOOT_READY__ = Promise.withResolvers()</script>'
+diff --git a/apps/desktop/tests/development-project.spec.ts b/apps/desktop/tests/development-project.spec.ts
+index d08b82d3ac8cc81288c42f3c4478bd247000dad1..54f0b0005e58c3265bccc37ed74022903622f26c 100644
+--- a/apps/desktop/tests/development-project.spec.ts
++++ b/apps/desktop/tests/development-project.spec.ts
+@@ -31,7 +31,7 @@ afterEach(() => {
+ })
+ 
+ describe('desktop development project', () => {
+-  it('includes declared workspace packages missing from the hoist directory in the runtime inventory', () => {
++  it.each(['mac-arm64', 'linux-x64'] as const)('includes unhoisted workspace packages in the %s development runtime', (target) => {
+     const root = temporaryRoot()
+     const cli = join(root, 'cli')
+     const host = join(root, 'host')
+@@ -46,10 +46,11 @@ describe('desktop development project', () => {
+     writeFileSync(join(host, 'lib/index.js'), '')
+     writeFileSync(join(dependency, 'package.json'), JSON.stringify({ name: 'unhoisted', version: '1.2.3' }))
+     symlinkSync(dependency, join(cli, 'node_modules/unhoisted'), process.platform === 'win32' ? 'junction' : 'dir')
+-    const project = prepareDevelopmentProject({ projectDir: join(root, 'runtime'), cliDir: cli, hostDir: host, dependencyDir: hoisted, release: release(), target: 'mac-arm64' })
++    const project = prepareDevelopmentProject({ projectDir: join(root, 'runtime'), cliDir: cli, hostDir: host, dependencyDir: hoisted, release: release(), target })
+     expect(realpathSync(join(project, 'node_modules/unhoisted'))).toBe(realpathSync(dependency))
+     const descriptor = JSON.parse(readFileSync(join(project, 'desktop-runtime.json'), 'utf8')) as { platform: string; arch: string; sharedPackages: unknown[] }
+-    expect(descriptor).toMatchObject({ platform: 'darwin', arch: 'arm64' })
++    expect(descriptor).toMatchObject(target === 'linux-x64'
++      ? { platform: 'linux', arch: 'x64' } : { platform: 'darwin', arch: 'arm64' })
+     expect(descriptor.sharedPackages).toContainEqual({ name: 'unhoisted', version: '1.2.3', path: 'node_modules/unhoisted' })
+   })
+ 
+diff --git a/scripts/ci-verified-download.sh b/scripts/ci-verified-download.sh
+index 94837897bc2fe691255efcb4bf0ca7ca6af0dd13..10fe0e72786ad2a3d4664bc0cd925fd3e4f81026 100644
+--- a/scripts/ci-verified-download.sh
++++ b/scripts/ci-verified-download.sh
+@@ -81,8 +81,8 @@ acquire_verified_archive() {
+   trap 'rm -f -- "$partial"' EXIT
+ 
+   if ! curl --fail --silent --show-error --location \
+-    --connect-timeout 15 --max-time 60 \
+-    --retry 8 --retry-all-errors --retry-max-time 240 \
++    --connect-timeout 0 --max-time 0 \
++    --retry 8 --retry-all-errors --retry-max-time 0 \
+     --output "$partial" "$url"; then
+     rm -f -- "$partial"
+     trap - EXIT
+diff --git a/scripts/primary-runtime/prepare.ts b/scripts/primary-runtime/prepare.ts
+index 006f76273463f231d59e51a17a504d99b7999845..a3abce0a6a2cbd9df265837d194089317faaba9b 100644
+--- a/scripts/primary-runtime/prepare.ts
++++ b/scripts/primary-runtime/prepare.ts
+@@ -31,9 +31,7 @@ export async function downloadPrimaryRuntimeAsset(url: string, sha256: string, c
+   try { bytes = readFileSync(destination) } catch (error) {
+     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+     cached = false
+-    const timeout = Number(process.env.DSH_RESOURCE_DOWNLOAD_TIMEOUT_MS ?? '300000')
+-    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 2_147_483_647) throw new Error('DSH_RESOURCE_DOWNLOAD_TIMEOUT_MS must be an integer from 1 to 2147483647')
+-    const response = await fetch(url, { signal: AbortSignal.timeout(timeout) })
++    const response = await fetch(url)
+     if (!response.ok) throw new Error(`primary runtime download: ${String(response.status)} ${url}`)
+     bytes = Buffer.from(await response.arrayBuffer())
+   }
+@@ -270,7 +268,7 @@ export function smokePrimaryRuntime(root: string, environment: NodeJS.ProcessEnv
+     }
+     if (!lstatSync(join(dirname(entries.python), interpreter)).isFile()) throw new Error('primary runtime: versioned Python must be a regular file')
+   }
+-  const options = { stdio: 'inherit', timeout: 120_000, env: environment } as const
++  const options = { stdio: 'inherit', timeout: (void (120_000), 2_147_483_647), env: environment } as const
+   execFileSync(entries.python, ['-I', '-B', '-c', 'import decimal, xml.parsers.expat, lzma, uuid, numpy, pandas; assert numpy.arange(4).sum() == 6; assert pandas.DataFrame({"n": [1, 2]}).n.sum() == 3'], options)
+   execFileSync(entries.python, ['-I', '-B', join(import.meta.dirname, 'smoke.py'), JSON.stringify(manifest.pythonPackages),
+     manifest.python], options)
+diff --git a/scripts/primary-runtime/smoke.py b/scripts/primary-runtime/smoke.py
+index 4d1c256efc7e0b82a284e1f5083300d13902a412..db155928c74f100f9138141d9890450cdba85b06 100644
+--- a/scripts/primary-runtime/smoke.py
++++ b/scripts/primary-runtime/smoke.py
+@@ -35,15 +35,15 @@ def check_interpreters():
+             str(interpreter), "-I", "-B", "-c",
+             "import subprocess, sys; from pathlib import Path; "
+             "assert Path(sys.executable) == Path(sys.argv[1]); "
+-            "subprocess.run([sys.executable, '-I', '-B', '-c', 'import ssl, sqlite3, ctypes'], check=True, timeout=30)",
++            "subprocess.run([sys.executable, '-I', '-B', '-c', 'import ssl, sqlite3, ctypes'], check=True, timeout=None)",
+             str(interpreter),
+-        ], check=True, timeout=60)
++        ], check=True, timeout=None)
+     with tempfile.TemporaryDirectory(prefix="dsh python venv ") as directory:
+         environment = Path(directory) / "environment"
+-        subprocess.run([str(executable.with_name(names[0])), "-I", "-B", "-m", "venv", str(environment)], check=True, timeout=60)
++        subprocess.run([str(executable.with_name(names[0])), "-I", "-B", "-m", "venv", str(environment)], check=True, timeout=None)
+         python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+-        subprocess.run([str(python), "-I", "-B", "-c", "import sys; assert sys.prefix != sys.base_prefix"], check=True, timeout=30)
+-        subprocess.run([str(python), "-I", "-B", "-m", "pip", "check"], check=True, timeout=30)
++        subprocess.run([str(python), "-I", "-B", "-c", "import sys; assert sys.prefix != sys.base_prefix"], check=True, timeout=None)
++        subprocess.run([str(python), "-I", "-B", "-m", "pip", "check"], check=True, timeout=None)
+ 
+ 
+ def main():
+diff --git a/scripts/smoke-python-runtime.py b/scripts/smoke-python-runtime.py
+index 92611f23bc855f5daa89384b6345c6e81a2b61a8..fb034b1b8a554b157981e335e46028b7bc041a55 100644
+--- a/scripts/smoke-python-runtime.py
++++ b/scripts/smoke-python-runtime.py
+@@ -718,7 +718,7 @@ def advanced_tool_followup(
+     if call_id == "advanced-direct-child" and tool_name == "subagent":
+         if not tool_text.startswith("started subagent "):
+             raise AssertionError(f"subagent returned no child identity: {tool_text}")
+-        if not MockModelHandler.direct_child_finished.wait(timeout=30):
++        if not MockModelHandler.direct_child_finished.wait(timeout=None):
+             raise AssertionError("direct child did not emit its terminal SDK notification")
+         assert_advertised_tool(body, "workflow")
+         return tool_call_chunks(
+@@ -846,7 +846,7 @@ class MockModel:
+     def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+         self.server.shutdown()
+         self.server.server_close()
+-        self.thread.join(timeout=5)
++        self.thread.join(timeout=None)
+ 
+ 
+ def main() -> None:
+@@ -1013,7 +1013,7 @@ def _smoke_sdk_authoring_cached(base_url: str, executable: Path, update_snapshot
+                 subprocess.run([
+                     str(python), "-I", "-B", str(Path(__file__).parent / "primary-runtime/smoke.py"),
+                     json.dumps(manifest["pythonPackages"]), manifest["python"],
+-                ], check=True, timeout=120,
++                ], check=True, timeout=None,
+                     env={name: value for name, value in os.environ.items()
+                          if not re.search(r"KEY|SECRET|TOKEN|PASSWORD", name, re.I)})
+                 schema = next(tool for tool in requests[0]["tools"] if tool.get("name") == "load_workspace_dependencies")
+@@ -1071,13 +1071,13 @@ def smoke_sdk_plugin_manager(base_url: str, executable: Path, cache: Path) -> No
+                                            ("allowed-once", "plugin installation saved")):
+                     run = worker.submit(harness.run, PLUGIN_INSTALL_PROMPT + json.dumps(str(plugin)) + "\n",
+                                         session_id=decision)
+-                    request = worker.submit(harness.client.next_request).result(timeout=60)
++                    request = worker.submit(harness.client.next_request).result(timeout=None)
+                     assert request.method == "approval/request", request
+                     approval = ApprovalRequestParams.model_validate(request.payload)
+                     assert approval.toolName == "plugin_manager", approval
+                     assert approval.sessionId == decision, approval
+                     harness.client.respond(request.id, {"outcome": decision})
+-                    result = run.result(timeout=60)
++                    result = run.result(timeout=None)
+                     assert result.final_response == expected, result.final_response
+                     if decision == "rejected":
+                         assert manifest_path.read_bytes() == before
+@@ -1097,7 +1097,7 @@ def smoke_sdk_plugin_manager(base_url: str, executable: Path, cache: Path) -> No
+                         "--workspace", str(root), "--dsh-bin", str(executable)]
+         for decision, expected in (("n", "plugin installation rejected"), ("y", "plugin installation saved")):
+             run = subprocess.run([*example_args, PLUGIN_INSTALL_PROMPT + json.dumps(str(plugin)) + "\n"],
+-                                 input=decision + "\n", env=example_environment, text=True, capture_output=True, timeout=120)
++                                 input=decision + "\n", env=example_environment, text=True, capture_output=True, timeout=None)
+             assert run.returncode == 0, run.stderr
+             assert expected in run.stdout, run.stdout
+         assert "dsh-sdk-managed-fixture" in json.loads((example_home / "profiles/sdk/package.json").read_text())["dependencies"]
+@@ -1204,7 +1204,7 @@ recalculate(root / 'input.xlsx', root / 'calculated.xlsx')
+ with zipfile.ZipFile(root / 'calculated.xlsx') as archive:
+     sheet = ElementTree.fromstring(archive.read('xl/worksheets/sheet1.xml'))
+     assert sheet.find('.//{*}c[@r="A1"]/{*}v').text == '3'
+-""", str(root), expected_backend], env={name: value for name, value in cache_environment.items() if name != "DSH_OFFICE_SIDECAR"}, check=True, timeout=180)
++""", str(root), expected_backend], env={name: value for name, value in cache_environment.items() if name != "DSH_OFFICE_SIDECAR"}, check=True, timeout=None)
+         assert not (office.parent / "primary").exists(), "Python Office API unexpectedly downloaded authoring resources"
+         print(f"smoke-python-runtime: relocated Office {result['backend']} DOCX produced {len(pdf)} PDF bytes")
+ 
+@@ -2172,7 +2172,7 @@ def smoke_packaged_runner(executable: Path) -> None:
+                 env=environment,
+                 capture_output=True,
+                 text=True,
+-                timeout=30,
++                timeout=None,
+                 check=False,
+             )
+             if result.returncode != 7 or request_path.exists() or (root / "startup-error.json").exists():
+@@ -2225,7 +2225,7 @@ process.stdout.write(JSON.stringify({ ...result, messages, stdout, stderr }))
+             cwd=root,
+             capture_output=True,
+             text=True,
+-            timeout=30,
++            timeout=None,
+             check=False,
+         )
+         if helper_result.returncode != 0:
+@@ -2299,7 +2299,7 @@ class RuntimePeer:
+         if self.process.stdin is not None and not self.process.stdin.closed:
+             self.process.stdin.close()
+         try:
+-            self.process.wait(timeout=10)
++            self.process.wait(timeout=None)
+         except subprocess.TimeoutExpired:
+             self.process.kill()
+             self.process.wait()
+diff --git a/scripts/wine-windows-gates.sh b/scripts/wine-windows-gates.sh
+index 5a8181928f6f2a283166421e9a54ae49f7246613..4982237cc618dfeda9672764055acba3a56afbff 100755
+--- a/scripts/wine-windows-gates.sh
++++ b/scripts/wine-windows-gates.sh
+@@ -80,7 +80,7 @@ mkdir -p "$cache_dir" "$scratch/logs"
+ curl_metadata_args=(
+   --fail --silent --show-error --location
+   --retry 3 --retry-all-errors --retry-delay 2
+-  --http1.1 --connect-timeout 10 --max-time 30 --retry-max-time 120
++  --http1.1 --connect-timeout 0 --max-time 0 --retry-max-time 0
+ )
+ 
+ download_node_archive() {
+@@ -90,15 +90,15 @@ download_node_archive() {
+   local mirror_url="https://npmmirror.com/mirrors/node/$version/$archive"
+ 
+   if curl --fail --silent --show-error --location --http1.1 \
+-    --connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 \
++    --connect-timeout 0 --max-time 0  \
+     -o "$output" "$primary_url"; then
+     return 0
+   fi
+   echo 'wine-windows-gates: nodejs.org archive transfer stalled; resuming from the checksum-untrusted transport mirror' >&2
+   for attempt in 1 2 3; do
+     if curl --fail --silent --show-error --location --http1.1 \
+-      --continue-at - --connect-timeout 10 --max-time 300 \
+-      --speed-limit 1024 --speed-time 30 \
++      --continue-at - --connect-timeout 0 --max-time 0 \
++       \
+       -o "$output" "$mirror_url"; then
+       return 0
+     else

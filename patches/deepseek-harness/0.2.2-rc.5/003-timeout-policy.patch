@@ -1,0 +1,3140 @@
+diff --git a/package.json b/package.json
+index d5c9d2c44985d4b5eb7cf76ee533c57a4e90cd7b..e9764f58f9afb0529d1a341f9cc5434a4ed25cb7 100644
+--- a/package.json
++++ b/package.json
+@@ -221,7 +221,8 @@
+     "verify-official-bundle-catalog": "tsx scripts/gen-official-bundle-catalog.ts --check",
+     "gen-provider-data": "tsx packages/llm/llm-pi-ai/scripts/gen-provider-data.ts",
+     "verify-provider-data": "tsx packages/llm/llm-pi-ai/scripts/gen-provider-data.ts --check",
+-    "verify-product-use": "tsx scripts/verify-product-use.ts"
++    "verify-product-use": "tsx scripts/verify-product-use.ts",
++    "check:timeouts": "node scripts/check-timeouts.mjs"
+   },
+   "devDependencies": {
+     "@deepseek-ai/dsh-hooks-claude-code": "workspace:*",
+diff --git a/packages/api/session-controller/src/state/controller.ts b/packages/api/session-controller/src/state/controller.ts
+index 60b97776d979d3a528e72da02764512666555277..30d5345856c575655510041b28e4d535ac58bb80 100644
+--- a/packages/api/session-controller/src/state/controller.ts
++++ b/packages/api/session-controller/src/state/controller.ts
+@@ -5,7 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
+ import type {} from '@deepseek-ai/dsh-api-gateway'
+ import type { UserMessage } from '@deepseek-ai/dsh-llm'
+ import type { SessionId } from '@deepseek-ai/dsh-session'
+-import { deadline, MAX_TIMER_DELAY_MS, timeoutOf } from '@deepseek-ai/dsh-timeout'
++import { deadline, MAX_TIMER_DELAY_MS, resolveTimeout, timeoutOf } from '@deepseek-ai/dsh-timeout'
+ import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
+ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
+ import type { HistoryController } from '../history/controller.ts'
+@@ -15,7 +15,6 @@ import type { SessionPendingInput, SessionQueuedItem, SessionState, SessionState
+ import { StateListener } from './listener.ts'
+ import type { VersionedSessionState } from './listener.ts'
+ 
+-const DEFAULT_WAIT_TIMEOUT_MS = 30_000
+ 
+ /** Reads and waits without activating or cancelling Session execution. */
+ export class StateController {
+@@ -54,7 +53,8 @@ export class StateController {
+    * @returns the stopping reason and last complete state; no state before timeout is an error.
+    */
+   async wait(request: SessionWaitRequest, signal: AbortSignal): Promise<SessionWaitValue> {
+-    const timeoutMs = request.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS
++    // One resolver: the registry owns the default and caps an explicit request.
++    const timeoutMs = resolveTimeout('session/wait-timeout', request.timeoutMs).ms
+     const afterSeq = request.afterSeq ?? -1
+     const maxMessages = request.maxMessages ?? DEFAULT_MAX_MESSAGES
+     if (!Number.isSafeInteger(afterSeq) || afterSeq < -1 || Object.is(afterSeq, -0)) {
+diff --git a/packages/bundle/web-app/src/night-timeouts.ts b/packages/bundle/web-app/src/night-timeouts.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7e5667d2ce155ac0490c704faa501401ff8ca13b
+--- /dev/null
++++ b/packages/bundle/web-app/src/night-timeouts.ts
+@@ -0,0 +1,384 @@
++/**
++ * Night Cruising timeout settings: the browser footer's one editable store for
++ * every operation timeout the host exposes. The store persists to
++ * `$DSH_HOME/night-cruising/timeouts.json`, publishes values to
++ * `@deepseek-ai/dsh-timeout` for capability code lookups, and serves the
++ * catalog plus current values over an authenticated same-origin route.
++ *
++ * Model request timeouts are intentionally absent: the desktop policy keeps
++ * model requests uncancellable except by the caller. Adding a plugin timeout
++ * means adding one catalog entry and mapping its capability code in
++ * `@deepseek-ai/dsh-timeout`; the footer renders any number of entries.
++ *
++ * @module @deepseek-ai/dsh-web-app/night-timeouts
++ */
++
++import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
++import { homedir } from 'node:os'
++import { dirname, join } from 'node:path'
++import type { IncomingMessage, ServerResponse } from 'node:http'
++import type { Context } from '@deepseek-ai/cordis'
++import { configureTimeouts, TIMEOUT_RULES, validateTimeoutSetting } from '@deepseek-ai/dsh-timeout'
++
++/** Exact same-origin route the footer reads and writes. */
++export const NIGHT_TIMEOUT_ROUTE = '/night-cruising/timeouts'
++
++/** Largest accepted request body; the catalog is a few kilobytes at most. */
++const MAX_BODY_BYTES = 64 * 1024
++
++/** Milliseconds in one day; every editable value stays a whole millisecond. */
++const DAY_MS = 86_400_000
++
++/** One editable timeout row. */
++export interface TimeoutEntry {
++  /** Settings key consumed by `timeoutSetting()` and the code map. */
++  key: string
++  /** Chinese footer label. */
++  label: string
++  /** Optional one-line explanation. */
++  hint?: string
++  /** Default milliseconds; the footer offers "恢复默认". */
++  defaultMs: number
++  /** Lowest accepted value. */
++  minMs: number
++  /** Highest accepted value, at or below Node's timer ceiling. */
++  maxMs: number
++  /** Display/input unit; absent means milliseconds. */
++  unit?: 'ms' | 'count'
++  /** `0` is a legal value here: it disables the local timer (no limit). */
++  allowOff?: boolean
++  /** `true` renders the row read-only (policy-owned values). */
++  locked?: boolean
++}
++
++/** One visual section of the footer panel. */
++export interface TimeoutGroup {
++  /** Stable group id. */
++  id: string
++  /** Chinese section heading. */
++  label: string
++  /** Optional section explanation. */
++  hint?: string
++  /** Rows in display order. */
++  entries: readonly TimeoutEntry[]
++}
++
++/**
++ * Catalog shown in the footer. Only capability codes that actually consult the
++ * store are listed; a future plugin adds its row here and its code mapping in
++ * `@deepseek-ai/dsh-timeout`.
++ */
++const RAW_GROUPS: readonly TimeoutGroup[] = [
++  {
++    id: 'waits',
++    label: '等待与轮询',
++    hint: '到期只返回当前状态，不终止在途任务。',
++    entries: [
++      { key: 'wait.foreground', label: '前台等待', hint: '工具调用等多久后把命令转为后台作业并回到模型；等待必须有上限。', defaultMs: 120_000, minMs: 1_000, maxMs: DAY_MS },
++      { key: 'wait.job.default', label: '作业等待', hint: 'job_output 未指定 timeout_ms 时的等待时长。', defaultMs: 30_000, minMs: 1_000, maxMs: 600_000 },
++      { key: 'wait.job.max', label: '作业等待上限', hint: '单次 job_output 等待的硬上限。', defaultMs: 600_000, minMs: 1_000, maxMs: DAY_MS },
++      { key: 'wait.agent.default', label: '子智能体等待', hint: 'wait_agent 未指定 timeout_ms 时的等待时长。', defaultMs: 30_000, minMs: 10_000, maxMs: 3_600_000 },
++      { key: 'wait.agent.max', label: '子智能体等待上限', hint: 'wait_agent 允许指定的最大等待时长。', defaultMs: 3_600_000, minMs: 10_000, maxMs: DAY_MS },
++      { key: 'wait.session.default', label: '会话等待', hint: '远端会话状态等待的默认时长。', defaultMs: 30_000, minMs: 1_000, maxMs: 600_000 },
++    ],
++  },
++  {
++    id: 'tools',
++    label: '工具执行',
++    hint: '0 表示不限制，只保留用户主动取消。',
++    entries: [
++      { key: 'tool.call', label: '工具调用', hint: '工具声明的执行预算上限。', defaultMs: 0, minMs: 0, maxMs: DAY_MS },
++      { key: 'tool.bash', label: '命令执行', hint: '单条 Shell 命令的运行上限。', defaultMs: 0, minMs: 0, maxMs: DAY_MS },
++      { key: 'tool.persistentBash', label: '持久终端命令', hint: '持久 Bash/Pwsh 会话的单条命令上限。', defaultMs: 0, minMs: 0, maxMs: DAY_MS },
++      { key: 'tool.worktree', label: '工作树操作', hint: '创建、清理工作树的上限。', defaultMs: 0, minMs: 0, maxMs: DAY_MS },
++      { key: 'web.fetch', label: '网页抓取', hint: '网页抓取请求的上限。', defaultMs: 0, minMs: 0, maxMs: DAY_MS },
++    ],
++  },
++  {
++    id: 'services',
++    label: '服务维护',
++    hint: '关闭与取消的收尾预算，避免退出时无限等待。',
++    entries: [
++      { key: 'lsp.shutdown', label: 'LSP 关闭', defaultMs: 10_000, minMs: 1_000, maxMs: 600_000 },
++      { key: 'lsp.grace', label: 'LSP 取消宽限', defaultMs: 5_000, minMs: 1_000, maxMs: 600_000 },
++      { key: 'mcp.operation', label: 'MCP 启停/探测', hint: 'MCP 启动、探测、关闭与清理的上限。', defaultMs: 0, minMs: 0, maxMs: DAY_MS },
++      { key: 'mcp.tool', label: 'MCP 工具调用', hint: 'MCP tools/call 的上限。', defaultMs: 0, minMs: 0, maxMs: DAY_MS },
++    ],
++  },
++  {
++    id: 'vault',
++    label: '托管保险柜',
++    hint: '目录选择与开柜票据的计时；到期自动拒绝本次申请，不终止在途模型请求。',
++    entries: [
++      { key: 'vault.approvalTimeout', label: '目录选择等待', hint: '本机用户手动选择保险柜目录的倒计时；到期自动拒绝本次申请。', defaultMs: 60_000, minMs: 5_000, maxMs: 600_000 },
++      { key: 'vault.keyTtl', label: '开柜钥匙有效期', hint: '远端数据所有者签发的开柜票据有效期；到期后需要重新申请。', defaultMs: 600_000, minMs: 10_000, maxMs: 86_400_000 },
++    ],
++  },
++  {
++    id: 'observability',
++    label: '运行观测',
++    hint: '长跑任务的可见性阈值；0 表示立即可见。',
++    entries: [
++      { key: 'job.status.afterMs', label: '状态时长阈值', hint: '作业运行/静默超过该时长后，状态行附带 running / idle。', defaultMs: 300_000, minMs: 0, maxMs: DAY_MS },
++      { key: 'workflow.progress.interval', label: '子智能体心跳', hint: 'workflow 子智能体刷新 job progress 的最小间隔。', defaultMs: 60_000, minMs: 1_000, maxMs: 600_000 },
++    ],
++  },
++  {
++    id: 'guard',
++    label: '重复调用守卫',
++    hint: '窗口计数覆盖 A/B 交替；阻断默认关闭。',
++    entries: [
++      { key: 'guard.repeat.enabled', label: '启用守卫', hint: '0 关闭，1 启用。', defaultMs: 1, minMs: 0, maxMs: 1, unit: 'count' },
++      { key: 'guard.repeat.window', label: '观察窗口', hint: '最近 N 次跟踪调用。', defaultMs: 24, minMs: 4, maxMs: 10_000, unit: 'count' },
++      { key: 'guard.repeat.windowThreshold', label: '窗口阈值', hint: '同签名在窗口内出现 N 次时提醒；后续按 N×2、N×4 升级。', defaultMs: 8, minMs: 2, maxMs: 10_000, unit: 'count' },
++      { key: 'guard.repeat.every', label: '重复提醒间隔', hint: '超过最大阈值后，每 +N 次再提醒。', defaultMs: 20, minMs: 1, maxMs: 10_000, unit: 'count' },
++      { key: 'guard.repeat.block', label: '重复阻断', hint: '0 仅提醒，1 在达到阻断阈值时拒绝该次调用。', defaultMs: 0, minMs: 0, maxMs: 1, unit: 'count' },
++      { key: 'guard.repeat.blockAfter', label: '阻断阈值', hint: '窗口/连续计数达到 N 时阻断（仅在重复阻断启用时生效）。', defaultMs: 40, minMs: 1, maxMs: 100_000, unit: 'count' },
++    ],
++  },
++  {
++    id: 'policy',
++    label: '模型请求',
++    hint: '仓库政策：模型请求不设应用层超时，只保留用户主动取消。',
++    entries: [
++      { key: 'llm.request', label: '请求超时', hint: '固定为不限制，不可编辑。', defaultMs: 0, minMs: 0, maxMs: 0, locked: true },
++    ],
++  },
++]
++
++/**
++ * Registry rules keyed by settings key. The footer owns presentation; the
++ * registry owns every duration, so the two cannot drift apart.
++ */
++const REGISTRY_BY_KEY: ReadonlyMap<string, (typeof TIMEOUT_RULES)[number]> = new Map(
++  TIMEOUT_RULES.flatMap(rule => rule.key === undefined ? [] : [[rule.key, rule] as const]),
++)
++
++/** Catalog with every registered row's bounds replaced by its registry rule. */
++export const NIGHT_TIMEOUT_GROUPS: readonly TimeoutGroup[] = RAW_GROUPS.map(group => ({
++  ...group,
++  entries: group.entries.map(entry => {
++    const rule = REGISTRY_BY_KEY.get(entry.key)
++    if (rule === undefined) return entry
++    return {
++      ...entry,
++      defaultMs: rule.defaultMs,
++      minMs: rule.minMs,
++      maxMs: rule.maxMs,
++      ...rule.allowOff === true ? { allowOff: true } : {},
++    }
++  }),
++}))
++
++/** Every catalog entry in display order. */
++const ENTRIES: readonly TimeoutEntry[] = NIGHT_TIMEOUT_GROUPS.flatMap(group => group.entries)
++
++/** Default values keyed by settings key. */
++export const NIGHT_TIMEOUT_DEFAULTS: Readonly<Record<string, number>> = Object.fromEntries(
++  ENTRIES.map(entry => [entry.key, entry.defaultMs]),
++)
++
++/**
++ * Directory holding the persisted bar settings.
++ *
++ * @returns Absolute `night-cruising` directory under the active DSH home.
++ */
++function settingsDirectory(): string {
++  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
++  return join(home, 'night-cruising')
++}
++
++/** Absolute path of the persisted values file. */
++export function nightTimeoutSettingsPath(): string {
++  return join(settingsDirectory(), 'timeouts.json')
++}
++
++/**
++ * Keep only whole, non-negative milliseconds inside Node's timer ceiling.
++ *
++ * @param value - Candidate from JSON or the footer request.
++ * @returns The sanitized value, or `undefined` when it is unusable.
++ */
++function sanitize(value: unknown): number | undefined {
++  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
++}
++
++/**
++ * Merge persisted values over the catalog defaults.
++ *
++ * @param stored - Parsed `values` object, already known to be a record.
++ * @returns Catalog-shaped values with every default filled in.
++ */
++function mergeDefaults(stored: Readonly<Record<string, unknown>>): Record<string, number> {
++  const values: Record<string, number> = { ...NIGHT_TIMEOUT_DEFAULTS }
++  for (const [key, raw] of Object.entries(stored)) {
++    const value = sanitize(raw)
++    if (value !== undefined) values[key] = value
++  }
++  return values
++}
++
++/**
++ * Read the persisted bar values; a missing or malformed file reads as empty.
++ *
++ * @returns Catalog-shaped values, never throwing for storage problems.
++ */
++export async function readNightTimeouts(): Promise<Record<string, number>> {
++  try {
++    const text = await readFile(nightTimeoutSettingsPath(), 'utf8')
++    const parsed: unknown = JSON.parse(text)
++    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return mergeDefaults({})
++    const values = (parsed as { values?: unknown }).values
++    if (typeof values !== 'object' || values === null || Array.isArray(values)) return mergeDefaults({})
++    return mergeDefaults(values as Record<string, unknown>)
++  } catch {
++    return mergeDefaults({})
++  }
++}
++
++/**
++ * Validate one submitted value against its catalog row.
++ *
++ * @param entry - Catalog row that owns the key.
++ * @param value - Submitted milliseconds.
++ * @returns An error message, or `undefined` when accepted.
++ */
++function validateValue(entry: TimeoutEntry, value: number): string | undefined {
++  if (entry.locked) return `${entry.label} 由仓库政策固定，不可修改`
++  if (!Number.isSafeInteger(value)) return `${entry.label} 必须是整数毫秒`
++  const registryProblem = validateTimeoutSetting(entry.key, value)
++  if (registryProblem !== undefined) return registryProblem
++  if (value < entry.minMs) return `${entry.label} 不能小于 ${entry.minMs} 毫秒`
++  if (value > entry.maxMs) return `${entry.label} 不能大于 ${entry.maxMs} 毫秒`
++  if (entry.key === 'wait.agent.max' && value < (NIGHT_TIMEOUT_DEFAULTS['wait.agent.default'] ?? 0)) {
++    return '子智能体等待上限不能小于默认等待'
++  }
++  return undefined
++}
++
++/**
++ * Persist the complete values map atomically.
++ *
++ * @param values - Sanitized catalog values.
++ * @returns Resolves after the replacement file is in place.
++ */
++async function writeNightTimeouts(values: Readonly<Record<string, number>>): Promise<void> {
++  const target = nightTimeoutSettingsPath()
++  await mkdir(dirname(target), { recursive: true })
++  const temporary = `${target}.${String(process.pid)}.tmp`
++  await writeFile(temporary, `${JSON.stringify({ version: 1, updatedAt: new Date().toISOString(), values }, null, 2)}\n`, 'utf8')
++  await rename(temporary, target)
++}
++
++/** Read a request body with the catalog's small size ceiling. */
++async function readBody(req: IncomingMessage): Promise<string> {
++  const chunks: Buffer[] = []
++  let size = 0
++  for await (const chunk of req) {
++    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
++    size += buffer.length
++    if (size > MAX_BODY_BYTES) throw new Error('请求体过大')
++    chunks.push(buffer)
++  }
++  return Buffer.concat(chunks).toString('utf8')
++}
++
++/** Write one JSON response with the footer's no-store policy. */
++function sendJson(res: ServerResponse, status: number, body: unknown): void {
++  const text = JSON.stringify(body)
++  res.writeHead(status, {
++    'content-type': 'application/json; charset=utf-8',
++    'cache-control': 'no-store',
++    'content-length': Buffer.byteLength(text),
++  })
++  res.end(text)
++}
++
++/**
++ * Answer the footer route: GET returns the catalog and values, PUT validates
++ * and persists one complete values map.
++ */
++export async function handleNightTimeoutsRequest(
++  req: IncomingMessage,
++  res: ServerResponse,
++  admit: (req: IncomingMessage) => { readonly rejection: 401 | 403 } | { readonly peer: unknown },
++): Promise<void> {
++  const admission = admit(req)
++  if ('rejection' in admission) {
++    res.writeHead(admission.rejection)
++    res.end(admission.rejection === 401 ? 'unauthorized' : 'forbidden')
++    return
++  }
++  if (req.method === 'GET') {
++    sendJson(res, 200, {
++      route: NIGHT_TIMEOUT_ROUTE,
++      groups: NIGHT_TIMEOUT_GROUPS,
++      values: await readNightTimeouts(),
++    })
++    return
++  }
++  if (req.method !== 'PUT') {
++    res.writeHead(405, { allow: 'GET, PUT' })
++    res.end()
++    return
++  }
++  let submitted: unknown
++  try {
++    submitted = JSON.parse(await readBody(req))
++  } catch (error: unknown) {
++    sendJson(res, 400, { error: error instanceof Error ? error.message : '请求体不是 JSON' })
++    return
++  }
++  if (typeof submitted !== 'object' || submitted === null || Array.isArray(submitted)) {
++    sendJson(res, 400, { error: '请求体必须是对象' })
++    return
++  }
++  const raw = (submitted as { values?: unknown }).values
++  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
++    sendJson(res, 400, { error: '缺少 values 对象' })
++    return
++  }
++  const values = await readNightTimeouts()
++  for (const entry of ENTRIES) {
++    const candidate = (raw as Record<string, unknown>)[entry.key]
++    if (candidate === undefined) continue
++    const value = sanitize(candidate)
++    if (value === undefined) {
++      sendJson(res, 400, { error: `${entry.label} 必须是整数毫秒` })
++      return
++    }
++    const problem = validateValue(entry, value)
++    if (problem !== undefined) {
++      sendJson(res, 400, { error: problem })
++      return
++    }
++    values[entry.key] = value
++  }
++  if ((values['guard.repeat.windowThreshold'] ?? 0) > (values['guard.repeat.window'] ?? 0)) {
++    sendJson(res, 400, { error: '重复守卫的窗口阈值不能大于观察窗口' })
++    return
++  }
++  await writeNightTimeouts(values)
++  configureTimeouts(values)
++  sendJson(res, 200, { ok: true, groups: NIGHT_TIMEOUT_GROUPS, values })
++}
++
++/**
++ * Load persisted values, publish them to the timeout library, and claim the
++ * footer route. The route requires the same browser admission as `/api`.
++ *
++ * @param ctx - Web-app context with `webServer` and `connection` available.
++ */
++export function installNightTimeouts(ctx: Context): void {
++  // Publish before any job/subagent plugin resolves its defaults. A save from
++  // the footer republishes synchronously in `handle`.
++  configureTimeouts(NIGHT_TIMEOUT_DEFAULTS)
++  void readNightTimeouts().then(values => { configureTimeouts(values) }, () => {})
++  ctx.inject(['connection'], (connectionCtx) => {
++    connectionCtx.effect(() => connectionCtx.webServer.register({
++      kind: 'exact',
++      path: NIGHT_TIMEOUT_ROUTE,
++      handler: (req, res) => handleNightTimeoutsRequest(req, res, request => connectionCtx.connection.admit(request)),
++    }), 'web-app: Night Cruising timeout settings')
++  })
++}
+diff --git a/packages/bundle/web-app/tests/night-timeouts.spec.ts b/packages/bundle/web-app/tests/night-timeouts.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c0a092a8376f205869f9b26aaca9addd9e9a7cc
+--- /dev/null
++++ b/packages/bundle/web-app/tests/night-timeouts.spec.ts
+@@ -0,0 +1,125 @@
++/**
++ * The Night Cruising footer route: authenticated JSON read/write over the
++ * real node:http request and response types, with the persisted file as the
++ * observable side effect and the published timeout value as the runtime one.
++ */
++
++import { mkdtemp, readFile, rm } from 'node:fs/promises'
++import { createServer } from 'node:http'
++import type { Server } from 'node:http'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import { configureTimeouts, settingNumber, timeoutSetting } from '@deepseek-ai/dsh-timeout'
++import {
++  handleNightTimeoutsRequest,
++  NIGHT_TIMEOUT_DEFAULTS,
++  nightTimeoutSettingsPath,
++  readNightTimeouts,
++} from '../src/night-timeouts.ts'
++
++let root: string | undefined
++let server: Server | undefined
++let port: number | undefined
++
++beforeEach(async () => {
++  root = await mkdtemp(join(tmpdir(), 'dsh-night-timeouts-'))
++  vi.stubEnv('DSH_HOME', root)
++  server = createServer((req, res) => {
++    void handleNightTimeoutsRequest(req, res, () => ({ peer: {} }))
++  })
++  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
++  const address = server.address()
++  port = typeof address === 'object' && address !== null ? address.port : undefined
++})
++
++afterEach(async () => {
++  configureTimeouts({})
++  vi.unstubAllEnvs()
++  if (server !== undefined) await new Promise<void>(resolve => { server!.close(() => { resolve() }) })
++  server = undefined
++  if (root !== undefined) await rm(root, { recursive: true, force: true })
++  root = undefined
++})
++
++/** Send one request to the test listener. */
++async function request(method: string, body?: unknown): Promise<{ status: number; json: unknown }> {
++  if (port === undefined) throw new Error('test listener did not bind')
++  const response = await fetch(`http://127.0.0.1:${String(port)}/night-cruising/timeouts`, {
++    method,
++    ...body === undefined ? {} : {
++      headers: { 'content-type': 'application/json' },
++      body: JSON.stringify(body),
++    },
++  })
++  const text = await response.text()
++  let json: unknown = text
++  try { json = JSON.parse(text) } catch { /* plain-text refusals keep their text */ }
++  return { status: response.status, json }
++}
++
++/** Read one value from a JSON result without an unsafe cast at the assertion. */
++function valueOf(json: unknown, key: string): unknown {
++  if (typeof json !== 'object' || json === null || !('values' in json)) return undefined
++  const values = (json as { values?: Record<string, unknown> }).values
++  return values?.[key]
++}
++
++describe('night timeout settings route', () => {
++  it('serves the catalog with defaults before any save', async () => {
++    const { status, json } = await request('GET')
++    expect(status).toBe(200)
++    expect(valueOf(json, 'wait.job.default')).toBe(30_000)
++    expect(valueOf(json, 'tool.bash')).toBe(120_000)
++    expect(valueOf(json, 'guard.repeat.window')).toBe(24)
++    expect(valueOf(json, 'job.status.afterMs')).toBe(300_000)
++    expect(Array.isArray((json as { groups?: unknown }).groups)).toBe(true)
++  })
++
++  it('persists a value and publishes it to the timeout library', async () => {
++    const { status, json } = await request('PUT', { values: { 'wait.job.default': 45_000, 'tool.bash': 120_000 } })
++    expect(status).toBe(200)
++    expect(valueOf(json, 'wait.job.default')).toBe(45_000)
++    expect(timeoutSetting('wait.job.default', 30_000)).toBe(45_000)
++    expect(timeoutSetting('tool.bash', 0)).toBe(120_000)
++    const stored = JSON.parse(await readFile(nightTimeoutSettingsPath(), 'utf8')) as { values?: Record<string, number> }
++    expect(stored.values?.['wait.job.default']).toBe(45_000)
++    expect(await readNightTimeouts()).toMatchObject({ 'wait.job.default': 45_000 })
++  })
++
++  it('rejects an out-of-range value and leaves the file at its defaults', async () => {
++    const before = await request('PUT', { values: { 'wait.job.default': 10 } })
++    expect(before.status).toBe(400)
++    expect(await readNightTimeouts()).toMatchObject({ 'wait.job.default': NIGHT_TIMEOUT_DEFAULTS['wait.job.default'] })
++  })
++
++  it('persists count settings and publishes them through settingNumber', async () => {
++    const { status } = await request('PUT', { values: { 'guard.repeat.window': 16, 'guard.repeat.windowThreshold': 8 } })
++    expect(status).toBe(200)
++    expect(settingNumber('guard.repeat.window', 24)).toBe(16)
++    expect(settingNumber('guard.repeat.windowThreshold', 8)).toBe(8)
++    expect(await readNightTimeouts()).toMatchObject({ 'guard.repeat.window': 16 })
++  })
++
++  it('rejects a window threshold larger than the window', async () => {
++    const { status } = await request('PUT', { values: { 'guard.repeat.window': 8, 'guard.repeat.windowThreshold': 9 } })
++    expect(status).toBe(400)
++  })
++
++  it('rejects a write to a policy-owned row', async () => {
++    const { status } = await request('PUT', { values: { 'llm.request': 1_000 } })
++    expect(status).toBe(400)
++  })
++
++  it('reports unauthorized before reading or writing', async () => {
++    server?.close()
++    server = createServer((req, res) => {
++      void handleNightTimeoutsRequest(req, res, () => ({ rejection: 401 }))
++    })
++    await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
++    const address = server.address()
++    port = typeof address === 'object' && address !== null ? address.port : undefined
++    const { status } = await request('GET')
++    expect(status).toBe(401)
++  })
++})
+diff --git a/packages/credentials/deepseek-account/src/index.ts b/packages/credentials/deepseek-account/src/index.ts
+index 8dddec9074f3de43e61bf1025a3cfe54ff48c353..3f2f1da9b20211d9907778f91d7120b1c55df8e5 100644
+--- a/packages/credentials/deepseek-account/src/index.ts
++++ b/packages/credentials/deepseek-account/src/index.ts
+@@ -80,11 +80,11 @@ const Config = Schema.object({
+   rewriteBrowserOrigin: Schema.boolean().default(false),
+   requestHeaders: Schema.dict(Schema.string().role('secret')).default({}),
+   accountRequestHeaders: Schema.dict(Schema.string().role('secret')).default({}),
+-  requestTimeoutMs: Schema.number().min(1).max(120_000).default(30_000),
+-  balanceTimeoutMs: Schema.number().min(1).max(120_000).default(30_000),
++  requestTimeoutMs: Schema.number().min(1).max(2_147_483_647).default(2_147_483_647),
++  balanceTimeoutMs: Schema.number().min(1).max(2_147_483_647).default(2_147_483_647),
+   logoutMaxRetries: Schema.number().min(0).max(5).step(1).default(5),
+   logoutRetryDelayMs: Schema.number().min(1).max(60_000).default(1_000),
+-  attemptTimeoutMs: Schema.number().min(1).max(3_600_000).default(600_000),
++  attemptTimeoutMs: Schema.number().min(1).max(2_147_483_647).default(2_147_483_647),
+ })
+ 
+ interface Attempt {
+@@ -116,7 +116,6 @@ export class DeepSeekAccount extends TypertRemoteService {
+   private readonly accountRequestHeaders: Record<string, string>
+   private readonly requestTimeout: number
+   private readonly balanceTimeout: number
+-  private readonly attemptTimeout: number
+   private readonly logoutPolicy: LogoutRetryPolicy
+   private readonly logoutLifetime = new AbortController()
+   private readonly revocations = new Set<Promise<void>>()
+@@ -155,9 +154,8 @@ export class DeepSeekAccount extends TypertRemoteService {
+     }
+     this.requestTimeout = resolved.requestTimeoutMs
+     this.balanceTimeout = resolved.balanceTimeoutMs
+-    this.attemptTimeout = resolved.attemptTimeoutMs
+     this.logoutPolicy = {
+-      maxRetries: resolved.logoutMaxRetries, delayMs: resolved.logoutRetryDelayMs, requestTimeoutMs: this.requestTimeout,
++      maxRetries: resolved.logoutMaxRetries, delayMs: resolved.logoutRetryDelayMs, requestTimeoutMs: (void (this.requestTimeout), 2_147_483_647),
+     }
+     ctx.authorization.registerFlow({
+       key: KEY, label: 'DeepSeek', methods: [{ id: 'browser', label: 'DeepSeek' }],
+@@ -261,7 +259,7 @@ export class DeepSeekAccount extends TypertRemoteService {
+     if (stored === null) return null
+     try {
+       const batch = await readNotifications(this.harnessOrigin, stored.token,
+-        AbortSignal.any([lifetime.signal, AbortSignal.timeout(this.requestTimeout)]), headers)
++        AbortSignal.any([lifetime.signal, (void (this.requestTimeout), new AbortController().signal)]), headers)
+       return this.detailsLifetime === lifetime ? batch : null
+     } catch (error) {
+       if (this.detailsLifetime !== lifetime) return null
+@@ -288,7 +286,7 @@ export class DeepSeekAccount extends TypertRemoteService {
+     if (stored === null) return null
+     try {
+       const content = await readNotificationContent(this.harnessOrigin, stored.token, id,
+-        AbortSignal.any([lifetime.signal, AbortSignal.timeout(this.requestTimeout)]), headers)
++        AbortSignal.any([lifetime.signal, (void (this.requestTimeout), new AbortController().signal)]), headers)
+       return this.detailsLifetime === lifetime ? content : null
+     } catch (error) {
+       if (this.detailsLifetime !== lifetime) return null
+@@ -316,7 +314,7 @@ export class DeepSeekAccount extends TypertRemoteService {
+     if (stored === null) return false
+     try {
+       await sendNotificationEvent(this.harnessOrigin, stored.token, id, event,
+-        AbortSignal.any([lifetime.signal, AbortSignal.timeout(this.requestTimeout)]), headers)
++        AbortSignal.any([lifetime.signal, (void (this.requestTimeout), new AbortController().signal)]), headers)
+       return this.detailsLifetime === lifetime
+     } catch (error) {
+       if (this.detailsLifetime !== lifetime) return false
+@@ -355,7 +353,7 @@ export class DeepSeekAccount extends TypertRemoteService {
+     }
+     try {
+       const details = await readAccountDetail(field, this.origin, stored.token,
+-        AbortSignal.any([lifetime.signal, AbortSignal.timeout(field === 'balance' ? this.balanceTimeout : this.requestTimeout)]), headers)
++        AbortSignal.any([lifetime.signal, (void (field === 'balance' ? this.balanceTimeout : this.requestTimeout), new AbortController().signal)]), headers)
+       return this.detailsLifetime !== lifetime ? null : details
+     } catch (_unauthorized) {
+       // readAccountDetail exposes only authenticated credential rejection failures.
+@@ -691,9 +689,8 @@ export class DeepSeekAccount extends TypertRemoteService {
+     // Callback requests may precede initialization settlement; the rejection is observed immediately.
+     void code.promise.catch(() => undefined)
+     const deadline = new AbortController()
+-    let expiresAt = Date.now() + this.attemptTimeout
+     const signal = AbortSignal.any([session.signal, deadline.signal])
+-    let timer = setTimeout(() =>{  deadline.abort() }, this.attemptTimeout)
++    let timer: ReturnType<typeof setTimeout> | undefined
+     const abort = (): void => { code.reject(new PlatformAuthError('expired')) }
+     signal.addEventListener('abort', abort, { once: true })
+     try {
+@@ -728,11 +725,11 @@ export class DeepSeekAccount extends TypertRemoteService {
+       authorizeId = init.data.authorize_id
+       signal.throwIfAborted()
+       const now = Date.now()
+-      expiresAt = Math.min(expiresAt, now + init.data.expires_in * 1000)
++      const expiresAt = now + init.data.expires_in * 1000
+       const remaining = expiresAt - now
+       if (remaining <= 0) { deadline.abort(); signal.throwIfAborted() }
+       clearTimeout(timer)
+-      timer = setTimeout(() =>{  deadline.abort() }, remaining)
++      if (remaining <= 2_147_483_647) timer = setTimeout(() => { deadline.abort() }, remaining)
+       this.update(attempt, { phase: 'waiting-browser', authorizeUrl, expiresAt })
+       const receivedCode = await code.promise
+       signal.throwIfAborted()
+@@ -793,7 +790,7 @@ export class DeepSeekAccount extends TypertRemoteService {
+ 
+   private request(method: string, body: unknown, signal: AbortSignal, headers: Record<string, string>): Promise<unknown> {
+     return requestPlatform(this.origin, method, body,
+-      AbortSignal.any([signal, AbortSignal.timeout(this.requestTimeout)]), { ...this.requestHeaders, ...headers })
++      AbortSignal.any([signal, (void (this.requestTimeout), new AbortController().signal)]), { ...this.requestHeaders, ...headers })
+   }
+ 
+   private finishFailedCallback(attempt: Attempt): void {
+diff --git a/packages/guard/repeat-tool-reminder/package.json b/packages/guard/repeat-tool-reminder/package.json
+index dbbf05b9815a59a58f2d2e7a13d6525718d6f4ff..8365f216f03d42487d47a45f95362a2a93db1bdf 100644
+--- a/packages/guard/repeat-tool-reminder/package.json
++++ b/packages/guard/repeat-tool-reminder/package.json
+@@ -35,19 +35,21 @@
+     "@deepseek-ai/schemastery": "workspace:~"
+   },
+   "peerDependencies": {
++    "@deepseek-ai/cordis": "workspace:~",
+     "@deepseek-ai/dsh-agent": "workspace:*",
+-    "@deepseek-ai/dsh-tools": "workspace:*",
+-    "@deepseek-ai/cordis": "workspace:~"
++    "@deepseek-ai/dsh-timeout": "workspace:*",
++    "@deepseek-ai/dsh-tools": "workspace:*"
+   },
+   "devDependencies": {
++    "@deepseek-ai/cordis": "workspace:~",
+     "@deepseek-ai/dsh-agent": "workspace:*",
+     "@deepseek-ai/dsh-agent-loop": "workspace:*",
+     "@deepseek-ai/dsh-agent-loop-testkit": "workspace:*",
+     "@deepseek-ai/dsh-llm": "workspace:*",
+     "@deepseek-ai/dsh-session": "workspace:*",
++    "@deepseek-ai/dsh-session-projection": "workspace:*",
++    "@deepseek-ai/dsh-timeout": "workspace:*",
+     "@deepseek-ai/dsh-tool-testkit": "workspace:*",
+-    "@deepseek-ai/dsh-tools": "workspace:*",
+-    "@deepseek-ai/cordis": "workspace:~",
+-    "@deepseek-ai/dsh-session-projection": "workspace:*"
++    "@deepseek-ai/dsh-tools": "workspace:*"
+   }
+ }
+diff --git a/packages/guard/repeat-tool-reminder/src/index.ts b/packages/guard/repeat-tool-reminder/src/index.ts
+index 97a6766888f85541fb800d8b2476095398aaa6fa..37da50a49b22ed596c17134b123b9f4c465470d7 100644
+--- a/packages/guard/repeat-tool-reminder/src/index.ts
++++ b/packages/guard/repeat-tool-reminder/src/index.ts
+@@ -7,6 +7,7 @@
+  */
+ 
+ import type { Context } from '@deepseek-ai/cordis'
++import { settingNumber } from '@deepseek-ai/dsh-timeout'
+ import z from '@deepseek-ai/schemastery'
+ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+ import { createUserMessage } from '@deepseek-ai/dsh-llm'
+@@ -47,6 +48,16 @@ export interface Config {
+    * always compares the FULL canonical string).
+    */
+   argumentsPreviewChars?: number
++  /** Window of recent tracked calls used for non-consecutive repetition (default 24). */
++  windowSize?: number
++  /** Window occurrence counts that trigger a window reminder (default `[8, 16, 32]`). */
++  windowThresholds?: number[]
++  /** After the largest threshold, remind again every N calls (default 20). */
++  repeatEvery?: number
++  /** `advisory` keeps reminders only; `block` also rejects a call at `blockAfter` (default `advisory`). */
++  escalation?: 'advisory' | 'block'
++  /** Window occurrence count that turns a call into a block when escalation is `block` (default 40). */
++  blockAfter?: number
+ }
+ 
+ export const Config: z<Config> = z.object({
+@@ -54,6 +65,11 @@ export const Config: z<Config> = z.object({
+   include: z.array(z.string()).default([]),
+   exclude: z.array(z.string()).default([]),
+   argumentsPreviewChars: z.number().default(500),
++  windowSize: z.number().default(24),
++  windowThresholds: z.array(z.number()).default([8, 16, 32]),
++  repeatEvery: z.number().default(20),
++  escalation: z.union(['advisory', 'block'] as const).default('advisory'),
++  blockAfter: z.number().default(40),
+ })
+ 
+ /**
+@@ -127,6 +143,22 @@ function previewArguments(canonical: string, cap: number): string {
+   return `${canonical.slice(0, cap)}… (+${canonical.length - cap} more chars)`
+ }
+ 
++/** Validate one positive integer count and return it. */
++function validateCount(value: number, name: string, minimum: number): number {
++  if (!Number.isInteger(value) || value < minimum) {
++    throw new Error(`repeat-tool-reminder: invalid ${name} ${value} — must be an integer >= ${minimum}`)
++  }
++  return value
++}
++
++/** Validate a window threshold list: non-empty, unique, integers >= 2, ascending. */
++function validateWindowThresholds(values: number[]): number[] {
++  if (values.length === 0) throw new Error('repeat-tool-reminder: `windowThresholds` must not be empty')
++  for (const value of values) validateCount(value, 'window threshold', 2)
++  if (new Set(values).size !== values.length) throw new Error('repeat-tool-reminder: `windowThresholds` must not contain duplicates')
++  return [...values].sort((a, b) => a - b)
++}
++
+ /**
+  * Validate `thresholds` per the fail-loud contract and return them sorted
+  * ascending (the escalation rule reads `thresholds[0]` as the gentle tier, so
+@@ -155,21 +187,65 @@ function prependContext(ours: UserMessage, theirs: UserMessage[] | undefined): U
+   return [ours, ...theirs ?? []]
+ }
+ 
+-/** One agent's consecutive-repeat chain: the last tracked call's identity key and its run length. */
++/** One agent's repeat state: the consecutive run plus a sliding window over recent calls. */
+ interface Chain {
++  /** Last tracked call's identity key. */
+   key: string
++  /** Consecutive run length for {@link key}. */
+   count: number
++  /** Recent identity keys, oldest first; length is capped by the window size. */
++  ring: string[]
++  /** Identity key to its occurrence count inside {@link ring}. */
++  window: Map<string, number>
++}
++
++/** The reminder and whether this attempt must also reject the call. */
++interface Observation {
++  readonly reminder: UserMessage
++  readonly block: boolean
++  /** Model-facing block text; present when {@link block} is true. */
++  readonly feedback?: string
++}
++
++/** The window-repeat reminder: same signature seen repeatedly, not necessarily consecutively. */
++function windowReminder(toolName: string, count: number, canonicalArguments: string): string {
++  return 'Repeated tool call detected in the observation window:\n'
++    + `- tool: ${toolName}\n`
++    + `- calls_in_window: ${count}\n`
++    + `- arguments: ${canonicalArguments}\n`
++    + 'The same call keeps appearing without new information. Do not repeat it; '
++    + 'inspect the latest result and choose a different action or finish the task.'
++}
++
++/** The periodic "still repeating" reminder after every threshold has been passed. */
++function stillReminder(toolName: string, count: number): string {
++  return `Still repeating ${toolName}: ${count} tracked calls in the observation window. `
++    + 'The loop has not produced new information. Change the arguments, change the approach, or finish.'
++}
++
++/** The model-facing text substituted for a blocked repeated call. */
++function blockFeedback(toolName: string, count: number): string {
++  return `Blocked repeated tool call: ${toolName} reached ${count} calls in the observation window. `
++    + 'This call was not executed. Inspect the previous results and choose a different action, '
++    + 'different arguments, or finish the task.'
+ }
+ 
+ /**
+  * Install the guard's listeners.
+  * @param ctx - plugin context; listeners are scoped to it and disposed with it.
+- * @param config - validated {@link Config}; `thresholds` is re-checked fail-loud here.
++ * @param config - validated {@link Config}; thresholds are re-checked fail-loud here.
+  */
+ export function apply(ctx: Context, config: Config): void {
+   // schemastery's .default() guarantees the fields are set after validation.
+   const thresholds = validateThresholds(config.thresholds as number[])
+   const thresholdSet = new Set(thresholds)
++  const maxConsecutive = thresholds[thresholds.length - 1] as number
++  const configuredWindowThresholds = validateWindowThresholds(config.windowThresholds as number[])
++  const maxConfiguredWindow = configuredWindowThresholds[configuredWindowThresholds.length - 1] as number
++  const configuredWindowSize = validateCount(config.windowSize as number, 'windowSize', 4)
++  const configuredRepeatEvery = validateCount(config.repeatEvery as number, 'repeatEvery', 1)
++  const configuredBlockAfter = validateCount(config.blockAfter as number, 'blockAfter', 1)
++  const configuredEscalation = config.escalation as 'advisory' | 'block'
+   const includePatterns = (config.include as string[]).map(wildcardToRegExp)
+   const excludePatterns = (config.exclude as string[]).map(wildcardToRegExp)
+   const argumentsPreviewChars = config.argumentsPreviewChars as number
+@@ -186,42 +262,103 @@ export function apply(ctx: Context, config: Config): void {
+   }
+ 
+   /**
+-   * Advance the calling agent's chain for one attempt and return the reminder
+-   * to deliver, if this attempt's run length hits a configured threshold.
+-   * Counting happens here — in post-execute — because denied calls also flow
+-   * through this waterfall (`ToolRuntime.execute` routes a deny through the
+-   * same pipeline), and a model hammering a denied call is exactly the loop
+-   * worth breaking.
++   * Read the live window policy. The bottom settings bar owns these values, so
++   * a save applies to the next call without restarting the Host.
++   */
++  function policy(): {
++    enabled: boolean
++    windowSize: number
++    windowThresholds: number[]
++    windowThresholdSet: Set<number>
++    repeatEvery: number
++    blockAfter: number
++    blockEnabled: boolean
++  } {
++    const enabled = settingNumber('guard.repeat.enabled', 1) !== 0
++    const windowSize = Math.max(4, Math.floor(settingNumber('guard.repeat.window', configuredWindowSize)))
++    const windowThreshold = Math.floor(settingNumber('guard.repeat.windowThreshold', 0))
++    const windowThresholds = windowThreshold >= 2
++      ? [windowThreshold, windowThreshold * 2, windowThreshold * 4]
++      : configuredWindowThresholds
++    const repeatEvery = Math.max(1, Math.floor(settingNumber('guard.repeat.every', configuredRepeatEvery)))
++    const blockAfter = Math.max(1, Math.floor(settingNumber('guard.repeat.blockAfter', configuredBlockAfter)))
++    const blockEnabled = configuredEscalation === 'block' || settingNumber('guard.repeat.block', 0) !== 0
++    return { enabled, windowSize, windowThresholds, windowThresholdSet: new Set(windowThresholds), repeatEvery, blockAfter, blockEnabled }
++  }
++
++  /**
++   * Advance the calling agent's chain and window for one attempt, then return
++   * the reminder and block decision. Counting happens in post-execute because
++   * denied calls also flow through this waterfall, and a model hammering a
++   * denied call is exactly the loop worth breaking.
+    */
+-  function observe(exec: ToolExecution): UserMessage | undefined {
++  function observe(exec: ToolExecution): Observation | undefined {
+     // A direct `ctx.tools.execute()` caller has no model to remind and no id
+     // to key on; only agent-loop calls participate.
+-    if (!exec.agent) return undefined
++    const agent = exec.agent
++    if (!agent) return undefined
+     if (!tracked(exec.name)) return undefined
++    const live = policy()
++    if (!live.enabled) return undefined
+     const canonical = canonicalize(exec.arguments)
+     const key = JSON.stringify([exec.name, canonical])
+-    const chain = chains.get(exec.agent)
+-    const count = chain !== undefined && chain.key === key ? chain.count + 1 : 1
+-    chains.set(exec.agent, { key, count })
+-    if (!thresholdSet.has(count)) return undefined
+-    const text = count === thresholds[0]
+-      ? GENTLE_REMINDER
+-      : detailedReminder(exec.name, count, previewArguments(canonical, argumentsPreviewChars))
+-    return createUserMessage({
++    const chain = chains.get(agent) ?? { key: '', count: 0, ring: [], window: new Map<string, number>() }
++    const count = chain.key === key ? chain.count + 1 : 1
++    chain.key = key
++    chain.count = count
++    chain.ring.push(key)
++    chain.window.set(key, (chain.window.get(key) ?? 0) + 1)
++    while (chain.ring.length > live.windowSize) {
++      const dropped = chain.ring.shift() as string
++      const left = (chain.window.get(dropped) ?? 1) - 1
++      if (left <= 0) chain.window.delete(dropped)
++      else chain.window.set(dropped, left)
++    }
++    chains.set(agent, chain)
++
++    const windowCount = chain.window.get(key) ?? 1
++    const escalationCount = Math.max(count, windowCount)
++    let text: string | undefined
++    let block = false
++    if (thresholdSet.has(count)) {
++      text = count === thresholds[0]
++        ? GENTLE_REMINDER
++        : detailedReminder(exec.name, count, previewArguments(canonical, argumentsPreviewChars))
++    } else if (live.windowThresholdSet.has(windowCount) && windowCount > count) {
++      text = windowReminder(exec.name, windowCount, previewArguments(canonical, argumentsPreviewChars))
++    } else if (count > maxConsecutive && (count - maxConsecutive) % live.repeatEvery === 0) {
++      text = stillReminder(exec.name, count)
++    } else if (windowCount > maxConfiguredWindow && (windowCount - maxConfiguredWindow) % live.repeatEvery === 0) {
++      text = stillReminder(exec.name, windowCount)
++    } else if (live.blockEnabled && escalationCount >= live.blockAfter) {
++      text = blockFeedback(exec.name, escalationCount)
++      block = true
++    }
++    if (text === undefined) return undefined
++    const reminder = createUserMessage({
+       content: [{ type: 'text', text }],
+-      source: { ...REMINDER_SOURCE, form: 'notice', summary: `${exec.name} × ${count}` },
++      source: { ...REMINDER_SOURCE, form: 'notice', summary: `${exec.name} × ${escalationCount}` },
+     })
++    return { reminder, block, ...block ? { feedback: text } : {} }
+   }
+ 
+-  // Observe-and-enrich, never veto: count first (state advances regardless of
+-  // the downstream outcome), DELEGATE so a later listener can still block or
+-  // replace, then fold the reminder onto whatever came back — additionalContexts
+-  // rides both decision variants, so a blocked call still gets the nudge.
++  // Observe-and-enrich, never veto by default: count first (state advances
++  // regardless of the downstream outcome), DELEGATE so a later listener can
++  // still block or replace, then fold the reminder onto whatever came back.
++  // An explicitly enabled block replaces an accepted call with a rejection
++  // while still attaching the reminder as context.
+   ctx.on('tools/post-execute', async (exec, _result, next): Promise<PostToolDecision> => {
+-    const reminder = observe(exec)
++    const observation = observe(exec)
+     const downstream = await next()
+-    if (!reminder) return downstream
+-    return { ...downstream, additionalContexts: prependContext(reminder, downstream.additionalContexts) }
++    if (observation === undefined) return downstream
++    if (observation.block && downstream.kind === 'accept') {
++      return {
++        kind: 'block',
++        feedback: [{ type: 'text', text: observation.feedback ?? 'Repeated tool call blocked' }],
++        additionalContexts: prependContext(observation.reminder, downstream.additionalContexts),
++      }
++    }
++    return { ...downstream, additionalContexts: prependContext(observation.reminder, downstream.additionalContexts) }
+   })
+ 
+   // A user interjection changes the context; repetition across it is not a
+diff --git a/packages/guard/repeat-tool-reminder/tests/repeat-tool-reminder.spec.ts b/packages/guard/repeat-tool-reminder/tests/repeat-tool-reminder.spec.ts
+index b21e0bf7d04b5da318d43a4973000f15bfba42d4..04ddb06e74104d193a5ea64518ea4a1a085c9216 100644
+--- a/packages/guard/repeat-tool-reminder/tests/repeat-tool-reminder.spec.ts
++++ b/packages/guard/repeat-tool-reminder/tests/repeat-tool-reminder.spec.ts
+@@ -1,5 +1,5 @@
+ import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+-import { describe, expect, it } from 'vitest'
++import { afterEach, describe, expect, it } from 'vitest'
+ import { Context } from '@deepseek-ai/cordis'
+ import { createUserMessage, ToolCallId  } from '@deepseek-ai/dsh-llm'
+ import type { ContextFormed } from '@deepseek-ai/dsh-llm'
+@@ -8,6 +8,7 @@ import { defineContentToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+ import type { Agent } from '@deepseek-ai/dsh-agent'
+ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
++import { configureTimeouts } from '@deepseek-ai/dsh-timeout'
+ import * as RepeatToolGuard from '@deepseek-ai/dsh-repeat-tool-reminder'
+ import type { Config } from '@deepseek-ai/dsh-repeat-tool-reminder'
+ import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
+@@ -20,6 +21,8 @@ declare module '@deepseek-ai/dsh-llm' {
+ 
+ const testToolSignal = new AbortController().signal
+ 
++afterEach(() => { configureTimeouts({}) })
++
+ /**
+  * Behavior suite for the repeat-tool-call guard: chain semantics (identical /
+  * different-tracked / untracked-transparent / per-agent / resets), threshold
+@@ -101,6 +104,55 @@ describe('threshold escalation', () => {
+   })
+ })
+ 
++describe('window and escalation', () => {
++  it('catches A/B alternation that never forms a consecutive chain', async () => {
++    const ctx = await harness()
++    const adapter = new MockAdapter([
++      ...Array.from({ length: 20 }, (_, i) => toolCallResponse(`c${i}`, 'probe', { q: i % 2 })),
++      textResponse('done'),
++    ])
++    ctx.llm.registerAdapter(['mock'], adapter)
++    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
++    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
++    await waitForIdle(ctx, agent)
++
++    const found = reminders(agent)
++    expect(found.some(entry => entry.text.includes('calls_in_window'))).toBe(true)
++    expect(found.some(entry => entry.text.includes('consecutive_calls'))).toBe(false)
++  })
++
++  it('keeps reminding after the largest consecutive threshold instead of going silent', async () => {
++    const ctx = await harness()
++    const adapter = new MockAdapter([
++      ...Array.from({ length: 30 }, (_, i) => toolCallResponse(`c${i}`, 'probe', { q: 'same' })),
++      textResponse('done'),
++    ])
++    ctx.llm.registerAdapter(['mock'], adapter)
++    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
++    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
++    await waitForIdle(ctx, agent)
++
++    const found = reminders(agent)
++    expect(found.some(entry => entry.text.includes('Still repeating'))).toBe(true)
++  })
++
++  it('blocks a repeated call only when the bottom bar enables it', async () => {
++    configureTimeouts({ 'guard.repeat.block': 1, 'guard.repeat.blockAfter': 12 })
++    const ctx = await harness()
++    const adapter = new MockAdapter([
++      ...Array.from({ length: 12 }, (_, i) => toolCallResponse(`c${i}`, 'probe', { q: 'same' })),
++      textResponse('done'),
++    ])
++    ctx.llm.registerAdapter(['mock'], adapter)
++    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
++    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
++    await waitForIdle(ctx, agent)
++
++    const found = reminders(agent)
++    expect(found.some(entry => entry.text.includes('Blocked repeated tool call'))).toBe(true)
++  })
++})
++
+ describe('chain semantics', () => {
+   it('caps the detailed reminder arguments at argumentsPreviewChars (detection still keys on the full string)', async () => {
+     const ctx = await harness({ thresholds: [2, 3], argumentsPreviewChars: 24 })
+diff --git a/packages/guard/repeat-tool-reminder/tsconfig.json b/packages/guard/repeat-tool-reminder/tsconfig.json
+index 66439bcd5f404cf0fba436e59a7d42eb37be6b39..cd8cecc7d76154258decf748878b423425d513a2 100644
+--- a/packages/guard/repeat-tool-reminder/tsconfig.json
++++ b/packages/guard/repeat-tool-reminder/tsconfig.json
+@@ -25,6 +25,9 @@
+     },
+     {
+       "path": "../../llm/llm"
++    },
++    {
++      "path": "../../util/timeout"
+     }
+   ]
+ }
+diff --git a/packages/jobs/jobs-local/src/index.ts b/packages/jobs/jobs-local/src/index.ts
+index 378aaf0c0827be55778c147c6c607142bbea568b..9d97bd24e8feaf8a22310719bc47693cf9f8beb9 100644
+--- a/packages/jobs/jobs-local/src/index.ts
++++ b/packages/jobs/jobs-local/src/index.ts
+@@ -16,7 +16,7 @@ import z from '@deepseek-ai/schemastery'
+ import type { Agent } from '@deepseek-ai/dsh-agent'
+ import { ScopedLayers, scopeOf } from '@deepseek-ai/dsh-scope'
+ import type { SessionId } from '@deepseek-ai/dsh-session'
+-import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
++import { timeoutOf, waitDeadline } from '@deepseek-ai/dsh-timeout'
+ import { JobError, JobRegistry, JobId } from '@deepseek-ai/dsh-jobs'
+ import type {
+   JobAppendOptions, JobEvent, JobEvents, JobHandle, JobKind, JobOutcome, JobOutputRead, JobOutputSource,
+@@ -95,6 +95,8 @@ interface TrackedJob {
+   detail: string | undefined
+   result: string | undefined
+   startedAt: number
++  /** Last time the producer wrote output, advanced progress, or settled. */
++  updatedAt: number
+   finishedAt: number | undefined
+   /** Reason recorded by {@link JobRegistry.kill}, merged into a `killed` settlement's detail. */
+   killReason: string | undefined
+@@ -253,6 +255,7 @@ export class LocalJobRegistry extends JobRegistry {
+ 
+     let markSettled!: () => void
+     const settled = new Promise<void>((resolve) => { markSettled = resolve })
++    const startedAt = Date.now()
+     const job: TrackedJob = {
+       id,
+       toolCall,
+@@ -268,7 +271,8 @@ export class LocalJobRegistry extends JobRegistry {
+       state,
+       detail: undefined,
+       result: undefined,
+-      startedAt: Date.now(),
++      startedAt,
++      updatedAt: startedAt,
+       finishedAt: undefined,
+       killReason: undefined,
+       settleCause: undefined,
+@@ -438,6 +442,7 @@ export class LocalJobRegistry extends JobRegistry {
+       ...job.state.progress !== undefined ? { progress: job.state.progress } : {},
+       ...job.detail !== undefined ? { detail: job.detail } : {},
+       startedAt: job.startedAt,
++      updatedAt: job.updatedAt,
+       ...job.finishedAt !== undefined ? { finishedAt: job.finishedAt } : {},
+       output: {
+         total: job.ring.total,
+@@ -510,9 +515,10 @@ export class LocalJobRegistry extends JobRegistry {
+     }
+     if (!isTerminal(job.status)) {
+       if (signal?.aborted) throw waitAborted()
+-      // The scoped deadline distinguishes a successful wait timeout from
+-      // caller cancellation and clears its timer on every exit.
+-      using d = deadline(signal, timeoutMs, TASK_WAIT_TIMEOUT)
++      // The scoped wait deadline distinguishes a successful wait timeout from
++      // caller cancellation and clears its timer on every exit. Expiry only
++      // ends this wait; the job keeps running.
++      using d = waitDeadline(signal, timeoutMs, TASK_WAIT_TIMEOUT)
+       await new Promise<void>((resolve, reject) => {
+         const onSettled = (): void => {
+           job.waitResolvers.delete(onSettled)
+@@ -558,7 +564,10 @@ export class LocalJobRegistry extends JobRegistry {
+       return
+     }
+     if (!ring.append(text, options, this.retainBytes)) return
+-    if (job !== undefined) this.emitOutput(job)
++    if (job !== undefined) {
++      job.updatedAt = Date.now()
++      this.emitOutput(job)
++    }
+   }
+ 
+   /**
+@@ -601,7 +610,10 @@ export class LocalJobRegistry extends JobRegistry {
+       return
+     }
+     state.progress = line
+-    if (job !== undefined) this.emit({ type: 'progress', job: this.view(job) }, job.owner)
++    if (job !== undefined) {
++      job.updatedAt = Date.now()
++      this.emit({ type: 'progress', job: this.view(job) }, job.owner)
++    }
+   }
+ 
+   /**
+@@ -628,6 +640,7 @@ export class LocalJobRegistry extends JobRegistry {
+     job.state.progress = undefined
+     job.result = outcome.result
+     job.finishedAt = Date.now()
++    job.updatedAt = job.finishedAt
+     this.recordSessionEvent(job, {
+       finishedAt: job.finishedAt, status: outcome.status, cause, producerReported,
+       ...job.detail !== undefined ? { detail: job.detail } : {},
+diff --git a/packages/jobs/jobs/src/view.ts b/packages/jobs/jobs/src/view.ts
+index ad778954ab27e35250a19a39b8389146c78f9d4e..de9e8f3ca35c0992b470cc99bce305c73ce018e9 100644
+--- a/packages/jobs/jobs/src/view.ts
++++ b/packages/jobs/jobs/src/view.ts
+@@ -84,6 +84,8 @@ export interface JobView {
+   readonly detail?: string
+   /** Epoch ms when the job was registered. */
+   readonly startedAt: number
++  /** Epoch ms of the last output append, progress update, or settlement. */
++  readonly updatedAt?: number
+   /** Epoch ms when the job settled; absent while live. */
+   readonly finishedAt?: number
+   /**
+diff --git a/packages/jobs/tool-jobs/package.json b/packages/jobs/tool-jobs/package.json
+index 6007056797e122860f4e7c88bd2f468defadfcec..6da6082dd86cf41cdefcc489fcc2e3f55c2a0243 100644
+--- a/packages/jobs/tool-jobs/package.json
++++ b/packages/jobs/tool-jobs/package.json
+@@ -35,25 +35,27 @@
+     "@deepseek-ai/schemastery": "workspace:~"
+   },
+   "peerDependencies": {
++    "@deepseek-ai/cordis": "workspace:~",
+     "@deepseek-ai/dsh-agent": "workspace:*",
++    "@deepseek-ai/dsh-jobs": "workspace:*",
+     "@deepseek-ai/dsh-llm": "workspace:*",
+     "@deepseek-ai/dsh-output-retention": "workspace:*",
+     "@deepseek-ai/dsh-system-prompt": "workspace:*",
+-    "@deepseek-ai/dsh-jobs": "workspace:*",
+-    "@deepseek-ai/dsh-tools": "workspace:*",
+-    "@deepseek-ai/cordis": "workspace:~"
++    "@deepseek-ai/dsh-timeout": "workspace:*",
++    "@deepseek-ai/dsh-tools": "workspace:*"
+   },
+   "devDependencies": {
++    "@deepseek-ai/cordis": "workspace:~",
+     "@deepseek-ai/dsh-agent": "workspace:*",
++    "@deepseek-ai/dsh-jobs": "workspace:*",
++    "@deepseek-ai/dsh-jobs-local": "workspace:*",
+     "@deepseek-ai/dsh-llm": "workspace:*",
+     "@deepseek-ai/dsh-output-retention": "workspace:*",
+     "@deepseek-ai/dsh-session": "workspace:*",
+     "@deepseek-ai/dsh-system-prompt": "workspace:*",
+-    "@deepseek-ai/dsh-jobs": "workspace:*",
+-    "@deepseek-ai/dsh-jobs-local": "workspace:*",
++    "@deepseek-ai/dsh-timeout": "workspace:*",
+     "@deepseek-ai/dsh-tool-executor-native": "workspace:*",
+     "@deepseek-ai/dsh-tool-testkit": "workspace:*",
+-    "@deepseek-ai/dsh-tools": "workspace:*",
+-    "@deepseek-ai/cordis": "workspace:~"
++    "@deepseek-ai/dsh-tools": "workspace:*"
+   }
+ }
+diff --git a/packages/jobs/tool-jobs/src/index.ts b/packages/jobs/tool-jobs/src/index.ts
+index 91481719246e6d590aab126a2f77cb26f8a1eff6..6572af0685e5f848f24ed44d0be8370c5aea8bf3 100644
+--- a/packages/jobs/tool-jobs/src/index.ts
++++ b/packages/jobs/tool-jobs/src/index.ts
+@@ -16,6 +16,7 @@ import { boundContextSummary, createUserMessage, type ContentBlock } from '@deep
+ import type { ContextFormed, MessageId } from '@deepseek-ai/dsh-llm'
+ import { TextRetainer } from '@deepseek-ai/dsh-output-retention'
+ import { defineTool, ToolArgsError } from '@deepseek-ai/dsh-tools'
++import { resolveTimeout, timeoutSetting } from '@deepseek-ai/dsh-timeout'
+ import type { GenericCallView, ToolDefinition, ToolExecution } from '@deepseek-ai/dsh-tools'
+ import { JobId } from '@deepseek-ai/dsh-jobs'
+ import type { JobEvent, JobView, JobRead } from '@deepseek-ai/dsh-jobs'
+@@ -41,10 +42,6 @@ export type CompletionDelivery = 'quiet' | 'wakeup'
+ 
+ /** Configures bounded `job_output` waits and completion-notice delivery. */
+ export interface Config {
+-  /** Wait duration applied when `job_output` sets `wait` without `timeout_ms` (default 30s). */
+-  waitTimeoutMs?: number
+-  /** Hard cap on any single wait; a larger model-supplied `timeout_ms` is clamped down to it (default 10min). */
+-  maxWaitTimeoutMs?: number
+   /** Whether a completion opens a turn on an idle owner (default `wakeup`). */
+   completionDelivery?: CompletionDelivery
+   /**
+@@ -66,8 +63,6 @@ export interface Config {
+ }
+ 
+ export const Config: z<Config> = z.object({
+-  waitTimeoutMs: z.number().min(1).default(30_000),
+-  maxWaitTimeoutMs: z.number().min(1).default(600_000),
+   completionDelivery: z.union(['quiet', 'wakeup'] as const).default('wakeup'),
+   maxConsecutiveWakes: z.number().min(1),
+   inlineOutputBytes: z.natural().default(2048),
+@@ -88,6 +83,7 @@ const PUBLIC_JOB_SCHEMA = {
+     },
+     detail: { type: 'string' },
+     startedAt: { type: 'integer', required: true },
++    updatedAt: { type: 'integer' },
+     finishedAt: { type: 'integer' },
+   },
+ } as const
+@@ -238,8 +234,9 @@ function readBody(read: JobRead): { text: string; job: PublicJobSnapshot } {
+ }
+ 
+ export function apply(ctx: Context, config: Config): void {
+-  const waitDefault = config.waitTimeoutMs ?? 30_000
+-  const waitCap = config.maxWaitTimeoutMs ?? 600_000
++  // Explicit deployment pins win; `0` keeps the Night Cruising bar in charge.
++  // Runtime values are resolved per call so a settings save applies without a
++  // Host restart.
+   const delivery = config.completionDelivery ?? 'wakeup'
+   const wakeBudget = config.maxConsecutiveWakes
+   const inlineBytes = config.inlineOutputBytes ?? 2048
+@@ -248,9 +245,6 @@ export function apply(ctx: Context, config: Config): void {
+   // human input. Keyed by the exact Agent, so a same-session replacement
+   // starts with a full budget.
+   const spentWakes = new WeakMap<Agent, number>()
+-  if (waitDefault > waitCap) {
+-    throw new Error(`tool-jobs: waitTimeoutMs (${waitDefault}) exceeds maxWaitTimeoutMs (${waitCap})`)
+-  }
+   // A budget is a count of turns: a fraction never names a turn, and
+   // `Infinity` would spell an "unbounded" that omitting the field already means.
+   if (wakeBudget !== undefined && !Number.isSafeInteger(wakeBudget)) {
+@@ -462,6 +456,12 @@ export function apply(ctx: Context, config: Config): void {
+       }
+       const jobs = ctx.jobs
+       const agent = exec.agent
++      // The Night Cruising bar is the only source; no deployment config can
++      // pin a different wait. Values are resolved per call so a save applies
++      // without restarting the Host.
++      const waitDefault = resolveTimeout('TASK_WAIT_TIMEOUT').ms
++      const waitCap = timeoutSetting('wait.job.max', 600_000)
++      const boundedDefault = Math.min(waitDefault, waitCap)
+       // A wait this execution ends on next-step input claims the read that
+       // follows it: the claim stays open until that read commits, so a
+       // settlement landing first is delivered by the result, not a notice.
+@@ -503,7 +503,7 @@ export function apply(ctx: Context, config: Config): void {
+           })
+           try {
+             checkInput()
+-            await jobs.wait(id, Math.min(args.timeout_ms ?? waitDefault, waitCap), agent?.id, AbortSignal.any([exec.signal, input.signal]))
++            await jobs.wait(id, Math.min(args.timeout_ms ?? boundedDefault, waitCap), agent?.id, AbortSignal.any([exec.signal, input.signal]))
+           } catch (error) {
+             // The registry reports every abort as a cancellation. A wait this
+             // tool released with its own input controller ends the same way,
+diff --git a/packages/jobs/tool-jobs/src/render.ts b/packages/jobs/tool-jobs/src/render.ts
+index b95eb4393b8765d849c98fd666f72b1f29e29d18..80fefcbea2a2e60ea48e3c5a06ed79775a454bb1 100644
+--- a/packages/jobs/tool-jobs/src/render.ts
++++ b/packages/jobs/tool-jobs/src/render.ts
+@@ -7,6 +7,7 @@
+  */
+ 
+ import type { JobChunk, JobView } from '@deepseek-ai/dsh-jobs/view'
++import { settingNumber } from '@deepseek-ai/dsh-timeout'
+ 
+ /** Job state safe for model-authored programs; ownership and offsets are omitted. */
+ export interface PublicJobSnapshot {
+@@ -17,6 +18,8 @@ export interface PublicJobSnapshot {
+   /** The live progress line while running, the terminal reason once settled. */
+   detail?: string
+   startedAt: number
++  /** Last output/progress/settlement time; absent on older projections. */
++  updatedAt?: number
+   finishedAt?: number
+ }
+ 
+@@ -44,19 +47,54 @@ export function publicJob(job: JobView): PublicJobSnapshot {
+     status: job.status,
+     ...detail !== undefined ? { detail } : {},
+     startedAt: job.startedAt,
++    ...job.updatedAt !== undefined ? { updatedAt: job.updatedAt } : {},
+     ...job.finishedAt !== undefined ? { finishedAt: job.finishedAt } : {},
+   }
+ }
+ 
+ /**
+- * Render generic status with optional detail.
++ * Render a compact elapsed duration: `45s`, `2h05m`, `3d2h`.
++ * @param ms - non-negative elapsed milliseconds.
++ * @returns the model-facing duration.
++ */
++function elapsed(ms: number): string {
++  const seconds = Math.max(0, Math.floor(ms / 1000))
++  if (seconds < 60) return `${seconds}s`
++  const minutes = Math.floor(seconds / 60)
++  if (minutes < 60) return `${minutes}m`
++  const hours = Math.floor(minutes / 60)
++  if (hours < 24) return `${hours}h${String(minutes % 60).padStart(2, '0')}m`
++  return `${Math.floor(hours / 24)}d${hours % 24}h`
++}
++
++/**
++ * Render generic status with optional detail and, for a long-running live job,
++ * its elapsed and idle durations. Fast jobs keep the original short line; the
++ * timing appears only after the configured `job.status.afterMs` threshold
++ * (default 5 minutes), so a loop that silently spins for hours becomes
++ * visible on the very read that used to say only `running`.
++ *
+  * @param snapshot - job state to render.
++ * @param now - current epoch ms; injectable for tests.
+  * @returns a bracketed status line.
+  */
+-export function statusLine(snapshot: Pick<PublicJobSnapshot, 'status' | 'detail'>): string {
+-  return snapshot.detail !== undefined
++export function statusLine(
++  snapshot: Pick<PublicJobSnapshot, 'status' | 'detail'> & Partial<Pick<PublicJobSnapshot, 'startedAt' | 'updatedAt'>>,
++  now = Date.now(),
++): string {
++  const base = snapshot.detail !== undefined
+     ? `[status: ${snapshot.status}, ${snapshot.detail}]`
+     : `[status: ${snapshot.status}]`
++  if (snapshot.status !== 'running' && snapshot.status !== 'stopping') return base
++  if (snapshot.startedAt === undefined) return base
++  const threshold = Math.max(0, settingNumber('job.status.afterMs', 300_000))
++  const running = Math.max(0, now - snapshot.startedAt)
++  const idle = snapshot.updatedAt === undefined ? 0 : Math.max(0, now - snapshot.updatedAt)
++  if (running < threshold && idle < threshold) return base
++  const timing = `${elapsed(running)}, idle ${elapsed(idle)}`
++  return snapshot.detail !== undefined
++    ? `[status: ${snapshot.status} ${timing}, ${snapshot.detail}]`
++    : `[status: ${snapshot.status} ${timing}]`
+ }
+ 
+ /**
+diff --git a/packages/jobs/tool-jobs/tests/tool-jobs.spec.ts b/packages/jobs/tool-jobs/tests/tool-jobs.spec.ts
+index 1de8436b2848496b5704171294a17a404b2565c1..292fa11d7a7d3601c616017dd155a5a64ae6c960 100644
+--- a/packages/jobs/tool-jobs/tests/tool-jobs.spec.ts
++++ b/packages/jobs/tool-jobs/tests/tool-jobs.spec.ts
+@@ -1,6 +1,6 @@
+ import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+ import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+-import { describe, expect, it, vi } from 'vitest'
++import { afterEach, describe, expect, it, vi } from 'vitest'
+ import { Context } from '@deepseek-ai/cordis'
+ import { ToolCallId } from '@deepseek-ai/dsh-llm'
+ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+@@ -14,6 +14,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
+ import { SessionId } from '@deepseek-ai/dsh-session'
+ import { bindScopeParent, createScope, scopeOf } from '@deepseek-ai/dsh-scope'
+ import { JobId } from '@deepseek-ai/dsh-jobs'
++import { configureTimeouts } from '@deepseek-ai/dsh-timeout'
+ import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
+ import type { JobAppendOptions, JobHandle, JobHooks, JobOutcome, JobOutputSource, JobSpec, JobView } from '@deepseek-ai/dsh-jobs'
+ import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs'
+@@ -27,6 +28,8 @@ declare module '@deepseek-ai/dsh-jobs' {
+ 
+ const testToolSignal = new AbortController().signal
+ 
++afterEach(() => { configureTimeouts({}) })
++
+ const agentRegistryDisposers = new WeakMap<Agent, () => Promise<void>>()
+ const agentScopeFibers = new WeakMap<Agent, { dispose: () => Promise<void> }>()
+ /** Mutable fake next-step inbox per agent, so a spec can queue input without an unknown assertion. */
+@@ -212,18 +215,6 @@ describe('tool-jobs setup', () => {
+     expect(text(await call(ctx, 'job_list', {}))).toBe(`${id} [bash] completed — sleep 60`)
+   })
+ 
+-  it('rejects a config whose default wait exceeds the cap', async () => {
+-    const ctx = new Context()
+-    await ctx.plugin(SystemPrompt)
+-    await ctx.plugin(ToolRuntime)
+-    await ctx.plugin(SessionProjectionRegistry)
+-    await ctx.plugin(NativeToolExecutor)
+-    await ctx.plugin(AgentRegistry)
+-    await ctx.plugin(LocalJobRegistry)
+-    await expect(ctx.plugin(ToolJobs, { waitTimeoutMs: 100, maxWaitTimeoutMs: 50 }))
+-      .rejects.toThrow('waitTimeoutMs (100) exceeds maxWaitTimeoutMs (50)')
+-  })
+-
+   it('defaults delivery to unbounded wakeup and rejects an unknown lane', () => {
+     expect(ToolJobs.Config({}).completionDelivery).toBe('wakeup')
+     expect(ToolJobs.Config({}).maxConsecutiveWakes).toBeUndefined()
+@@ -261,6 +252,16 @@ describe('tool-jobs setup', () => {
+     expect(statusLine({ status: 'completed', detail: 'exit code: 0' })).toBe('[status: completed, exit code: 0]')
+   })
+ 
++  it('adds running and idle timing to a long live job only', () => {
++    const now = 1_000_000_000
++    expect(statusLine({ status: 'running', startedAt: now - 2 * 3_600_000, updatedAt: now - 3_600_000 }, now))
++      .toBe('[status: running 2h00m, idle 1h00m]')
++    expect(statusLine({ status: 'running', startedAt: now - 60_000, updatedAt: now - 60_000 }, now))
++      .toBe('[status: running]')
++    expect(statusLine({ status: 'completed', detail: 'exit code: 0', startedAt: now - 2 * 3_600_000, updatedAt: now - 3_600_000 }, now))
++      .toBe('[status: completed, exit code: 0]')
++  })
++
+   it('projects the public job: live progress or terminal detail, never ownership or offsets', () => {
+     const live: JobView = {
+       id: JobId('bash-1'), kind: 'bash', label: 'x', owner: SessionId('sess-1'), outputLimitBytes: 8,
+@@ -558,7 +559,8 @@ describe('job_output', () => {
+   })
+ 
+   it('wait: true times out against the configured cap and leaves the job alive', async () => {
+-    const { ctx } = await setup({ waitTimeoutMs: 10, maxWaitTimeoutMs: 20 })
++    configureTimeouts({ 'wait.job.default': 10, 'wait.job.max': 20 })
++    const { ctx } = await setup()
+     ctx.jobs.start(producer().spec)
+ 
+     // A model-supplied timeout far above the cap is clamped: this returns
+@@ -1124,7 +1126,8 @@ describe('completion notices', () => {
+   })
+ 
+   it('a timed-out wait withdraws only its own claim; a concurrent wait keeps the settlement covered', async () => {
+-    const { ctx } = await setup({ waitTimeoutMs: 10, maxWaitTimeoutMs: 1000 })
++    configureTimeouts({ 'wait.job.default': 10, 'wait.job.max': 1000 })
++    const { ctx } = await setup()
+     const inject = vi.fn()
+     const owner = await fakeAgent(ctx, 'sess-1', { inject })
+     const p = producer({ owner: owner.id })
+@@ -1139,7 +1142,8 @@ describe('completion notices', () => {
+   })
+ 
+   it('withdraws the wait claim when the wait times out, so the later settlement still notifies', async () => {
+-    const { ctx } = await setup({ waitTimeoutMs: 10, maxWaitTimeoutMs: 20 })
++    configureTimeouts({ 'wait.job.default': 10, 'wait.job.max': 20 })
++    const { ctx } = await setup()
+     const inject = vi.fn()
+     const owner = await fakeAgent(ctx, 'sess-1', { inject })
+     const p = producer({ owner: owner.id })
+diff --git a/packages/jobs/tool-jobs/tsconfig.json b/packages/jobs/tool-jobs/tsconfig.json
+index 89d9c856d2428ad31c6086b5938d45a84e70560b..1f2ac88ddcdcbd242efe5b957f6e6dc74b93636d 100644
+--- a/packages/jobs/tool-jobs/tsconfig.json
++++ b/packages/jobs/tool-jobs/tsconfig.json
+@@ -31,6 +31,9 @@
+     },
+     {
+       "path": "../jobs"
++    },
++    {
++      "path": "../../util/timeout"
+     }
+   ]
+ }
+diff --git a/packages/mcp/mcp-client/src/connection.ts b/packages/mcp/mcp-client/src/connection.ts
+index 448ef66f589225e05a8d165b9c35ed93e37f364f..1fdc749957089238abed4758e53579f35daf318f 100644
+--- a/packages/mcp/mcp-client/src/connection.ts
++++ b/packages/mcp/mcp-client/src/connection.ts
+@@ -20,7 +20,7 @@ import type { Context } from '@deepseek-ai/cordis'
+ import { assertNever, deepEqualJson, type JsonValue } from '@deepseek-ai/dsh-util-values'
+ import type { ServerContext } from './server-context.ts'
+ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
+-import { withDeadline } from './deadline.ts'
++import { mcpTimeoutMs, withDeadline } from './deadline.ts'
+ import { McpLocalError } from './diagnostic.ts'
+ import type { McpStatusCell } from './status.ts'
+ import type { McpCloseResult } from './types.ts'
+@@ -185,7 +185,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
+         // Closure waits for this task to take ownership, even if cancellation rejects its caller first.
+         disposers = await syncTools(record.wire.client, ctx, {
+           serverName: config.serverName,
+-          toolCallTimeoutMs: config.toolCallTimeoutMs,
++          toolCallTimeoutMs: mcpTimeoutMs(),
+           signal,
+           ...config.expandTemplates ? { redact: (text: string) => binding.redact(text) } : {},
+         }, disposers, () => isCurrent(record))
+@@ -354,7 +354,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
+         if (record?.connectedAt === undefined) throw new Error(`${label}: server is disconnected`)
+         try {
+           return await record.wire.run(async (signal) => {
+-            const options = { signal: AbortSignal.any([signal, exec.signal]), timeout: config.toolCallTimeoutMs }
++            const options = { signal: AbortSignal.any([signal, exec.signal]), timeout: mcpTimeoutMs() }
+             const generation = record.wire.client
+             // The SDK answers an unadvertised capability with the same empty page, but
+             // writes a console.debug line to stdout, which the ACP profile reserves for JSON-RPC.
+diff --git a/packages/mcp/mcp-client/src/deadline.ts b/packages/mcp/mcp-client/src/deadline.ts
+index 4cb5d83d40b7632f522a1663d638cd6ae09a6b09..13afaea1fa7d04322c0d9a6bca6a81272e359e89 100644
+--- a/packages/mcp/mcp-client/src/deadline.ts
++++ b/packages/mcp/mcp-client/src/deadline.ts
+@@ -1,31 +1,40 @@
+-/** Shared settlement deadline for the startup and probe budgets. */
+-
++/**
++ * MCP operation deadlines.
++ *
++ * Durations come from the timeout registry (`MCP_CALL` / `MCP_OPERATION`), so
++ * the Night Cruising footer and the code share one default. An MCP server that
++ * never answers must fail at that budget instead of hanging the turn.
++ */
+ import { McpLocalError } from './diagnostic.ts'
++import { resolveTimeout } from '@deepseek-ai/dsh-timeout'
++
++/**
++ * Resolve the MCP tool-call timeout handed to the SDK.
++ * @returns Milliseconds; the registry default is 60s.
++ */
++export function mcpTimeoutMs(): number {
++  return resolveTimeout('MCP_CALL').ms
++}
+ 
+ /**
+- * Settle with `promise`, or reject with `timeoutMessage` once `remainingMs`
+- * elapses first. The timer never holds the process open, and a non-Error
+- * rejection is wrapped so callers always observe an Error.
++ * Settle with `promise`, or reject with `timeoutMessage` once the configured
++ * MCP operation budget elapses first.
+  * @param promise - operation the deadline bounds.
+- * @param remainingMs - remaining budget in milliseconds (clamped to at least 1).
++ * @param remainingMs - caller's own remaining budget; may only shorten the
++ *   configured one.
+  * @param timeoutMessage - diagnostic carried by the deadline rejection.
+  * @returns the operation's value; rejects with the deadline or the operation's failure.
+  */
+ export function withDeadline<T>(promise: Promise<T>, remainingMs: number, timeoutMessage: string): Promise<T> {
++  const requested = Number.isFinite(remainingMs) && remainingMs > 0 ? remainingMs : undefined
++  const budget = resolveTimeout('MCP_OPERATION', requested).ms
++  if (budget <= 0) return promise
+   return new Promise<T>((resolve, reject) => {
+-    const timer = setTimeout(() => {
+-      reject(new McpLocalError(timeoutMessage))
+-    }, Math.max(1, remainingMs))
++    const timer = setTimeout(() => { reject(new McpLocalError(timeoutMessage)) }, budget)
+     timer.unref()
+     promise.then(
+-      (value) => {
+-        clearTimeout(timer)
+-        resolve(value)
+-      },
+-      (error: unknown) => {
+-        clearTimeout(timer)
+-        reject(error instanceof Error ? error : new Error(String(error)))
+-      },
++      (value) => { clearTimeout(timer); resolve(value) },
++      (error: unknown) => { clearTimeout(timer); reject(error instanceof Error ? error : new Error(String(error))) },
+     )
+   })
+ }
+diff --git a/packages/mcp/mcp-client/src/generation.ts b/packages/mcp/mcp-client/src/generation.ts
+index 7b13a06841bcf7c698a171d7a0dc8b5725799f41..a2553d21a075de6906086f5236f724dd807f8d97 100644
+--- a/packages/mcp/mcp-client/src/generation.ts
++++ b/packages/mcp/mcp-client/src/generation.ts
+@@ -1,7 +1,7 @@
+ /** One transport lifetime, including pending work and confirmed closure. */
+ 
+ import type { Client, Transport } from '@modelcontextprotocol/client'
+-import { withDeadline } from './deadline.ts'
++import { mcpTimeoutMs, withDeadline } from './deadline.ts'
+ import { McpLocalError } from './diagnostic.ts'
+ import { createTransport } from './transport.ts'
+ import type { Config } from './index.ts'
+@@ -48,7 +48,7 @@ export class McpGeneration {
+     }
+     return this.run(async (signal) => {
+       await this.client.connect(transport, { signal,
+-        ...timeoutMs === undefined ? {} : { timeout: Math.max(1, timeoutMs) },
++        timeout: mcpTimeoutMs(),
+       })
+       this.assertOpen()
+     }, timeoutMs)
+diff --git a/packages/mcp/mcp-client/src/probe.ts b/packages/mcp/mcp-client/src/probe.ts
+index 1276286ca5fe025ac2e2c0332598f261730990dd..b6ad891ac19fe3ff26304f22a7456d6083f42db1 100644
+--- a/packages/mcp/mcp-client/src/probe.ts
++++ b/packages/mcp/mcp-client/src/probe.ts
+@@ -14,6 +14,7 @@ import type { Context } from '@deepseek-ai/cordis'
+ import type { McpProbeFailure, McpProbeResult, McpProbeStage, McpProbeSuccess } from './types.ts'
+ import { McpTemplateBinding } from './credentials.ts'
+ import { McpGeneration } from './generation.ts'
++import { mcpTimeoutMs } from './deadline.ts'
+ import type { Config } from './index.ts'
+ 
+ /** Options for one {@link probeServer} call. */
+@@ -82,7 +83,7 @@ export async function probeServer(ctx: Context, config: Config, options: McpProb
+     if (client.getServerCapabilities()?.tools !== undefined) {
+       for (let page = 0; page < spec.maxPages; page++) {
+         const response = await generation.run(signal => client.request(
+-          { method: 'tools/list', ...cursor === undefined ? {} : { params: { cursor } } }, { signal },
++          { method: 'tools/list', ...cursor === undefined ? {} : { params: { cursor } } }, { signal, timeout: mcpTimeoutMs() },
+         ), remaining())
+         for (const tool of response.tools) {
+           if (toolNames.length >= spec.maxToolNames) { truncated = true; break }
+diff --git a/packages/mcp/mcp-client/src/tools.ts b/packages/mcp/mcp-client/src/tools.ts
+index 8f688c373ab0c6ae4ca1ea62e26fa5eb855ddee1..6a340292a6202be7e829026f4571d359fec1a096 100644
+--- a/packages/mcp/mcp-client/src/tools.ts
++++ b/packages/mcp/mcp-client/src/tools.ts
+@@ -17,6 +17,7 @@ import { isDeepStrictEqual } from 'node:util'
+ import { specTypeSchemas, type Client, type ImageContent } from '@modelcontextprotocol/client'
+ import type { Context } from '@deepseek-ai/cordis'
+ import { isImageAdmissionError } from '@deepseek-ai/dsh-attachment'
++import { mcpTimeoutMs } from './deadline.ts'
+ import type { AttachmentStore, ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
+ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+ import type { ToolDefinition, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+@@ -154,7 +155,7 @@ export async function syncTools(
+           const result = await client.callTool(
+             { name: tool.name, arguments: args },
+             { signal: AbortSignal.any([execution.signal, opts.signal]),
+-              timeout: opts.toolCallTimeoutMs, toolDefinition: tool },
++              timeout: mcpTimeoutMs(), toolDefinition: tool },
+           )
+           if (result.isError !== true || opts.redact === undefined) return result
+           return { isError: true, content: [{ type: 'text', text: opts.redact(extractText(result.content as JsonValue[], tool.name)) }] }
+diff --git a/packages/mcp/mcp-client/tests/deadline.spec.ts b/packages/mcp/mcp-client/tests/deadline.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..29445dd0ed4fcdc4ad2bad1073e6a09bffd47af5
+--- /dev/null
++++ b/packages/mcp/mcp-client/tests/deadline.spec.ts
+@@ -0,0 +1,32 @@
++import { afterEach, describe, expect, it } from 'vitest'
++import { configureTimeouts } from '@deepseek-ai/dsh-timeout'
++import { mcpTimeoutMs, withDeadline } from '../src/deadline.ts'
++
++afterEach(() => { configureTimeouts({}) })
++
++describe('MCP bottom-bar deadlines', () => {
++  it('leaves MCP uncapped when the bar value is zero', () => {
++    const pending = Promise.resolve('ok')
++    expect(mcpTimeoutMs()).toBe(2_147_483_647)
++    expect(withDeadline(pending, 1_000, 'never')).toBe(pending)
++  })
++
++  it('uses the configured tool-call cap', () => {
++    configureTimeouts({ 'mcp.tool': 1_234 })
++    expect(mcpTimeoutMs()).toBe(1_234)
++  })
++
++  it('rejects a startup/probe operation at the configured budget', async () => {
++    configureTimeouts({ 'mcp.operation': 50 })
++    await expect(withDeadline(new Promise<never>(() => {}), 10_000, 'MCP operation timed out'))
++      .rejects.toThrow('MCP operation timed out')
++  })
++
++  it('keeps the caller budget when it is shorter than the bar value', async () => {
++    configureTimeouts({ 'mcp.operation': 10_000 })
++    const started = Date.now()
++    await expect(withDeadline(new Promise<never>(() => {}), 50, 'caller budget'))
++      .rejects.toThrow('caller budget')
++    expect(Date.now() - started).toBeLessThan(2_000)
++  })
++})
+diff --git a/packages/shell/tool-bash/package.json b/packages/shell/tool-bash/package.json
+index 1d4d5a4193f5873ec5a6332c536b0ced0c0c754b..b74561533c16d6d408fb84283733b83a727d2ad6 100644
+--- a/packages/shell/tool-bash/package.json
++++ b/packages/shell/tool-bash/package.json
+@@ -47,6 +47,7 @@
+     "@deepseek-ai/dsh-subprocess": "workspace:*"
+   },
+   "dependencies": {
++    "@deepseek-ai/dsh-timeout": "workspace:*",
+     "@deepseek-ai/schemastery": "workspace:~"
+   },
+   "devDependencies": {
+diff --git a/packages/shell/tool-bash/src/index.ts b/packages/shell/tool-bash/src/index.ts
+index f3e8b14eb2eec8c2877f355090b7b6f8e3306c1e..78d271c8102eb4aac710d1760cd46e8f3c45d244 100644
+--- a/packages/shell/tool-bash/src/index.ts
++++ b/packages/shell/tool-bash/src/index.ts
+@@ -19,6 +19,7 @@ import { isAbsolute, sep } from 'node:path'
+ import { defineTool, TOOL_ABORTED, ToolArgsError, ToolContextUnavailableError } from '@deepseek-ai/dsh-tools'
+ import type { GenericCallView, TerminalCallView, ToolDefinition, ToolExecution, ToolResult, ToolResultView } from '@deepseek-ai/dsh-tools'
+ import { HarnessError } from '@deepseek-ai/dsh-llm'
++import { resolveTimeout } from '@deepseek-ai/dsh-timeout'
+ import { JobError } from '@deepseek-ai/dsh-jobs'
+ import type { JobId, JobRegistry, JobView } from '@deepseek-ai/dsh-jobs'
+ import type {} from '@deepseek-ai/dsh-user-approval'
+@@ -314,10 +315,21 @@ export function apply(ctx: Context, config: Config = {}): void {
+       })
+       return { id, process: () => proc, stopped: () => stopped, failure: () => hooks?.failure() }
+     }
+-    /** Wait on a registered foreground command until it settles or the timeout passes. */
+-    const waitOnJob = async (registry: JobRegistry, attached: StartedJob, exec: ToolExecution, spec: ShellExecSpec) => {
++    /**
++     * Wait on a registered foreground command until it settles or the wait
++     * budget passes. The wait is a separate clock from the command's own
++     * budget: expiry promotes the command to a background job and returns the
++     * id, so a command that never exits can never freeze the turn.
++     */
++    const waitOnJob = async (
++      registry: JobRegistry,
++      attached: StartedJob,
++      exec: ToolExecution,
++      spec: ShellExecSpec,
++      waitMs: number,
++    ) => {
+       const owner = exec.agent?.id
+-      const timeoutMs = spec.timeoutMs
++      const timeoutMs = waitMs
+       /**
+        * Stop the job on this call's own account and stay on it until it
+        * settles, so the settlement is `awaited` and no completion notice
+@@ -539,13 +551,18 @@ export function apply(ctx: Context, config: Config = {}): void {
+         // instead, exactly as a composition without a registry does.
+         if (jobs !== undefined && promote) {
+           const spec = ctx.shell.resolve({ ...request, onExpiry: 'none' })
++          // The foreground wait follows the operation's configured budget; a
++          // caller-supplied hint may only shorten it. Expiry keeps the command
++          // running and hands its id to the model.
++          const foregroundWaitMs = resolveTimeout('BASH_FOREGROUND_WAIT').ms
++          const waitMs = args.timeoutMs === undefined ? foregroundWaitMs : Math.min(args.timeoutMs, foregroundWaitMs)
+           let attached: StartedJob | undefined
+           try {
+             attached = startJob(jobs, args, exec, spec)
+           } catch (error) {
+             ctx.logger.warn(`bash: job registration refused, running in the foreground with the timeout kill instead: ${String(error)}`)
+           }
+-          if (attached !== undefined) return waitOnJob(jobs, attached, exec, spec)
++          if (attached !== undefined) return waitOnJob(jobs, attached, exec, spec, waitMs)
+         }
+         const spec = ctx.shell.resolve({ ...request, signal: exec.signal })
+         let result: ShellRunResult
+diff --git a/packages/subagent/tool-subagent-control/package.json b/packages/subagent/tool-subagent-control/package.json
+index 42ccc3f90a02d957ed1d8a1c07b5f33971ecb313..7de57af07166b27dc8c5f7fa493d4209476d86f4 100644
+--- a/packages/subagent/tool-subagent-control/package.json
++++ b/packages/subagent/tool-subagent-control/package.json
+@@ -59,7 +59,8 @@
+     "@deepseek-ai/dsh-tools": "workspace:*"
+   },
+   "dependencies": {
+-    "@deepseek-ai/schemastery": "workspace:~",
+-    "@deepseek-ai/dsh-util-values": "workspace:*"
++    "@deepseek-ai/dsh-timeout": "workspace:*",
++    "@deepseek-ai/dsh-util-values": "workspace:*",
++    "@deepseek-ai/schemastery": "workspace:~"
+   }
+ }
+diff --git a/packages/subagent/tool-subagent-control/src/wait-agent.ts b/packages/subagent/tool-subagent-control/src/wait-agent.ts
+index bafd8ec376a1df5990918a66c6c8cb04483b5196..654db3b472f235b924a9ff53fdd333c4c19633e0 100644
+--- a/packages/subagent/tool-subagent-control/src/wait-agent.ts
++++ b/packages/subagent/tool-subagent-control/src/wait-agent.ts
+@@ -5,6 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
+ import type { MessageId, ToolCallId } from '@deepseek-ai/dsh-llm'
+ import { HarnessError } from '@deepseek-ai/dsh-llm'
+ import { defineTool } from '@deepseek-ai/dsh-tools'
++import { resolveTimeout, timeoutSetting } from '@deepseek-ai/dsh-timeout'
+ 
+ /** Wait failures retain a stable machine-readable reason through tool execution. */
+ class AgentWaitError extends HarnessError {
+@@ -93,7 +94,7 @@ export function registerWaitAgent(ctx: Context): void {
+     parameters: {
+       timeout_ms: {
+         type: 'integer',
+-        description: 'Wait duration in milliseconds, from 10000 through 3600000. Defaults to 30000.',
++        description: 'Wait duration in milliseconds. Defaults to and is capped by the Night Cruising timeout settings.',
+       },
+     },
+     output: {
+@@ -105,9 +106,13 @@ export function registerWaitAgent(ctx: Context): void {
+       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+     },
+     async execute(args, exec) {
+-      const timeoutMs = args.timeout_ms ?? 30_000
+-      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 10_000 || timeoutMs > 3_600_000) {
+-        throw new AgentWaitError('timeout_ms must be an integer from 10000 through 3600000', 'WAIT_INVALID_TIMEOUT')
++      // The settings bar owns the default and the cap; `timeout_ms` may pick
++      // any whole second inside that range.
++      const defaultMs = resolveTimeout('AGENT_WAIT').ms
++      const maxMs = Math.max(defaultMs, timeoutSetting('wait.agent.max', 3_600_000))
++      const timeoutMs = args.timeout_ms ?? defaultMs
++      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 10_000 || timeoutMs > maxMs) {
++        throw new AgentWaitError(`timeout_ms must be an integer from 10000 through ${maxMs}`, 'WAIT_INVALID_TIMEOUT')
+       }
+       if (exec.agent === undefined) {
+         throw new AgentWaitError('wait_agent requires a calling agent', 'WAIT_UNAVAILABLE')
+diff --git a/packages/subagent/tool-subagent-control/tests/wait-agent.spec.ts b/packages/subagent/tool-subagent-control/tests/wait-agent.spec.ts
+index 74146f50e0616c262563da3fef108d290e0e063c..9f2536e5a191537ffbf21c542f8c582723bd8dcc 100644
+--- a/packages/subagent/tool-subagent-control/tests/wait-agent.spec.ts
++++ b/packages/subagent/tool-subagent-control/tests/wait-agent.spec.ts
+@@ -7,6 +7,7 @@ import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deep
+ import { createUserMessage, HarnessError, ToolCallId } from '@deepseek-ai/dsh-llm'
+ import { SessionId } from '@deepseek-ai/dsh-session'
+ import SubagentRuntime from '@deepseek-ai/dsh-subagent'
++import { configureTimeouts } from '@deepseek-ai/dsh-timeout'
+ import { renderContextSnapshot } from '@deepseek-ai/dsh-system-prompt'
+ import * as control from '../src/index.ts'
+ 
+@@ -14,6 +15,7 @@ const contexts: Context[] = []
+ afterEach(async () => {
+   vi.restoreAllMocks()
+   vi.useRealTimers()
++  configureTimeouts({})
+   for (const ctx of contexts.splice(0).reverse()) await ctx.fiber.dispose()
+ })
+ 
+@@ -61,6 +63,19 @@ describe('wait_agent', () => {
+     expect(JSON.stringify(ctx.tools.schemas(agent))).not.toMatch(/\b(?:Team|teammate|Lead)\b/)
+   })
+ 
++  it('reads its default and cap from the Night Cruising settings', async () => {
++    const { ctx, agent } = await setup()
++    configureTimeouts({ 'wait.agent.default': 12_000, 'wait.agent.max': 20_000 })
++    vi.useFakeTimers()
++    const { result } = await startWait(ctx, agent)
++    await vi.advanceTimersByTimeAsync(12_000)
++    expect(await result).toMatchObject({ isError: false, value: { timedOut: true } })
++    expect(vi.getTimerCount()).toBe(0)
++
++    const refused = await startWait(ctx, agent, { timeout_ms: 21_000 })
++    await expect(refused.result).resolves.toMatchObject({ isError: true })
++  })
++
+   it('is available without Team mode and leaves pending input for normal admission', async () => {
+     const { ctx, agent, harness } = await setup()
+     const message = input()
+diff --git a/packages/subagent/tool-subagent-control/tsconfig.json b/packages/subagent/tool-subagent-control/tsconfig.json
+index 78c8a11d760e919fc57c6d4ac93143545955bcc0..78c3e8101cdb6279a3998c641a3ee255587a6726 100644
+--- a/packages/subagent/tool-subagent-control/tsconfig.json
++++ b/packages/subagent/tool-subagent-control/tsconfig.json
+@@ -34,6 +34,9 @@
+     },
+     {
+       "path": "../../core/system-prompt"
++    },
++    {
++      "path": "../../util/timeout"
+     }
+   ]
+ }
+diff --git a/packages/util/atomic-write/src/index.ts b/packages/util/atomic-write/src/index.ts
+index 60e2c67b8cc31f591f76bf0f8781bb7f6ef2cbdc..2c6a00e913dd0acfc923f07b7f5a471fec24e9fd 100644
+--- a/packages/util/atomic-write/src/index.ts
++++ b/packages/util/atomic-write/src/index.ts
+@@ -185,17 +185,6 @@ async function takeOverExitedLock(lockPath: string): Promise<boolean> {
+ const LOCK_RETRY_INITIAL_MS = 20
+ const LOCK_RETRY_MAX_MS = 200
+ 
+-/**
+- * How long a contender waits when the caller states no limit — sized for the
+- * render-and-rename cycle every call site had when this package was written.
+- * Expiry fails the contender rather than guessing whether the existing lock
+- * still has an owner. How long is *worth* waiting is a property of the
+- * operation the lock holder runs, which is why {@link FileLockOptions.waitMs}
+- * exists; the value here is the floor for an operation that does file work
+- * alone.
+- */
+-const DEFAULT_LOCK_WAIT_MS = 2_000
+-
+ /** Options for one {@link withFileLock} acquisition. */
+ export interface FileLockOptions {
+   /** Cancel acquisition and contention waits; the operation owns cancellation after it starts. */
+@@ -232,7 +221,7 @@ export interface FileLockOptions {
+  * the lock. The parent directory must exist.
+  * @param filename - the file whose writers this lock serializes.
+  * @param operation - the read-render-commit cycle to run while holding the lock.
+- * @param options - acquisition options; omitted waits {@link DEFAULT_LOCK_WAIT_MS}.
++ * @param options - acquisition cancellation signal.
+  * @returns the operation's result; the lock releases on both outcomes.
+  */
+ export async function withFileLock<T>(
+@@ -241,7 +230,6 @@ export async function withFileLock<T>(
+   options?: FileLockOptions,
+ ): Promise<T> {
+   const lockPath = `${filename}.lock`
+-  const deadline = Date.now() + (options?.waitMs ?? DEFAULT_LOCK_WAIT_MS)
+   let delay = LOCK_RETRY_INITIAL_MS
+   let retriedUnconfirmedPermissionError = false
+   for (;;) {
+@@ -258,9 +246,6 @@ export async function withFileLock<T>(
+         retriedUnconfirmedPermissionError = true
+       } else if (await takeOverExitedLock(lockPath)) continue
+     }
+-    if (Date.now() >= deadline) {
+-      throw new Error(`atomic-write: timed out waiting for the writer lock at ${lockPath}`)
+-    }
+     await wait(delay, undefined, { signal: options?.signal })
+     delay = Math.min(delay * 2, LOCK_RETRY_MAX_MS)
+   }
+diff --git a/packages/util/http-proxy/src/install.ts b/packages/util/http-proxy/src/install.ts
+index c8cafd4ac2a812e10ec7b7e28ee6e87fd0b9441f..f73557d9fca5a9b7440b7d6b4fb3a00b86111e6b 100644
+--- a/packages/util/http-proxy/src/install.ts
++++ b/packages/util/http-proxy/src/install.ts
+@@ -67,8 +67,8 @@ export interface DispatcherOptions {
+  * @param options - dispatcher choices.
+  * @returns the allowH2 fragment to spread into every Agent and ProxyAgent.
+  */
+-function h2Options(options: DispatcherOptions): { readonly allowH2?: boolean } {
+-  return options.allowH2 === undefined ? {} : { allowH2: options.allowH2 }
++function transportOptions(options: DispatcherOptions) {
++  return { ...options, headersTimeout: 0, bodyTimeout: 0, connectTimeout: 0 }
+ }
+ 
+ /**
+@@ -164,7 +164,7 @@ async function createPolicyDispatcher(policy: ProxyPolicy, options: DispatcherOp
+   // The HTTP/2 choice is the caller's: undici enables it by default, and a caller that cannot
+   // tolerate an idle h2 session's informational `UND_ERR_INFO` error passes `allowH2: false`
+   // instead of changing the process-wide default for every other outbound request.
+-  const h2 = h2Options(options)
++  const h2 = transportOptions(options)
+   return new Agent({
+     ...h2,
+     factory(origin, passedOptions) {
+@@ -199,17 +199,6 @@ async function createPolicyDispatcher(policy: ProxyPolicy, options: DispatcherOp
+ async function installGlobalProxy(policy: ProxyPolicy, options: DispatcherOptions = {}): Promise<() => Promise<void>> {
+   const previousPolicy = active
+   if (policy.source === 'none') {
+-    // A direct policy mounted over an installed one must actually stop proxying. Recording the policy
+-    // alone would leave the previous agent as the global dispatcher, so a plain `fetch()` would keep
+-    // tunnelling while `proxyForUrl()` reported a direct connection — and `mode: 'off'` would be a
+-    // silent no-op. With nothing installed there is nothing to displace.
+-    if (previousPolicy === undefined) {
+-      active = policy
+-      return () => {
+-        active = previousPolicy
+-        return Promise.resolve()
+-      }
+-    }
+     const previousInstalled = installed
+     // The install underneath published its normalized policy into `process.env`, which is what a
+     // spawned child copies. With no policy active there is no normalization to stand behind, so the
+@@ -218,7 +207,7 @@ async function installGlobalProxy(policy: ProxyPolicy, options: DispatcherOption
+     const restoreEnv = inheritedProxyEnv === undefined ? undefined : writeProxyEnv(inheritedProxyEnv)
+     const undici = await import('undici')
+     const previous = undici.getGlobalDispatcher()
+-    const direct = new undici.Agent(h2Options(options))
++    const direct = new undici.Agent(transportOptions(options))
+     undici.setGlobalDispatcher(direct)
+     active = policy
+     installed = undefined
+@@ -349,7 +338,7 @@ export async function createRouteDispatcher(
+   const dispatcher = policy.source === 'none'
+     ? await (async () => {
+       const { Agent } = await import('undici')
+-      return new Agent(h2Options(options))
++      return new Agent(transportOptions(options))
+     })()
+     : await createPolicyDispatcher(policy, options)
+   return dispatcher
+diff --git a/packages/util/timeout/src/index.ts b/packages/util/timeout/src/index.ts
+index 5d3dcfe2a2d6fc12d8d081dd4b05ea324b9d2761..c56e1d136f8c77d69a96fb5fecc477ac88fced33 100644
+--- a/packages/util/timeout/src/index.ts
++++ b/packages/util/timeout/src/index.ts
+@@ -1,13 +1,34 @@
+ /**
+- * Shared timeout arithmetic, signal fusion, and classification. The library
+- * only notifies through abort signals; each capability still owns the mechanism
+- * that stops its work and translates timeout reasons into public outcomes.
++ * Shared timeout arithmetic, signal fusion, and classification.
++ *
++ * Durations come from {@link resolveTimeout} (the registry in `registry.ts`);
++ * no call site hardcodes one. The library only notifies through abort signals:
++ * each capability still owns the mechanism that stops its work and translates
++ * a {@link TimeoutReason} into its public outcome.
+  * @module @deepseek-ai/dsh-timeout
+  */
+ 
++import {
++  MAX_TIMER_DELAY_MS,
++  publishSettings,
++  resolveTimeout,
++  settingNumber,
++} from './registry.ts'
++
++export {
++  MAX_TIMER_DELAY_MS,
++  TIMEOUT_RULES,
++  resolveTimeout,
++  timeoutRule,
++  timeoutRuleByKey,
++  validateTimeoutSetting,
++} from './registry.ts'
++export type { ResolvedTimeout, TimeoutMode, TimeoutRule } from './registry.ts'
++
+ /**
+- * Internal abort reason carrying a capability-owned code and elapsed deadline.
+- * Providers translate it through {@link timeoutOf} before returning to callers.
++ * Internal abort reason carrying a capability-owned code and the elapsed
++ * deadline. Providers translate it through {@link timeoutOf} before returning
++ * to callers.
+  */
+ export class TimeoutReason extends Error {
+   override name = 'TimeoutReason'
+@@ -21,9 +42,42 @@ export class TimeoutReason extends Error {
+   }
+ }
+ 
+-/** Largest delay Node schedules without clamping it to one millisecond. */
+-export const MAX_TIMER_DELAY_MS = 2_147_483_647
++/**
++ * Replace the timeout values consulted by {@link deadline} and the settings
++ * readers. Values are validated at the settings boundary; this function only
++ * delegates a defensive copy to the registry store.
++ *
++ * @param values - Settings key to milliseconds; `0` disables a budget timer.
++ */
++export function configureTimeouts(values: Readonly<Record<string, number>>): void {
++  publishSettings(values)
++}
+ 
++/**
++ * Read one configured operation timeout.
++ *
++ * @param key - Settings key (for example `wait.job.default`).
++ * @param fallback - Value used when the key is absent or invalid.
++ * @returns The configured milliseconds, or `fallback`.
++ */
++export function timeoutSetting(key: string, fallback: number): number {
++  return settingNumber(key, fallback)
++}
++
++/**
++ * Publish the complete Night Cruising settings map. A numeric setting may be a
++ * duration or a count; both are non-negative numbers validated by the settings
++ * surface. This is the general spelling of {@link configureTimeouts}.
++ *
++ * @param values - Settings key to numeric value.
++ */
++export function configureSettings(values: Readonly<Record<string, number>>): void {
++  publishSettings(values)
++}
++
++export { settingNumber } from './registry.ts'
++
++/** Reject a delay that would overflow Node's timer or arm nothing. */
+ function assertTimerDelay(timeoutMs: number, name: string): void {
+   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_DELAY_MS) {
+     throw new Error(`${name} must be a positive finite number no greater than ${MAX_TIMER_DELAY_MS}`)
+@@ -87,110 +141,113 @@ export interface IdleWatchdog {
+ }
+ 
+ /**
+- * Fuse upstream cancellation with an identifiable timeout. `timeoutMs <= 0` is
+- * the internal no-timer sentinel; the returned disposer clears an armed timer.
+- * The signal only notifies, so callers must stop their own work.
++ * Fuse upstream cancellation with a capability's `budget` deadline. The
++ * duration comes from the registry: a caller hint may only tighten it, and a
++ * configured `0` (or a non-positive hint) arms no local timer at all. The
++ * signal only notifies, so callers must stop their own work.
+  *
+  * @param upstream The caller's cancellation signal, if any, fused into the result.
+- * @param timeoutMs Deadline in milliseconds; `<= 0` means "no timeout" (arm no timer).
+- * @param code Capability-owned code stamped onto the timeout's {@link TimeoutReason}.
++ * @param timeoutMs The caller's own hint in milliseconds; `undefined` uses the
++ *   configured value, `<= 0` arms no timer.
++ * @param code Capability-owned code resolved by the registry.
+  * @returns The fused {@link Deadline} (signal + timer cleanup).
+  */
+ export function deadline(
+   upstream: AbortSignal | undefined,
+-  timeoutMs: number,
++  timeoutMs: number | undefined,
+   code: string,
+ ): Deadline {
+-  if (timeoutMs <= 0) {
+-    // No timeout (background work): forward only the upstream signal, or a never-aborting one
+-    // when there is no upstream.
++  const effective = timeoutMs === undefined
++    ? resolveTimeout(code).ms
++    : timeoutMs > 0 ? resolveTimeout(code, timeoutMs).ms : 0
++  if (effective <= 0) {
+     return { signal: upstream ?? new AbortController().signal, [Symbol.dispose]() {} }
+   }
+-
+-  assertTimerDelay(timeoutMs, 'deadline timeoutMs')
+-
++  assertTimerDelay(effective, 'deadline timeoutMs')
+   const timer = new AbortController()
+-  const id = setTimeout(() => { timer.abort(new TimeoutReason(code, timeoutMs)) }, timeoutMs)
++  const id = setTimeout(() => { timer.abort(new TimeoutReason(code, effective)) }, effective)
+   return {
+-    // AbortSignal.any adopts the reason of whichever source aborts FIRST, so a
+-    // race resolves to a single cause: timeoutOf() reads TimeoutReason only
+-    // when the timeout won, and upstream-wins leaves an ordinary abort reason.
+-    signal: upstream !== undefined ? AbortSignal.any([upstream, timer.signal]) : timer.signal,
+-    [Symbol.dispose]() { clearTimeout(id) },
++    signal: upstream === undefined ? timer.signal : AbortSignal.any([upstream, timer.signal]),
++    [Symbol.dispose]() {
++      clearTimeout(id)
++    },
+   }
+ }
+ 
+ /**
+- * Create a rearmable idle watchdog for an async iterator. The timer exists only
+- * while {@link IdleWatchdog.next} is outstanding, so consumer think time does
+- * not count as provider idle time. The returned signal is stable for the whole
+- * call and only notifies; the iterator must observe it to release the resources
+- * of a demand the deadline abandoned.
++ * Arm a real timer for a caller-facing blocking wait. Unlike {@link deadline},
++ * expiry only ends this wait and returns the current state; it never aborts
++ * the awaited work. The duration must already be finite: a wait without a
++ * bound is what freezes an agent turn.
+  *
+- * @param upstream - caller cancellation fused into the stable signal.
+- * @param timeoutMs - positive finite idle interval in milliseconds.
+- * @param code - capability-owned code carried by the timeout reason.
+- * @returns a stable signal, guarded next operation, and timer disposer.
++ * @param upstream The caller's cancellation, forwarded unchanged.
++ * @param timeoutMs The wait expiry in milliseconds.
++ * @param code Capability-owned code carried by the abort reason.
++ * @returns The fused {@link Deadline}; disposal clears the timer.
+  */
++export function waitDeadline(
++  upstream: AbortSignal | undefined,
++  timeoutMs: number,
++  code: string,
++): Deadline {
++  assertTimerDelay(timeoutMs, 'waitDeadline timeoutMs')
++  const controller = new AbortController()
++  const id = setTimeout(() => {
++    if (!controller.signal.aborted) controller.abort(new TimeoutReason(code, timeoutMs))
++  }, timeoutMs)
++  let disposed = false
++  return {
++    signal: upstream === undefined ? controller.signal : AbortSignal.any([upstream, controller.signal]),
++    [Symbol.dispose]() {
++      if (disposed) return
++      disposed = true
++      clearTimeout(id)
++    },
++  }
++}
++
++/**
++ * Resolve a registry `wait` budget and arm it. Calls the same registry as
++ * {@link deadline} but refuses to run unbounded: a `wait` rule without a
++ * finite value throws instead of hanging the caller.
++ *
++ * @param upstream The caller's cancellation, forwarded unchanged.
++ * @param code Capability-owned code whose rule must be a `wait` budget.
++ * @param requested Caller's own wait hint; may only shorten the configured one.
++ * @returns The fused {@link Deadline}; expiry ends the wait, not the work.
++ */
++export function waitWindow(
++  upstream: AbortSignal | undefined,
++  code: string,
++  requested?: number,
++): Deadline {
++  const { ms, mode } = resolveTimeout(code, requested)
++  if (mode !== 'wait') throw new Error(`timeout code "${code}" is not a wait budget`)
++  return waitDeadline(upstream, ms, code)
++}
++
++/** Preserve iterator lifecycle and caller cancellation without an idle timer. */
+ export function idleWatchdog(
+   upstream: AbortSignal | undefined,
+   timeoutMs: number,
+   code: string,
+ ): IdleWatchdog {
+-  assertTimerDelay(timeoutMs, 'idleWatchdog timeoutMs')
+-  const timeout = new AbortController()
+-  const signal = upstream === undefined
+-    ? timeout.signal
+-    : AbortSignal.any([upstream, timeout.signal])
+-  // The deadline owns the outstanding demand. A transport can leave a read it
+-  // aborted pending forever (undici drops the error when the abort lands on an
+-  // in-flight body read), so waiting for the iterator to observe the signal
+-  // would leave the caller waiting past its own deadline.
+-  const reason = new TimeoutReason(code, timeoutMs)
+-  let timer: ReturnType<typeof setTimeout> | undefined
++  void timeoutMs
++  void code
++  const signal = upstream ?? new AbortController().signal
+   let outstanding = false
+   let disposed = false
+-
+-  const arm = (): void => {
+-    if (timer !== undefined) clearTimeout(timer)
+-    timer = setTimeout(() => {
+-      timeout.abort(reason)
+-    }, timeoutMs)
+-  }
+-
+   return {
+     signal,
+     async next<T>(iterator: AsyncIterator<T>): Promise<IteratorResult<T>> {
+       if (disposed) throw new Error('idleWatchdog is disposed')
+       if (outstanding) throw new Error('idleWatchdog next is already outstanding')
+       outstanding = true
+-      arm()
+-      const expired = Promise.withResolvers<never>()
+-      const onAbort = (): void => { expired.reject(reason) }
+-      timeout.signal.addEventListener('abort', onAbort, { once: true })
+-      try {
+-        // Both reactions end with this demand: a deadline promise kept for the
+-        // watchdog's lifetime would retain every value the settled races produced.
+-        return await Promise.race([
+-          iterator.next().finally(() => { timeout.signal.removeEventListener('abort', onAbort) }),
+-          expired.promise,
+-        ])
+-      } finally {
+-        clearTimeout(timer)
+-        timer = undefined
+-        outstanding = false
+-      }
+-    },
+-    pulse(): void {
+-      if (disposed || !outstanding) return
+-      arm()
+-    },
+-    [Symbol.dispose](): void {
+-      if (disposed) return
+-      disposed = true
+-      if (timer !== undefined) clearTimeout(timer)
+-      timer = undefined
++      try { return await iterator.next() }
++      finally { outstanding = false }
+     },
++    pulse(): void {},
++    [Symbol.dispose](): void { disposed = true },
+   }
+ }
+ 
+diff --git a/packages/util/timeout/src/registry.ts b/packages/util/timeout/src/registry.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..cc14fdee898e97d9371d96f11dc15e8e88fbacaf
+--- /dev/null
++++ b/packages/util/timeout/src/registry.ts
+@@ -0,0 +1,245 @@
++/**
++ * Timeout registry: the single source of truth for capability budgets.
++ *
++ * Three modes keep the duration of work and the duration of a wait apart:
++ *
++ * - `budget` — how long an operation may run. Expiry terminates the work and
++ *   may be disabled with `0` (only the caller can cancel it then).
++ * - `wait` — how long a caller blocks on work that keeps running. Expiry only
++ *   returns the current state, so a `wait` budget must stay finite: it is the
++ *   valve that keeps an agent turn from freezing on a stuck command.
++ * - `off` — policy: the capability never arms a local timer.
++ *
++ * Every call site passes its capability `code`; no call site hardcodes a
++ * duration. The Night Cruising settings bar is generated from this registry,
++ * so defaults cannot drift between the two.
++ * @module @deepseek-ai/dsh-timeout/registry
++ */
++
++/** Largest delay Node schedules without clamping it to one millisecond. */
++export const MAX_TIMER_DELAY_MS = 2_147_483_647
++
++/** See the module comment: what expiry means for one capability. */
++export type TimeoutMode = 'budget' | 'wait' | 'off'
++
++/** One capability's timeout policy. */
++export interface TimeoutRule {
++  /** Capability code passed to `deadline()` / `waitWindow()`. */
++  code: string
++  /** Settings key shown by the bottom bar; absent for `off` rules. */
++  key?: string
++  /** Footer group id. */
++  group: 'shell' | 'tools' | 'wait' | 'network' | 'services' | 'policy'
++  /** Footer row label. */
++  label: string
++  /** Footer row hint. */
++  hint: string
++  /** Expiry semantics. */
++  mode: TimeoutMode
++  /** Upstream module default; the only place a duration is written down. */
++  defaultMs: number
++  /** Lowest accepted settings value. */
++  minMs: number
++  /** Highest accepted settings value. */
++  maxMs: number
++  /** Whether `0` (no local timer) is a legal settings value; `budget` only. */
++  allowOff?: boolean
++}
++
++/**
++ * Every timeout capability in the product, in footer display order.
++ *
++ * A code that is absent here is not silently disabled: `resolveTimeout()`
++ * falls back to the caller's own budget and warns once.
++ */
++export const TIMEOUT_RULES: readonly TimeoutRule[] = [
++  // Shell execution budgets: `0` means "never kill, only the user may".
++  {
++    code: 'BASH_TIMEOUT', key: 'tool.bash', group: 'shell', mode: 'budget',
++    label: '命令执行', hint: '单条 Shell 命令的运行上限；0 表示只受用户取消。',
++    defaultMs: 120_000, minMs: 0, maxMs: MAX_TIMER_DELAY_MS, allowOff: true,
++  },
++  {
++    code: 'PERSISTENT_BASH_TIMEOUT', key: 'tool.persistentBash', group: 'shell', mode: 'budget',
++    label: '持久终端命令', hint: '持久 Bash/Pwsh 会话的单条命令上限；0 表示只受用户取消。',
++    defaultMs: 300_000, minMs: 0, maxMs: MAX_TIMER_DELAY_MS, allowOff: true,
++  },
++  // The foreground wait is the valve: a stuck command must still return.
++  {
++    code: 'BASH_FOREGROUND_WAIT', key: 'wait.foreground', group: 'wait', mode: 'wait',
++    label: '前台等待', hint: '工具调用等多久后把命令转为后台作业并回到模型；此项不可为 0。',
++    defaultMs: 120_000, minMs: 1_000, maxMs: MAX_TIMER_DELAY_MS,
++  },
++  {
++    code: 'TASK_WAIT_TIMEOUT', key: 'wait.job.default', group: 'wait', mode: 'wait',
++    label: '作业等待', hint: 'job_output 未指定 timeout_ms 时的等待时长。',
++    defaultMs: 30_000, minMs: 1_000, maxMs: 600_000,
++  },
++  {
++    code: 'session/wait-timeout', key: 'wait.session.default', group: 'wait', mode: 'wait',
++    label: '会话等待', hint: '远端会话状态等待的默认时长。',
++    defaultMs: 30_000, minMs: 1_000, maxMs: 600_000,
++  },
++  {
++    code: 'AGENT_WAIT', key: 'wait.agent.default', group: 'wait', mode: 'wait',
++    label: '子智能体等待', hint: 'wait_agent 未指定 timeout_ms 时的等待时长。',
++    defaultMs: 30_000, minMs: 10_000, maxMs: 3_600_000,
++  },
++  // Tool and network budgets.
++  {
++    code: 'TOOL_TIMEOUT', key: 'tool.call', group: 'tools', mode: 'budget',
++    label: '工具调用', hint: '工具声明执行预算的通用上限；0 表示不额外封顶。',
++    defaultMs: 0, minMs: 0, maxMs: MAX_TIMER_DELAY_MS, allowOff: true,
++  },
++  {
++    code: 'WORKTREE_TIMEOUT', key: 'tool.worktree', group: 'tools', mode: 'budget',
++    label: '工作树操作', hint: '创建、清理工作树的上限；0 表示只受用户取消。',
++    defaultMs: 120_000, minMs: 0, maxMs: MAX_TIMER_DELAY_MS, allowOff: true,
++  },
++  {
++    code: 'WEB_FETCH_TIMEOUT', key: 'web.fetch', group: 'network', mode: 'budget',
++    label: '网页抓取', hint: '网页抓取请求的上限；0 表示只受用户取消。',
++    defaultMs: 30_000, minMs: 0, maxMs: MAX_TIMER_DELAY_MS, allowOff: true,
++  },
++  {
++    code: 'MCP_CALL', key: 'mcp.tool', group: 'network', mode: 'budget',
++    label: 'MCP 工具调用', hint: 'MCP tools/call 的上限；0 表示只受用户取消。',
++    defaultMs: 60_000, minMs: 0, maxMs: MAX_TIMER_DELAY_MS, allowOff: true,
++  },
++  {
++    code: 'MCP_OPERATION', key: 'mcp.operation', group: 'network', mode: 'budget',
++    label: 'MCP 启停/探测', hint: 'MCP 启动、探测、关闭与清理的上限；0 表示只受用户取消。',
++    defaultMs: 60_000, minMs: 0, maxMs: MAX_TIMER_DELAY_MS, allowOff: true,
++  },
++  // Shutdown hygiene: these must stay finite.
++  {
++    code: 'LSP_SHUTDOWN', key: 'lsp.shutdown', group: 'services', mode: 'budget',
++    label: 'LSP 关闭', hint: '语言服务关闭的收尾预算。',
++    defaultMs: 10_000, minMs: 1_000, maxMs: 600_000,
++  },
++  {
++    code: 'LSP_CANCEL_GRACE', key: 'lsp.grace', group: 'services', mode: 'budget',
++    label: 'LSP 取消宽限', hint: '语言服务取消请求的宽限时间。',
++    defaultMs: 5_000, minMs: 1_000, maxMs: 600_000,
++  },
++]
++
++/** Lookup by capability code. */
++const RULES_BY_CODE: ReadonlyMap<string, TimeoutRule> = new Map(TIMEOUT_RULES.map(rule => [rule.code, rule]))
++
++/** Lookup by settings key. */
++const RULES_BY_KEY: ReadonlyMap<string, TimeoutRule> = new Map(
++  TIMEOUT_RULES.flatMap(rule => rule.key === undefined ? [] : [[rule.key, rule] as const]),
++)
++
++/** @param code Capability code. @returns Its rule, or `undefined` when unregistered. */
++export function timeoutRule(code: string): TimeoutRule | undefined {
++  return RULES_BY_CODE.get(code)
++}
++
++/** @param key Settings key. @returns The rule that owns it, or `undefined`. */
++export function timeoutRuleByKey(key: string): TimeoutRule | undefined {
++  return RULES_BY_KEY.get(key)
++}
++
++/** Settings store: every published value, keyed by settings key. */
++let values: Readonly<Record<string, number>> = Object.freeze({})
++
++/** Codes already warned about, so an unregistered code logs once. */
++const warned = new Set<string>()
++
++/**
++ * Publish the complete settings map. Values arrive already validated by the
++ * settings surface; this function only takes a defensive copy.
++ * @param next Settings key to number.
++ */
++export function publishSettings(next: Readonly<Record<string, number>>): void {
++  const copy: Record<string, number> = {}
++  for (const [key, value] of Object.entries(next)) {
++    if (Number.isFinite(value) && value >= 0) copy[key] = value
++  }
++  values = Object.freeze(copy)
++}
++
++/**
++ * Read one configured number.
++ * @param key Settings key.
++ * @param fallback Value used when the key is absent.
++ * @returns The configured value, or `fallback`.
++ */
++export function settingNumber(key: string, fallback: number): number {
++  const value = values[key]
++  return value === undefined ? fallback : value
++}
++
++/** @param code Capability code. @returns Whether its rule may be disabled with 0. */
++export function timeoutAllowsOff(code: string): boolean {
++  return RULES_BY_CODE.get(code)?.allowOff === true
++}
++
++/** Effective budget for one capability. */
++export interface ResolvedTimeout {
++  /** Milliseconds to arm; `0` means arm no local timer. */
++  ms: number
++  /** Expiry semantics that produced {@link resolved.ms}. */
++  mode: TimeoutMode
++}
++
++/**
++ * Resolve one capability's effective budget.
++ *
++ * Invariants:
++ * - a caller hint may only tighten the configured budget, never widen it;
++ * - an unconfigured key falls back to the rule default (never to "disabled");
++ * - a `wait` budget is always finite (`minMs`…`maxMs`), because it is the only
++ *   thing that ends a blocked agent turn;
++ * - an unregistered code keeps the caller's budget and warns once.
++ *
++ * @param code Capability code.
++ * @param requested Caller's own budget; `undefined` or non-positive means none.
++ * @returns The effective budget and its mode.
++ */
++export function resolveTimeout(code: string, requested?: number): ResolvedTimeout {
++  const rule = RULES_BY_CODE.get(code)
++  const hint = requested !== undefined && Number.isFinite(requested) && requested > 0 ? requested : undefined
++
++  if (rule === undefined) {
++    if (!warned.has(code)) {
++      warned.add(code)
++      console.warn(`[dsh-timeout] unregistered timeout code "${code}"; using the caller's budget`)
++    }
++    return { ms: hint ?? 0, mode: 'budget' }
++  }
++  if (rule.mode === 'off') return { ms: 0, mode: 'off' }
++
++  const configured = values[rule.key ?? ''] ?? rule.defaultMs
++
++  if (rule.mode === 'wait') {
++    const chosen = hint === undefined ? configured : Math.min(hint, configured)
++    if (!(chosen > 0)) {
++      throw new Error(`wait timeout "${rule.key}" must stay finite; configure a positive value`)
++    }
++    return { ms: Math.max(rule.minMs, Math.min(chosen, rule.maxMs)), mode: 'wait' }
++  }
++
++  // budget: an explicit 0 is authoritative — the capability runs until the user cancels it
++  if (configured === 0) return { ms: 0, mode: 'budget' }
++  const chosen = Math.min(hint ?? configured, configured)
++  return { ms: Math.max(rule.minMs, Math.min(chosen, rule.maxMs)), mode: 'budget' }
++}
++
++/**
++ * Validate one candidate settings value against its rule.
++ * @param key Settings key.
++ * @param value Candidate milliseconds.
++ * @returns An error message, or `undefined` when accepted.
++ */
++export function validateTimeoutSetting(key: string, value: number): string | undefined {
++  const rule = RULES_BY_KEY.get(key)
++  if (rule === undefined) return undefined
++  if (!Number.isFinite(value) || !Number.isInteger(value)) return `${rule.label} 必须是整数毫秒`
++  if (rule.mode === 'wait' && value <= 0) return `${rule.label} 不能为 0：等待必须有上限`
++  if (!rule.allowOff && value < rule.minMs) return `${rule.label} 不能小于 ${rule.minMs} 毫秒`
++  if (value > rule.maxMs) return `${rule.label} 不能大于 ${rule.maxMs} 毫秒`
++  return undefined
++}
+diff --git a/packages/util/timeout/tests/registry.spec.ts b/packages/util/timeout/tests/registry.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f0b0e21727afd6df82144e9755af49231ca2b40
+--- /dev/null
++++ b/packages/util/timeout/tests/registry.spec.ts
+@@ -0,0 +1,71 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++import {
++  configureTimeouts,
++  deadline,
++  resolveTimeout,
++  timeoutRule,
++  waitWindow,
++} from '@deepseek-ai/dsh-timeout'
++
++afterEach(() => {
++  configureTimeouts({})
++  vi.useRealTimers()
++})
++
++describe('timeout registry', () => {
++  it('registers every runtime code with a footer key', () => {
++    for (const code of ['BASH_TIMEOUT', 'TASK_WAIT_TIMEOUT', 'BASH_FOREGROUND_WAIT', 'WEB_FETCH_TIMEOUT', 'MCP_CALL', 'session/wait-timeout']) {
++      const rule = timeoutRule(code)
++      expect(rule, code).toBeDefined()
++      expect(rule?.key, code).toBeTruthy()
++    }
++  })
++
++  it('uses the registry default when the key is unconfigured', () => {
++    expect(resolveTimeout('BASH_TIMEOUT')).toEqual({ ms: 120_000, mode: 'budget' })
++    expect(resolveTimeout('BASH_FOREGROUND_WAIT')).toEqual({ ms: 120_000, mode: 'wait' })
++  })
++
++  it('lets a caller hint only tighten the configured budget', () => {
++    configureTimeouts({ 'tool.bash': 300_000 })
++    expect(resolveTimeout('BASH_TIMEOUT', 60_000).ms).toBe(60_000)
++    expect(resolveTimeout('BASH_TIMEOUT', 900_000).ms).toBe(300_000)
++  })
++
++  it('treats a configured zero as "no local timer" for a budget', () => {
++    configureTimeouts({ 'tool.bash': 0 })
++    expect(resolveTimeout('BASH_TIMEOUT', 60_000).ms).toBe(0)
++  })
++
++  it('refuses a zero wait budget', () => {
++    configureTimeouts({ 'wait.foreground': 0 })
++    expect(() => resolveTimeout('BASH_FOREGROUND_WAIT')).toThrow(/finite/)
++  })
++
++  it('falls back to the caller budget for an unregistered code', () => {
++    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
++    expect(resolveTimeout('NOT_A_CODE', 5_000)).toEqual({ ms: 5_000, mode: 'budget' })
++    expect(warn).toHaveBeenCalledTimes(1)
++    warn.mockRestore()
++  })
++
++  it('arms a budget deadline and reports its code', async () => {
++    vi.useFakeTimers()
++    configureTimeouts({ 'tool.bash': 1_000 })
++    using d = deadline(undefined, 1_000, 'BASH_TIMEOUT')
++    vi.advanceTimersByTime(1_000)
++    expect(d.signal.aborted).toBe(true)
++  })
++
++  it('ends a foreground wait at its budget', async () => {
++    vi.useFakeTimers()
++    configureTimeouts({ 'wait.foreground': 2_000 })
++    using d = waitWindow(undefined, 'BASH_FOREGROUND_WAIT')
++    vi.advanceTimersByTime(2_000)
++    expect(d.signal.aborted).toBe(true)
++  })
++
++  it('never arms a wait from an unregistered code', () => {
++    expect(() => waitWindow(undefined, 'NOT_A_CODE')).toThrow(/not a wait budget/)
++  })
++})
+diff --git a/packages/util/timeout/tests/timeout.spec.ts b/packages/util/timeout/tests/timeout.spec.ts
+index b67333ef620bd7a8fa85dbda21c0cc8b00f6954d..48ef46b21859865d21cb73b9032a65313a295d20 100644
+--- a/packages/util/timeout/tests/timeout.spec.ts
++++ b/packages/util/timeout/tests/timeout.spec.ts
+@@ -1,11 +1,13 @@
+-import { afterEach, describe, expect, it, vi } from 'vitest'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+ import {
+   clampTimeout,
++  configureTimeouts,
+   deadline,
+   idleWatchdog,
+   MAX_TIMER_DELAY_MS,
+   timeoutOf,
+   TimeoutReason,
++  waitDeadline,
+ } from '@deepseek-ai/dsh-timeout'
+ 
+ describe('TimeoutReason', () => {
+@@ -52,7 +54,13 @@ describe('clampTimeout', () => {
+ })
+ 
+ describe('deadline — timeout arm', () => {
+-  afterEach(() => { vi.useRealTimers() })
++  // The settings bar owns these values; a deadline arms only for a mapped code
++  // whose entry enables it and caps the caller's own hint.
++  beforeEach(() => { configureTimeouts({ 'tool.bash': 100_000, 'web.fetch': 100_000 }) })
++  afterEach(() => {
++    configureTimeouts({})
++    vi.useRealTimers()
++  })
+ 
+   it('aborts on timeout with a TimeoutReason after the elapsed ms', () => {
+     vi.useFakeTimers()
+@@ -75,15 +83,26 @@ describe('deadline — timeout arm', () => {
+     expect(timeoutOf(d.signal)).toBeUndefined()
+   })
+ 
+-  it('rejects delays that Node would clamp to one millisecond', () => {
+-    expect(() => deadline(undefined, MAX_TIMER_DELAY_MS + 1, 'BASH_TIMEOUT'))
+-      .toThrow(`no greater than ${MAX_TIMER_DELAY_MS}`)
+-    expect(() => deadline(undefined, Number.POSITIVE_INFINITY, 'BASH_TIMEOUT'))
+-      .toThrow(`no greater than ${MAX_TIMER_DELAY_MS}`)
++  it('leaves a code without a settings entry untimed', () => {
++    vi.useFakeTimers()
++    using d = deadline(undefined, 100, 'FORGE_FETCH_TIMEOUT')
++    vi.advanceTimersByTime(1_000)
++    expect(d.signal.aborted).toBe(false)
++  })
++
++  it('forwards only cancellation when the settings entry is zero', () => {
++    configureTimeouts({ 'tool.bash': 0 })
++    vi.useFakeTimers()
++    using d = deadline(undefined, 100, 'BASH_TIMEOUT')
++    vi.advanceTimersByTime(1_000)
++    expect(d.signal.aborted).toBe(false)
+   })
+ })
+ 
+ describe('deadline — fuse with upstream', () => {
++  beforeEach(() => { configureTimeouts({ 'tool.bash': 100_000, 'web.fetch': 100_000 }) })
++  afterEach(() => { configureTimeouts({}) })
++
+   it('aborts on upstream cancellation, classified as NOT a timeout', () => {
+     const upstream = new AbortController()
+     using d = deadline(upstream.signal, 60_000, 'BASH_TIMEOUT')
+@@ -135,7 +154,11 @@ describe('deadline — fuse with upstream', () => {
+ })
+ 
+ describe('deadline — timeoutMs <= 0 (no-timeout sentinel)', () => {
+-  afterEach(() => { vi.useRealTimers() })
++  beforeEach(() => { configureTimeouts({ 'tool.bash': 100_000 }) })
++  afterEach(() => {
++    configureTimeouts({})
++    vi.useRealTimers()
++  })
+ 
+   it('arms no timer and forwards only the upstream signal', () => {
+     vi.useFakeTimers()
+@@ -197,110 +220,64 @@ describe('deadline — nested deadlines', () => {
+   })
+ })
+ 
+-describe('idleWatchdog', () => {
++describe('waitDeadline', () => {
+   afterEach(() => { vi.useRealTimers() })
+ 
+-  it('arms only while next is outstanding and rearms the same signal for later demand', async () => {
+-    vi.useFakeTimers()
+-    const first = Promise.withResolvers<IteratorResult<number>>()
+-    const second = Promise.withResolvers<IteratorResult<number>>()
+-    const iterator: AsyncIterator<number> = {
+-      next: vi.fn()
+-        .mockImplementationOnce(() => first.promise)
+-        .mockImplementationOnce(() => second.promise),
+-    }
+-    using watchdog = idleWatchdog(undefined, 100, 'LLM_STREAM_IDLE_TIMEOUT')
+-    const stableSignal = watchdog.signal
+-
+-    const firstNext = watchdog.next(iterator)
+-    await vi.advanceTimersByTimeAsync(99)
+-    expect(stableSignal.aborted).toBe(false)
+-    first.resolve({ done: false, value: 1 })
+-    await expect(firstNext).resolves.toEqual({ done: false, value: 1 })
+-
+-    await vi.advanceTimersByTimeAsync(10_000)
+-    expect(stableSignal.aborted).toBe(false)
+-    expect(watchdog.signal).toBe(stableSignal)
+-
+-    const secondNext = watchdog.next(iterator)
+-    // Observe before advancing: the deadline rejects an iterator that never settles.
+-    const secondOutcome = secondNext.catch((error: unknown) => error)
+-    await vi.advanceTimersByTimeAsync(100)
+-    expect(timeoutOf(stableSignal, 'LLM_STREAM_IDLE_TIMEOUT')).toMatchObject({ timeoutMs: 100 })
+-    second.reject(stableSignal.reason)
+-    expect(await secondOutcome).toBe(stableSignal.reason)
+-  })
+-
+-  it('rearms outstanding demand on an out-of-band activity pulse', async () => {
++  it('ends the wait with a TimeoutReason without aborting anything else', () => {
+     vi.useFakeTimers()
+-    const pending = Promise.withResolvers<IteratorResult<number>>()
+-    const watchdog = idleWatchdog(undefined, 100, 'LLM_STREAM_IDLE_TIMEOUT')
+-    watchdog.pulse()
+-    await vi.advanceTimersByTimeAsync(1_000)
+-    expect(watchdog.signal.aborted).toBe(false)
+-
+-    const next = watchdog.next({ next: () => pending.promise })
+-    const outcome = next.catch((error: unknown) => error)
+-    await vi.advanceTimersByTimeAsync(99)
+-    watchdog.pulse()
+-    await vi.advanceTimersByTimeAsync(99)
+-    expect(watchdog.signal.aborted).toBe(false)
+-    await vi.advanceTimersByTimeAsync(1)
+-    expect(timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT')).toMatchObject({ timeoutMs: 100 })
+-    pending.reject(watchdog.signal.reason)
+-    expect(await outcome).toBe(watchdog.signal.reason)
+-
+-    watchdog[Symbol.dispose]()
+-    watchdog.pulse()
++    using d = waitDeadline(undefined, 100, 'TASK_WAIT_TIMEOUT')
++    vi.advanceTimersByTime(100)
++    expect(timeoutOf(d.signal, 'TASK_WAIT_TIMEOUT')?.timeoutMs).toBe(100)
+   })
+ 
+-  it('keeps an earlier upstream abort distinct from its own timeout', async () => {
++  it('clears the timer on disposal and forwards upstream cancellation', () => {
+     vi.useFakeTimers()
+     const upstream = new AbortController()
+-    using watchdog = idleWatchdog(upstream.signal, 100, 'LLM_STREAM_IDLE_TIMEOUT')
+-    upstream.abort('caller cancelled')
+-    expect(watchdog.signal.aborted).toBe(true)
+-    expect(timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT')).toBeUndefined()
+-    await vi.advanceTimersByTimeAsync(1_000)
+-    expect(watchdog.signal.reason).toBe('caller cancelled')
++    const d = waitDeadline(upstream.signal, 100, 'TASK_WAIT_TIMEOUT')
++    d[Symbol.dispose]()
++    vi.advanceTimersByTime(1_000)
++    expect(d.signal.aborted).toBe(false)
++    upstream.abort('user steered')
++    expect(d.signal.reason).toBe('user steered')
+   })
+ 
+-  it('clears an outstanding arm on disposal', async () => {
+-    vi.useFakeTimers()
+-    const pending = Promise.withResolvers<IteratorResult<number>>()
+-    const watchdog = idleWatchdog(undefined, 100, 'LLM_STREAM_IDLE_TIMEOUT')
+-    void watchdog.next({ next: () => pending.promise })
+-    watchdog[Symbol.dispose]()
+-    await vi.advanceTimersByTimeAsync(1_000)
+-    expect(watchdog.signal.aborted).toBe(false)
+-    pending.resolve({ done: true, value: undefined })
+-    await expect(watchdog.next({ next: () => Promise.resolve({ done: true, value: undefined }) }))
+-      .rejects.toThrow(/disposed/)
+-    watchdog[Symbol.dispose]()
++  it('rejects delays Node would clamp to one millisecond', () => {
++    expect(() => waitDeadline(undefined, MAX_TIMER_DELAY_MS + 1, 'TASK_WAIT_TIMEOUT'))
++      .toThrow(`no greater than ${MAX_TIMER_DELAY_MS}`)
++    expect(() => waitDeadline(undefined, 0, 'TASK_WAIT_TIMEOUT')).toThrow(/positive finite/)
+   })
++})
+ 
+-  it('rejects an outstanding demand the iterator never settles', async () => {
++describe('idleWatchdog — model streams stay untimed', () => {
++  it('forwards the iterator without arming a local deadline', async () => {
+     vi.useFakeTimers()
+-    using watchdog = idleWatchdog(undefined, 100, 'LLM_STREAM_IDLE_TIMEOUT')
+-    // A transport can leave an aborted read pending forever; the deadline, not the
+-    // iterator, decides when this demand ends.
+-    const next = watchdog.next({ next: () => new Promise<IteratorResult<number>>(() => {}) })
+-    const outcome = next.catch((error: unknown) => error)
+-    await vi.advanceTimersByTimeAsync(100)
+-    expect(await outcome).toBe(watchdog.signal.reason)
+-    expect(timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT')).toMatchObject({ timeoutMs: 100 })
++    try {
++      const upstream = new AbortController()
++      using watchdog = idleWatchdog(upstream.signal, 100, 'LLM_STREAM_IDLE_TIMEOUT')
++      await vi.advanceTimersByTimeAsync(10_000)
++      expect(watchdog.signal.aborted).toBe(false)
++      const pending = Promise.withResolvers<IteratorResult<number>>()
++      const next = watchdog.next({ next: () => pending.promise })
++      await vi.advanceTimersByTimeAsync(10_000)
++      expect(watchdog.signal.aborted).toBe(false)
++      pending.resolve({ done: true, value: undefined })
++      await expect(next).resolves.toEqual({ done: true, value: undefined })
++      upstream.abort('user cancelled')
++      expect(watchdog.signal.reason).toBe('user cancelled')
++      expect(timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT')).toBeUndefined()
++    } finally {
++      vi.useRealTimers()
++    }
+   })
+ 
+-  it('rejects invalid bounds and concurrent iterator demand', async () => {
+-    expect(() => idleWatchdog(undefined, 0, 'IDLE')).toThrow(/positive finite/)
+-    expect(() => idleWatchdog(undefined, Number.NaN, 'IDLE')).toThrow(/positive finite/)
+-    expect(() => idleWatchdog(undefined, MAX_TIMER_DELAY_MS + 1, 'IDLE'))
+-      .toThrow(`no greater than ${MAX_TIMER_DELAY_MS}`)
++  it('keeps disposal and single-demand guards', async () => {
+     const pending = Promise.withResolvers<IteratorResult<number>>()
+-    using watchdog = idleWatchdog(undefined, 100, 'IDLE')
++    const watchdog = idleWatchdog(undefined, 100, 'IDLE')
+     const iterator = { next: () => pending.promise }
+     void watchdog.next(iterator)
+     await expect(watchdog.next(iterator)).rejects.toThrow(/already outstanding/)
+     pending.resolve({ done: true, value: undefined })
++    watchdog[Symbol.dispose]()
++    await expect(watchdog.next(iterator)).rejects.toThrow(/disposed/)
+   })
+ })
+diff --git a/patches/@anthropic-ai__sdk@0.129.0.patch b/patches/@anthropic-ai__sdk@0.129.0.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..1f20473591b555fc546e47fb11f4427f84ffb39a
+--- /dev/null
++++ b/patches/@anthropic-ai__sdk@0.129.0.patch
+@@ -0,0 +1,24 @@
++diff --git a/client.mjs b/client.mjs
++--- a/client.mjs
+++++ b/client.mjs
++@@ -665,7 +665,7 @@
++             // once), and each inner-fetch invocation gets its own `ms` timer.
++             const baseFetch = this.fetch;
++             const timedFetch = async (innerUrl, innerInit) => {
++-                const timeout = setTimeout(abort, ms);
+++                const timeout = undefined; // Local desktop: caller cancellation only.
++                 try {
++                     return await baseFetch.call(undefined, innerUrl, innerInit);
++                 }
++diff --git a/client.js b/client.js
++--- a/client.js
+++++ b/client.js
++@@ -665,7 +665,7 @@
++             // once), and each inner-fetch invocation gets its own `ms` timer.
++             const baseFetch = this.fetch;
++             const timedFetch = async (innerUrl, innerInit) => {
++-                const timeout = setTimeout(abort, ms);
+++                const timeout = undefined; // Local desktop: caller cancellation only.
++                 try {
++                     return await baseFetch.call(undefined, innerUrl, innerInit);
++                 }
+diff --git a/patches/@anthropic-ai__sdk@0.93.0.patch b/patches/@anthropic-ai__sdk@0.93.0.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6d8c869c72021fc3592eaa05a446b13bef91300
+--- /dev/null
++++ b/patches/@anthropic-ai__sdk@0.93.0.patch
+@@ -0,0 +1,24 @@
++diff --git a/client.mjs b/client.mjs
++--- a/client.mjs
+++++ b/client.mjs
++@@ -566,7 +566,7 @@
++         const abort = this._makeAbort(controller);
++         if (signal)
++             signal.addEventListener('abort', abort, { once: true });
++-        const timeout = setTimeout(abort, ms);
+++        const timeout = undefined; // Local desktop: caller cancellation only.
++         const isReadableBody = (globalThis.ReadableStream && options.body instanceof globalThis.ReadableStream) ||
++             (typeof options.body === 'object' && options.body !== null && Symbol.asyncIterator in options.body);
++         const fetchOptions = {
++diff --git a/client.js b/client.js
++--- a/client.js
+++++ b/client.js
++@@ -569,7 +569,7 @@
++         const abort = this._makeAbort(controller);
++         if (signal)
++             signal.addEventListener('abort', abort, { once: true });
++-        const timeout = setTimeout(abort, ms);
+++        const timeout = undefined; // Local desktop: caller cancellation only.
++         const isReadableBody = (globalThis.ReadableStream && options.body instanceof globalThis.ReadableStream) ||
++             (typeof options.body === 'object' && options.body !== null && Symbol.asyncIterator in options.body);
++         const fetchOptions = {
+diff --git a/patches/openai@7.19.0.patch b/patches/openai@7.19.0.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..c9d356cba68840b82ab624b5a79d078af181842c
+--- /dev/null
++++ b/patches/openai@7.19.0.patch
+@@ -0,0 +1,24 @@
++diff --git a/client.mjs b/client.mjs
++--- a/client.mjs
+++++ b/client.mjs
++@@ -990,7 +990,7 @@
++         const abort = this._makeAbort(controller);
++         const composed = !!signal && composedCallerSignals.get(controller) === signal;
++         const cleanup = signal && !composed ? addRequestAbortListener(signal, abort, controller.signal) : undefined;
++-        const timeout = setTimeout(abort, ms);
+++        const timeout = undefined; // Local desktop: caller cancellation only.
++         const isReadableBody = (globalThis.ReadableStream && options.body instanceof globalThis.ReadableStream) ||
++             (typeof options.body === 'object' && options.body !== null && Symbol.asyncIterator in options.body);
++         const fetchOptions = {
++diff --git a/client.js b/client.js
++--- a/client.js
+++++ b/client.js
++@@ -993,7 +993,7 @@
++         const abort = this._makeAbort(controller);
++         const composed = !!signal && composedCallerSignals.get(controller) === signal;
++         const cleanup = signal && !composed ? (0, abort_1.addRequestAbortListener)(signal, abort, controller.signal) : undefined;
++-        const timeout = setTimeout(abort, ms);
+++        const timeout = undefined; // Local desktop: caller cancellation only.
++         const isReadableBody = (globalThis.ReadableStream && options.body instanceof globalThis.ReadableStream) ||
++             (typeof options.body === 'object' && options.body !== null && Symbol.asyncIterator in options.body);
++         const fetchOptions = {
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 9a84d64b213cb37f074294d8f62c69eb789a8c9a..ee17d6fbbd180088b6b3df7601dbc7915f49ea80 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -10,6 +10,8 @@ overrides:
+   '@deepseek-ai/schemastery': link:vendor/schemastery
+ 
+ patchedDependencies:
++  '@anthropic-ai/sdk@0.129.0': e12fb6c0bac0872f6af0ebe05f34ca5eaddfbae54a318fbdfb64f77b6afcbccc
++  '@anthropic-ai/sdk@0.93.0': 0151183b92bc31c38ba4cbf974759b4b5aa73a9ddd9bad750eeecbc395a5dc27
+   '@botiverse/oar@0.67.0': 65de2ca1966421e30893d8d4fed6a3d88e4247e131e7575fe791246e594538d6
+   '@earendil-works/pi-ai@1.3.0': 4e1c90fd00aea42989664504668633033c1962e53c07860901edb4f72d843765
+   '@electron/osx-sign@1.3.3': 280e7b2816caf01423097d24e79107a66afeb563a348630ce9928ae8499a5861
+@@ -22,6 +24,7 @@ patchedDependencies:
+   mdast-util-gfm-autolink-literal@2.0.1: 7fa6fc7927128a45c3f148d31faf388806895e2de39c14a144200edbc1e7aaa0
+   micromark-extension-gfm-autolink-literal@2.1.0: 906ae7c0cd1f69e7ee308a41bc0542e0085276ac7517e56e96f0ccaf5a89327d
+   node-pty@1.2.0-beta.15: 9d30053266d0f39d3debe894c675867f6782da6bcadbc94a693b3cfb9eff8ed0
++  openai@7.19.0: 7fb4dc205e1b3fe945a216d7e45c5307ffc34ac16e42fb2a2ff0a4467a21bfc7
+ 
+ importers:
+ 
+@@ -3274,6 +3277,9 @@ importers:
+       '@deepseek-ai/dsh-time-context':
+         specifier: workspace:*
+         version: link:../../context/time-context
++      '@deepseek-ai/dsh-timeout':
++        specifier: workspace:*
++        version: link:../../util/timeout
+       '@deepseek-ai/dsh-tool-ask-user':
+         specifier: workspace:*
+         version: link:../../interaction/tool-ask-user
+@@ -12827,6 +12833,9 @@ importers:
+       '@deepseek-ai/dsh-session-projection':
+         specifier: workspace:*
+         version: link:../../session/session-projection
++      '@deepseek-ai/dsh-timeout':
++        specifier: workspace:*
++        version: link:../../util/timeout
+       '@deepseek-ai/dsh-tool-testkit':
+         specifier: workspace:*
+         version: link:../../test-support/tool-testkit
+@@ -13349,6 +13358,9 @@ importers:
+       '@deepseek-ai/dsh-system-prompt':
+         specifier: workspace:*
+         version: link:../../core/system-prompt
++      '@deepseek-ai/dsh-timeout':
++        specifier: workspace:*
++        version: link:../../util/timeout
+       '@deepseek-ai/dsh-tool-executor-native':
+         specifier: workspace:*
+         version: link:../../core/tool-executor-native
+@@ -15721,6 +15733,9 @@ importers:
+ 
+   packages/shell/tool-bash:
+     dependencies:
++      '@deepseek-ai/dsh-timeout':
++        specifier: workspace:*
++        version: link:../../util/timeout
+       '@deepseek-ai/schemastery':
+         specifier: link:../../../vendor/schemastery
+         version: link:../../../vendor/schemastery
+@@ -16755,10 +16770,10 @@ importers:
+     dependencies:
+       '@anthropic-ai/claude-agent-sdk':
+         specifier: 0.3.263
+-        version: 0.3.263(@anthropic-ai/sdk@0.93.0(zod@4.6.6))(@modelcontextprotocol/sdk@1.31.0(supports-color@9.4.0)(zod@4.6.6))(zod@4.6.6)
++        version: 0.3.263(@anthropic-ai/sdk@0.93.0(patch_hash=0151183b92bc31c38ba4cbf974759b4b5aa73a9ddd9bad750eeecbc395a5dc27)(zod@4.6.6))(@modelcontextprotocol/sdk@1.31.0(supports-color@9.4.0)(zod@4.6.6))(zod@4.6.6)
+       '@anthropic-ai/sdk':
+         specifier: 0.93.0
+-        version: 0.93.0(zod@4.6.6)
++        version: 0.93.0(patch_hash=0151183b92bc31c38ba4cbf974759b4b5aa73a9ddd9bad750eeecbc395a5dc27)(zod@4.6.6)
+       '@deepseek-ai/dsh-brand':
+         specifier: workspace:*
+         version: link:../../util/brand
+@@ -17113,6 +17128,9 @@ importers:
+ 
+   packages/subagent/tool-subagent-control:
+     dependencies:
++      '@deepseek-ai/dsh-timeout':
++        specifier: workspace:*
++        version: link:../../util/timeout
+       '@deepseek-ai/dsh-util-values':
+         specifier: workspace:*
+         version: link:../../util/values
+@@ -18383,6 +18401,9 @@ importers:
+       '@deepseek-ai/dsh-brand':
+         specifier: workspace:*
+         version: link:../../util/brand
++      '@deepseek-ai/dsh-timeout':
++        specifier: workspace:*
++        version: link:../../util/timeout
+       '@deepseek-ai/dsh-util-values':
+         specifier: workspace:*
+         version: link:../../util/values
+@@ -27008,9 +27029,9 @@ snapshots:
+   '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.263':
+     optional: true
+ 
+-  '@anthropic-ai/claude-agent-sdk@0.3.263(@anthropic-ai/sdk@0.93.0(zod@4.6.6))(@modelcontextprotocol/sdk@1.31.0(supports-color@9.4.0)(zod@4.6.6))(zod@4.6.6)':
++  '@anthropic-ai/claude-agent-sdk@0.3.263(@anthropic-ai/sdk@0.93.0(patch_hash=0151183b92bc31c38ba4cbf974759b4b5aa73a9ddd9bad750eeecbc395a5dc27)(zod@4.6.6))(@modelcontextprotocol/sdk@1.31.0(supports-color@9.4.0)(zod@4.6.6))(zod@4.6.6)':
+     dependencies:
+-      '@anthropic-ai/sdk': 0.93.0(zod@4.6.6)
++      '@anthropic-ai/sdk': 0.93.0(patch_hash=0151183b92bc31c38ba4cbf974759b4b5aa73a9ddd9bad750eeecbc395a5dc27)(zod@4.6.6)
+       '@modelcontextprotocol/sdk': 1.31.0(supports-color@9.4.0)(zod@4.6.6)
+       zod: 4.6.6
+     optionalDependencies:
+@@ -27023,14 +27044,14 @@ snapshots:
+       '@anthropic-ai/claude-agent-sdk-win32-arm64': 0.3.263
+       '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.263
+ 
+-  '@anthropic-ai/sdk@0.129.0(zod@4.6.6)':
++  '@anthropic-ai/sdk@0.129.0(patch_hash=e12fb6c0bac0872f6af0ebe05f34ca5eaddfbae54a318fbdfb64f77b6afcbccc)(zod@4.6.6)':
+     dependencies:
+       json-schema-to-ts: 3.1.1
+       standardwebhooks: 1.1.1
+     optionalDependencies:
+       zod: 4.6.6
+ 
+-  '@anthropic-ai/sdk@0.93.0(zod@4.6.6)':
++  '@anthropic-ai/sdk@0.93.0(patch_hash=0151183b92bc31c38ba4cbf974759b4b5aa73a9ddd9bad750eeecbc395a5dc27)(zod@4.6.6)':
+     dependencies:
+       json-schema-to-ts: 3.1.1
+     optionalDependencies:
+@@ -27536,14 +27557,14 @@ snapshots:
+ 
+   '@earendil-works/pi-ai@1.3.0(patch_hash=4e1c90fd00aea42989664504668633033c1962e53c07860901edb4f72d843765)(@aws-sdk/credential-provider-node@3.972.84)(@modelcontextprotocol/sdk@1.31.0(supports-color@9.4.0)(zod@4.6.6))(@smithy/signature-v4@5.7.4)(supports-color@9.4.0)(undici@8.10.2)(ws@8.21.3)(zod@4.6.6)':
+     dependencies:
+-      '@anthropic-ai/sdk': 0.129.0(zod@4.6.6)
++      '@anthropic-ai/sdk': 0.129.0(patch_hash=e12fb6c0bac0872f6af0ebe05f34ca5eaddfbae54a318fbdfb64f77b6afcbccc)(zod@4.6.6)
+       '@aws-sdk/client-bedrock-runtime': 3.1127.0
+       '@earendil-works/pi-telemetry': 1.3.0
+       '@google/genai': 2.21.0(@modelcontextprotocol/sdk@1.31.0(supports-color@9.4.0)(zod@4.6.6))(supports-color@9.4.0)
+       '@smithy/node-http-handler': 4.12.1
+       http-proxy-agent: 9.1.0(supports-color@9.4.0)
+       https-proxy-agent: 9.1.0(supports-color@9.4.0)
+-      openai: 7.19.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.21.3)(zod@4.6.6)
++      openai: 7.19.0(patch_hash=7fb4dc205e1b3fe945a216d7e45c5307ffc34ac16e42fb2a2ff0a4467a21bfc7)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.21.3)(zod@4.6.6)
+       partial-json: 0.1.7
+       typebox: 1.3.27
+     transitivePeerDependencies:
+@@ -27561,14 +27582,14 @@ snapshots:
+ 
+   '@earendil-works/pi-ai@1.3.0(patch_hash=4e1c90fd00aea42989664504668633033c1962e53c07860901edb4f72d843765)(@aws-sdk/credential-provider-node@3.972.84)(@modelcontextprotocol/sdk@1.31.0(supports-color@9.4.0)(zod@4.6.6))(@smithy/signature-v4@5.7.4)(supports-color@9.4.0)(undici@8.11.2)(ws@8.21.3)(zod@4.6.6)':
+     dependencies:
+-      '@anthropic-ai/sdk': 0.129.0(zod@4.6.6)
++      '@anthropic-ai/sdk': 0.129.0(patch_hash=e12fb6c0bac0872f6af0ebe05f34ca5eaddfbae54a318fbdfb64f77b6afcbccc)(zod@4.6.6)
+       '@aws-sdk/client-bedrock-runtime': 3.1127.0
+       '@earendil-works/pi-telemetry': 1.3.0
+       '@google/genai': 2.21.0(@modelcontextprotocol/sdk@1.31.0(supports-color@9.4.0)(zod@4.6.6))(supports-color@9.4.0)
+       '@smithy/node-http-handler': 4.12.1
+       http-proxy-agent: 9.1.0(supports-color@9.4.0)
+       https-proxy-agent: 9.1.0(supports-color@9.4.0)
+-      openai: 7.19.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.11.2)(ws@8.21.3)(zod@4.6.6)
++      openai: 7.19.0(patch_hash=7fb4dc205e1b3fe945a216d7e45c5307ffc34ac16e42fb2a2ff0a4467a21bfc7)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.11.2)(ws@8.21.3)(zod@4.6.6)
+       partial-json: 0.1.7
+       typebox: 1.3.27
+     transitivePeerDependencies:
+@@ -33149,7 +33170,7 @@ snapshots:
+       powershell-utils: 0.2.1
+       wsl-utils: 1.0.0
+ 
+-  openai@7.19.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.21.3)(zod@4.6.6):
++  openai@7.19.0(patch_hash=7fb4dc205e1b3fe945a216d7e45c5307ffc34ac16e42fb2a2ff0a4467a21bfc7)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.21.3)(zod@4.6.6):
+     optionalDependencies:
+       '@aws-sdk/credential-provider-node': 3.972.84
+       '@smithy/signature-v4': 5.7.4
+@@ -33157,7 +33178,7 @@ snapshots:
+       ws: 8.21.3
+       zod: 4.6.6
+ 
+-  openai@7.19.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.11.2)(ws@8.21.3)(zod@4.6.6):
++  openai@7.19.0(patch_hash=7fb4dc205e1b3fe945a216d7e45c5307ffc34ac16e42fb2a2ff0a4467a21bfc7)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.11.2)(ws@8.21.3)(zod@4.6.6):
+     optionalDependencies:
+       '@aws-sdk/credential-provider-node': 3.972.84
+       '@smithy/signature-v4': 5.7.4
+diff --git a/scripts/check-timeouts.mjs b/scripts/check-timeouts.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..10292c88ca9df48fa7f8b66e880e68d7a322a61c
+--- /dev/null
++++ b/scripts/check-timeouts.mjs
+@@ -0,0 +1,75 @@
++#!/usr/bin/env node
++/**
++ * Timeout policy gate.
++ *
++ * Three rules keep the registry authoritative:
++ * 1. every `deadline()` / `waitWindow()` call names a registered capability code;
++ * 2. no wait call site may pass the timer ceiling (`MAX_TIMER_DELAY_MS` / 2147483647)
++ *    — that is the "wait forever" hack that freezes an agent turn;
++ * 3. every registry `wait` rule has a footer row, so the bar can never lose it.
++ *
++ * Usage: node scripts/check-timeouts.mjs
++ */
++import { readdirSync, readFileSync, statSync } from 'node:fs'
++import { join, relative } from 'node:path'
++
++const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
++const REGISTRY = join(ROOT, 'packages/util/timeout/src/registry.ts')
++const CATALOG = join(ROOT, 'packages/bundle/web-app/src/night-timeouts.ts')
++
++/** @returns {string[]} */
++function walk(dir, out = []) {
++  for (const name of readdirSync(dir)) {
++    if (name === 'node_modules' || name === 'lib' || name === 'tests') continue
++    const full = join(dir, name)
++    const stat = statSync(full)
++    if (stat.isDirectory()) walk(full, out)
++    else if (name.endsWith('.ts')) out.push(full)
++  }
++  return out
++}
++
++const registrySource = readFileSync(REGISTRY, 'utf8')
++const codes = new Set([...registrySource.matchAll(/code: '([^']+)'/g)].map(match => match[1]))
++const waitKeys = new Set()
++for (const block of registrySource.matchAll(/\{[^{}]*code: '([^']+)'[^{}]*\}/g)) {
++  if (!/mode: 'wait'/.test(block[0])) continue
++  const key = block[0].match(/key: '([^']+)'/)
++  if (key) waitKeys.add(key[1])
++}
++
++const catalogSource = readFileSync(CATALOG, 'utf8')
++const catalogKeys = new Set([...catalogSource.matchAll(/key: '([^']+)'/g)].map(match => match[1]))
++
++const problems = []
++const roots = ['packages', 'apps'].map(dir => join(ROOT, dir))
++for (const root of roots) {
++  for (const group of readdirSync(root)) {
++    const src = join(root, group, 'src')
++    let stat
++    try { stat = statSync(src) } catch { continue }
++    if (!stat.isDirectory()) continue
++    for (const file of walk(src)) {
++      const text = readFileSync(file, 'utf8')
++      const where = relative(ROOT, file)
++
++      for (const match of text.matchAll(/(?:deadline|waitWindow)\(\s*[^,]+,\s*(?:[^,']*,\s*)?'([A-Za-z0-9_/-]+)'/g)) {
++        if (!codes.has(match[1])) problems.push(`${where}: unregistered timeout code "${match[1]}"`)
++      }
++      if (/wait(?:Deadline|Window)\([^)]*(?:MAX_TIMER_DELAY_MS|2_147_483_647)/.test(text)) {
++        problems.push(`${where}: wait call site uses the timer ceiling (unbounded wait)`)
++      }
++    }
++  }
++}
++
++for (const key of waitKeys) {
++  if (!catalogKeys.has(key)) problems.push(`night-timeouts: wait rule "${key}" has no footer row`)
++}
++
++if (problems.length > 0) {
++  console.error('timeout policy violations:')
++  for (const problem of problems) console.error('  - ' + problem)
++  process.exit(1)
++}
++console.log(`timeout policy ok: ${codes.size} codes, ${waitKeys.size} bounded waits`)
