@@ -1,11 +1,15 @@
 # dsh-account-mesh
 
+[English](README.md) | [中文](README.zh.md)
+
 Read-only mesh between DSH instances signed in to the **same DeepSeek account**, over an authenticated WebRTC data channel on the LAN (physical LAN + Tailscale tailnet).
 
 - Discovery: UDP multicast/broadcast, plus unicast probing of tailnet peers (`tailscale status --json`) because multicast does not cross Tailscale.
 - Handshake: p2play-js style room / deterministic initiator / signed `offer`/`answer`/`ice` fragments over the same UDP socket.
 - Authentication: Ed25519 nonce challenge on the data channel, bound to a local trust table.
+- Trust: a first-contact peer waits for the user's answer in a blocking dialog (Trust or Refuse); revocation is durable (`revoked` in `peers.json`) and only an explicit pair clears it, so announce/heartbeat traffic can never re-trust a device the user refused.
 - Data plane: read-only whitelist — sessions list/read, workspaces list, file list/stat/read. No write, prompt, shell or arbitrary-command path exists.
+- Trust requests: `mesh_peer_pair` answers a pending request; `mesh_peer_forget` revokes durably and sends a signed `revoke` notice so a same-version peer revokes this device too. The blocking dialog lives in the frame-wide `shell.overlay` slot (`id: account-mesh.trust-request`) and posts `POST /account-mesh/api/trust-request` with `{deviceId, decision: "trust" | "refuse"}`.
 - Transfer: JSONL by default in standard DSH; Night Cruising may enable the optional JLC codec after a restart. The setting page and site-owned download/featured links live in the `transfer` state.
 
 Full capability notes and limitations: [docs/DETAIL.md](docs/DETAIL.md).

@@ -59,8 +59,14 @@ rc.13 的保险柜密钥只存在于进程内，重启后只能重拉全量。�
 
 1. **发现**：UDP 组播/广播（默认端口 `47831`）覆盖物理网段；Tailscale 不转发组播，所以同时用 `tailscale status --json` 列出 tailnet 在线设备并逐台单播探测。也可用 `staticPeers` 手动指定。
 2. **握手**：参考 p2play-js —— 每个设备对生成一个房间，设备 id 字典序小的一方发 offer，SDP/ICE 以带 Ed25519 签名的分片帧直连发送。
-3. **认证**：双方在数据通道上互发 nonce，签回对方的 nonce；只有签名与信任表里的公钥一致才放行。默认同账号自动信任，公钥变化会重新绑定并告警。
-4. **只读数据面**：固定 op 白名单（`sessions/list`、`sessions/events`、`workspaces/list`、`files/list`、`files/stat`、`files/read`）。没有写入、prompt、shell 或任意命令通道。
+3. **认证**：双方在数据通道上互发 nonce，签回对方的 nonce；只有签名与信任表里的公钥一致才放行。已信任设备换了公钥会重新绑定并告警。
+4. **首次信任**：同账号的陌生设备**不再被自动信任**。它照常被发现并排队成一条「待确认」请求，客户端弹出**阻塞式对话框**（`document.body` portal，覆盖整个应用；Escape 与遮罩点击都不能关闭，Tab 只在两个按钮间循环，未命名 modal 作用域会挡住所有应用快捷键），用户必须选「信任这台设备」或「拒绝并撤销」。在你选择之前，该设备的信令一律被丢弃，不会建立任何通道。
+   - 对话框挂在 `shell.overlay`（frame 级 list slot，`id: account-mesh.trust-request`），所以无论当前在会话、设置页还是其它面板都会出现，离开设置页也不会消失。
+   - 请求列表来自 Host 的 `/account-mesh/api/state` 轮询（2.5s 节奏，只影响显示，不中止任何请求），经 `@deepseek-ai/dsh-client-store` 的快照 store 发布给 overlay host。
+5. **撤销是持久的**：`forget` 不再删除条目，而是写入 `revoked: true` + `revokedAt`（`peers.json` 版本 2）。账号规则不会自动恢复被撤销的设备：后续 announce、心跳、信令都被忽略，重启后仍然撤销。只有显式 `pair`（面板「信任」按钮、`mesh_peer_pair` 工具或 `POST /account-mesh/api/pair`）能清除撤销。
+   - **撤销通知**：撤销时先向对端发送一条签名 `revoke` 帧，再断开链接。对端收到后把自己的信任条目也标成 `revoked` 并断链，所以两边状态收敛。对端离线时通知丢失，但被撤销的对端每次 announce 都会收到重发的通知，重新上线后即收敛；本机重启后同样靠这条重发补上。
+   - **兼容性**：旧版本对端不认识 `revoke` 帧，会忽略它并保留自己的信任条目——此时本地撤销生效、远端读取被 `not-paired` 拒绝，但远端信任表不会自动收敛。要验收「对面也不再信任我」，远端必须升级到同一版本。
+6. **只读数据面**：固定 op 白名单（`sessions/list`、`sessions/events`、`workspaces/list`、`files/list`、`files/stat`、`files/read`）。没有写入、prompt、shell 或任意命令通道。
 
 ## 与本仓「去除所有超时」设计的关系
 
@@ -75,7 +81,8 @@ rc.13 的保险柜密钥只存在于进程内，重启后只能重拉全量。�
 ## 限制
 
 - **只读**：不提供把内容写回远端的能力，也不改写远端会话日志。
-- **自动信任的风险**：`autoTrustSameAccount` 默认开启。`accountTag` 只能证明对方自称同账号，局域网或 tailnet 内可被冒充；确认风险后再保留默认值，或关闭它改用面板手动信任。
+- **首次信任需要人工确认**：`autoTrustSameAccount` 默认开启时，首次接触仍要用户回答阻塞对话框；`accountTag` 只能证明对方自称同账号，局域网或 tailnet 内可被冒充，所以确认步骤是必要的。关闭 `autoTrustSameAccount` 后不再排队请求，只能手动信任。
+- **撤销不会自动恢复**：被撤销的设备需要用户显式重新信任；这是设计上的持久状态，不是可以靠心跳冲掉的临时标记。
 - **范围**：一期只覆盖局域网与 Tailscale tailnet。跨公网需要自建信令与 STUN/TURN，未实现。
 - **路径**：文件读取限制在工作区、会话工作目录与 `allowRoots` 内，`realpath` 之后校验；检查与打开之间的符号链接替换（TOCTOU）未完全消除。
 - **会话投影**：不含 reasoning 原文与图片字节；图片以占位符出现。

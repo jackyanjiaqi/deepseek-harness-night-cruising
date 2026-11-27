@@ -11,6 +11,7 @@ __pycache__/
 /plugins/*/.tmp/
 /plugins/*/spike/.tmp/
 /plugins/*/*.tgz
+tutorial/
 # BEGIN sync-agents
 # source "../shared-agent-config"
 /.agents

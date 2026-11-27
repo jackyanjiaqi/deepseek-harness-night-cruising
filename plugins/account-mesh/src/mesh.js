@@ -95,6 +95,8 @@ export class Mesh {
     this.peers = new Map()
     this.links = new Map()
     this.pending = new Map()
+    /** First-contact trust requests waiting for the user's explicit answer. */
+    this.pendingTrust = new Map()
     this.timers = []
     this.lastError = undefined
     this.started = false
@@ -195,9 +197,12 @@ export class Mesh {
       this.trust.touch(peer.deviceId)
     }
     this.trust.rememberEndpoint(peer.deviceId, peer.address, peer.port)
-    const trusted = this.trust.get(peer.deviceId)
-    const keyChanged = trusted !== undefined && trusted.publicKey !== peer.publicKey
-    if (this.config.autoTrustSameAccount && (!trusted || keyChanged)) {
+    const stored = this.trust.get(peer.deviceId)
+    const keyChanged = stored !== undefined && stored.publicKey !== peer.publicKey
+    if (this.config.autoTrustSameAccount && stored?.revoked !== true && keyChanged) {
+      // A trusted device that presents a new key is re-bound under the account
+      // rule; the panel reports it as `rebound`. A revoked device is never
+      // re-bound here, because the account rule must not override the user.
       const result = this.trust.upsert({
         deviceId: peer.deviceId,
         name: peer.name,
@@ -207,10 +212,40 @@ export class Mesh {
       })
       if (result.rebound) this.log?.warn?.(`account-mesh: peer ${shortId(peer.deviceId)} presented a new device key and was rebound`)
     }
+    // A first contact waits for the user's explicit answer; a revoked device
+    // stays revoked across every announce and heartbeat.
+    this.refreshPendingTrust(peer)
+    // A revoked peer that reappears may have missed the revoke notice (it was
+    // offline, or the process restarted). Re-send it once per announce so both
+    // sides converge without the user touching the remote instance.
+    if (stored?.revoked === true) this.notifyRevoke(peer)
     if (isNew) {
       this.log?.info?.(`account-mesh: found peer ${peer.name} (${shortId(peer.deviceId)}) via ${peer.source}`)
       if (this.discovery) this.discovery.query(peer.address, peer.port)
     }
+  }
+
+  /**
+   * Record a first-contact trust request when the account rule would otherwise
+   * trust the peer silently. Revoked devices are never queued, and a peer that
+   * is already trusted or already pending keeps its existing entry.
+   */
+  refreshPendingTrust(peer) {
+    const entry = this.trust.get(peer.deviceId)
+    if (entry?.revoked === true) return
+    if (this.config.autoTrustSameAccount && entry === undefined) {
+      this.pendingTrust.set(peer.deviceId, {
+        deviceId: peer.deviceId,
+        name: peer.name,
+        fingerprint: fingerprintOf(peer.publicKey),
+        accountTag: this.accountTag,
+        address: peer.address,
+        requestedAt: now(),
+      })
+      return
+    }
+    // The peer is trusted (or the account rule is off): nothing waits for the user.
+    this.pendingTrust.delete(peer.deviceId)
   }
 
   onPeerLost(peer) {
@@ -227,7 +262,7 @@ export class Mesh {
   /** Create and wire one link; exactly one side (smaller device id) initiates. */
   async connect(peer) {
     if (!this.discovery || !this.deviceId) return
-    if (!this.trust.has(peer.deviceId)) return
+    if (!this.trust.isTrusted(peer.deviceId)) return
     // Both sides may initiate; the smaller device id's offer wins (see acceptOffer).
     const existing = this.links.get(peer.deviceId)
     if (existing && (existing.link?.isOpen() || existing.link?.state === 'connecting')) return
@@ -265,7 +300,6 @@ export class Mesh {
     link.on('local-description', ({ sdp, type }) => {
       entry.offeredAt = now()
       this.sendSignal(peer, type, { sdp })
-      this.log?.info?.(`account-mesh: sent ${type} to ${shortId(peer.deviceId)}`)
     })
     link.on('local-candidate', ({ candidate, mid }) => {
       this.sendSignal(peer, 'ice', { candidate, mid })
@@ -326,15 +360,27 @@ export class Mesh {
   onSignal(frame, remote) {
     const peer = this.peers.get(frame.from)
     if (!peer) return
-    if (!this.trust.has(peer.deviceId)) {
-      if (!this.config.autoTrustSameAccount) return
-      this.trust.upsert({
-        deviceId: peer.deviceId,
-        name: peer.name,
-        publicKey: peer.publicKey,
-        fingerprint: fingerprintOf(peer.publicKey),
-        accountTag: this.accountTag,
-      })
+    // A revoke notice is a signed statement that this peer revoked us; it is
+    // handled even when we already revoked the peer, so both sides converge.
+    if (frame.kind === 'revoke') {
+      const payload = this.inbox.push(frame, peer)
+      if (payload === undefined) return
+      const parsed = parseSignalPayload(frame.kind, payload)
+      if (!parsed) return
+      this.onRevokeNotice(peer, parsed)
+      return
+    }
+    const entry = this.trust.get(peer.deviceId)
+    if (entry?.revoked === true) {
+      this.log?.info?.(`account-mesh: ignored ${frame.kind} from revoked peer ${shortId(peer.deviceId)}`)
+      return
+    }
+    if (!this.trust.isTrusted(peer.deviceId)) {
+      // An untrusted peer may still announce (discovery is unauthenticated), but
+      // signaling only proceeds after the user trusts it. The request is queued
+      // for the blocking confirmation instead of being auto-trusted here.
+      this.refreshPendingTrust(peer)
+      return
     }
     peer.address = remote.address
     peer.lastSeen = now()
@@ -346,6 +392,40 @@ export class Mesh {
     if (frame.kind === 'offer') this.acceptOffer(peer, parsed).catch(error => this.noteError(error))
     else if (frame.kind === 'answer') this.acceptAnswer(peer, parsed)
     else if (frame.kind === 'ice') this.acceptCandidate(peer, parsed)
+  }
+
+  /**
+   * Handle a peer's signed revoke notice: the peer revoked this device, so the
+   * local trust entry is revoked too and the link is torn down. A peer that
+   * revokes us is not asking to be trusted again, so this is a durable
+   * revocation exactly like the local Refuse answer.
+   */
+  onRevokeNotice(peer, payload) {
+    const entry = this.trust.get(peer.deviceId)
+    if (entry?.revoked === true) return
+    if (entry === undefined) {
+      // Never trusted here: nothing to revoke, and no request should be queued.
+      this.pendingTrust.delete(peer.deviceId)
+      return
+    }
+    this.trust.revoke(peer.deviceId)
+    this.pendingTrust.delete(peer.deviceId)
+    const link = this.links.get(peer.deviceId)
+    link?.link?.teardown('peer revoked this device')
+    this.links.delete(peer.deviceId)
+    this.log?.info?.(
+      `account-mesh: peer ${shortId(peer.deviceId)} revoked this device (plugin ${payload.v ?? 'unknown'})`,
+    )
+  }
+
+  /**
+   * Tell a trusted peer that this device revoked it, so a peer that still trusts
+   * us stops calling. The notice is signed like every signal frame; older peers
+   * ignore the unknown kind and keep their own trust entry.
+   */
+  notifyRevoke(peer) {
+    if (!this.discovery) return
+    this.sendSignal(peer, 'revoke', { v: this.version })
   }
 
   async acceptOffer(peer, payload) {
@@ -379,7 +459,6 @@ export class Mesh {
     this.links.set(peer.deviceId, entry)
     link.on('local-description', ({ sdp, type }) => {
       this.sendSignal(peer, type, { sdp })
-      this.log?.info?.(`account-mesh: sent ${type} to ${shortId(peer.deviceId)}`)
     })
     link.on('local-candidate', ({ candidate, mid }) => this.sendSignal(peer, 'ice', { candidate, mid }))
     link.on('message', ({ text }) => this.onLinkText(peer, entry, text))
@@ -414,7 +493,10 @@ export class Mesh {
   }
 
   sendSignal(peer, kind, payload) {
-    if (!this.discovery) return
+    if (!this.discovery) {
+      this.log?.warn?.(`account-mesh: cannot send ${kind} to ${shortId(peer.deviceId)}: discovery is not running`)
+      return
+    }
     const room = roomOf(this.accountTag, this.deviceId, peer.deviceId)
     const frames = encodeSignal({
       room,
@@ -424,6 +506,12 @@ export class Mesh {
       privateKey: this.identity.privateKey,
     })
     for (const frame of frames) this.discovery.sendRaw(frame, peer.address, peer.port)
+    // One line per logical signal: the frame count is the fragmentation, and
+    // the endpoint is where it was sent, so a peer that never answers is
+    // distinguishable from a signal that never left this host.
+    this.log?.info?.(
+      `account-mesh: sent ${kind} to ${shortId(peer.deviceId)} at ${peer.address}:${peer.port} (${frames.length} frame${frames.length === 1 ? '' : 's'})`,
+    )
   }
 
   onLinkText(peer, entry, text) {
@@ -507,7 +595,7 @@ export class Mesh {
       respond({ ok: false, err: { code: 'not-verified', message: 'link is not authenticated yet' } })
       return
     }
-    if (!this.trust.has(peer.deviceId)) {
+    if (!this.trust.isTrusted(peer.deviceId)) {
       respond({ ok: false, err: { code: 'not-paired', message: 'this device is not trusted' } })
       return
     }
@@ -562,8 +650,7 @@ export class Mesh {
   async call(peerId, op, params = {}, signal) {
     const entry = this.resolvePeer(peerId)
     if (!entry) throw rpcError('peer-unknown', `no peer matches ${peerId}`)
-    const trusted = this.trust.get(entry.peer.deviceId)
-    if (!trusted) throw rpcError('not-paired', `peer ${shortId(entry.peer.deviceId)} is not trusted`)
+    if (!this.trust.isTrusted(entry.peer.deviceId)) throw rpcError('not-paired', `peer ${shortId(entry.peer.deviceId)} is not trusted`)
     if (!this.links.get(entry.peer.deviceId)?.link?.isOpen()) {
       await this.connect(entry.peer)
       const linkEntry = this.links.get(entry.peer.deviceId)
@@ -682,7 +769,7 @@ export class Mesh {
       entry.link.ping()
     }
     for (const peer of this.peers.values()) {
-      if (!this.trust.has(peer.deviceId)) continue
+      if (!this.trust.isTrusted(peer.deviceId)) continue
       const entry = this.links.get(peer.deviceId)
       if (entry && (entry.link?.isOpen() || entry.link?.state === 'connecting')) continue
       if (entry?.nextAt && at < entry.nextAt) continue
@@ -720,6 +807,7 @@ export class Mesh {
       cache: this.cacheState(),
       vault: this.vault?.state() ?? null,
       peers: this.peerViews(),
+      pendingTrust: this.pendingTrustRequests(),
     }
   }
 
@@ -739,7 +827,9 @@ export class Mesh {
     for (const peer of this.peers.values()) {
       seen.add(peer.deviceId)
       const entry = this.links.get(peer.deviceId)
-      const trusted = this.trust.get(peer.deviceId)
+      const stored = this.trust.get(peer.deviceId)
+      const trusted = stored !== undefined && stored.revoked !== true
+      const revoked = stored?.revoked === true
       views.push({
         deviceId: peer.deviceId,
         shortId: shortId(peer.deviceId),
@@ -747,14 +837,17 @@ export class Mesh {
         source: peer.source,
         address: peer.address,
         online: true,
-        trusted: trusted !== undefined,
+        trusted,
+        revoked,
+        revokedAt: revoked ? stored.revokedAt ?? null : null,
+        pendingTrust: this.pendingTrust.has(peer.deviceId),
         verified: entry?.verified === true,
         link: entry?.link?.state ?? 'idle',
         rttMs: entry?.rtt ?? null,
         fingerprint: fingerprintOf(peer.publicKey),
         pairCode: trusted ? pairCode(this.identity.publicKey, peer.publicKey) : null,
-        trustedAt: trusted?.trustedAt ?? null,
-        lastSeenAt: trusted?.lastSeen ?? null,
+        trustedAt: trusted ? stored.trustedAt ?? null : null,
+        lastSeenAt: trusted ? stored.lastSeen ?? null : null,
         // Plugin build the peer announced during its signed hello (null until then).
         version: entry?.peerVersion ?? null,
         transfer: entry?.transfer ? { ...entry.transfer } : null,
@@ -770,6 +863,9 @@ export class Mesh {
         address: null,
         online: false,
         trusted: true,
+        revoked: false,
+        revokedAt: null,
+        pendingTrust: false,
         verified: false,
         link: 'offline',
         rttMs: null,
@@ -784,7 +880,10 @@ export class Mesh {
     return views.sort((a, b) => Number(b.online) - Number(a.online) || String(a.name).localeCompare(String(b.name)))
   }
 
-  /** Trust one discovered peer explicitly (manual mode or re-bind confirmation). */
+  /**
+   * Trust one discovered peer explicitly (manual mode, a pending request, or
+   * re-bind confirmation). This is the only path that clears a revocation.
+   */
   pair(deviceId) {
     const peer = this.peers.get(deviceId)
     if (!peer) throw rpcError('peer-unknown', 'peer is not currently discovered')
@@ -795,15 +894,34 @@ export class Mesh {
       fingerprint: fingerprintOf(peer.publicKey),
       accountTag: this.accountTag,
     })
+    this.pendingTrust.delete(peer.deviceId)
     return result
   }
 
+  /**
+   * Revoke trust durably and close the link. The binding stays on disk marked
+   * revoked, so the account rule cannot re-trust the device on the next
+   * announce or heartbeat; `pair()` is the only way back.
+   */
   forget(deviceId) {
-    const removed = this.trust.remove(deviceId)
+    const revoked = this.trust.revoke(deviceId)
+    this.pendingTrust.delete(deviceId)
+    const peer = this.peers.get(deviceId)
+    // Notify before the link is torn down: the peer keeps its own trust entry
+    // unless it learns about this revocation. A peer that is not currently
+    // discovered cannot be notified; the revocation still applies locally.
+    if (peer) this.notifyRevoke(peer)
+    else this.log?.info?.(`account-mesh: ${shortId(deviceId)} is not discovered, revoke notice not sent`)
     const entry = this.links.get(deviceId)
     entry?.link?.teardown('forgotten')
     this.links.delete(deviceId)
-    return removed
+    this.log?.info?.(`account-mesh: revoked trust for ${shortId(deviceId)}`)
+    return revoked !== undefined
+  }
+
+  /** Pending first-contact trust requests, newest first. */
+  pendingTrustRequests() {
+    return [...this.pendingTrust.values()].sort((a, b) => b.requestedAt - a.requestedAt)
   }
 
   reconnect(deviceId) {

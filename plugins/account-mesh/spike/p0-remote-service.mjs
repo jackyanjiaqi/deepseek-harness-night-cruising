@@ -4,9 +4,11 @@
  * Runs a real `Mesh` instance in its own Node process with fake Host services
  * (`deepseekAccount`, `sessionQuery`, `workspaceRegistry`) backed by **real
  * sessions from this DSH home**. It announces under the live DSH instance's
- * account tag, so the live plugin discovers it, auto-trusts it, completes the
- * Ed25519 hello over a WebRTC data channel, and then serves the read-only data
- * plane to the live agent's `mesh_*` tools and the remote-workspace panel.
+ * account tag, so the live plugin discovers it and queues a first-contact trust
+ * request. The live user answers that request once (the blocking dialog, or
+ * `mesh_peer_pair`); after that the Ed25519 hello completes over a WebRTC data
+ * channel and the simulated peer serves the read-only data plane to the live
+ * agent's `mesh_*` tools and the remote-workspace panel.
  *
  * Sessions are read from `$DSH_HOME/sessions/<workspace>/<session>/session.v4.jsonl.zstd`
  * and decompressed with Node's zstd support. `readSession` re-reads the file on
@@ -73,6 +75,8 @@ function accountTagFromState() {
   try {
     const file = path.join(dshHome, 'account-mesh', 'peers.json')
     const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+    // Revoked entries keep their account tag too, so a revoked peer still
+    // resolves the tag the live instance announces.
     return data?.peers?.find(peer => typeof peer?.accountTag === 'string')?.accountTag
   } catch {
     return undefined

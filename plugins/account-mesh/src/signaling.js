@@ -94,7 +94,10 @@ export class SignalInbox {
   }
 }
 
-/** Parse raw signal payloads of the three supported kinds. */
+/**
+ * Parse raw signal payloads of the supported kinds: `offer`, `answer`, `ice`,
+ * and the signed `revoke` notice a peer sends when it revokes this device.
+ */
 export function parseSignalPayload(kind, data) {
   const payload = parseJson(data)
   if (!payload || payload.kind !== kind) return undefined

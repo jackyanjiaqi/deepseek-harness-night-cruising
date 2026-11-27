@@ -289,7 +289,7 @@ export function registerTools(ctx, mesh, log) {
       define({
         name: 'mesh_peer_pair',
         description:
-          'Explicitly trust a currently discovered peer device. Same-account peers are trusted automatically by default; use this after disabling auto trust or to re-bind a device whose key changed.',
+          'Explicitly trust a currently discovered peer device, including one the user revoked. A first-contact peer waits for the user\'s confirmation in the settings panel; this tool answers that request programmatically.',
         properties: {
           peer: PEER_PARAM,
         },
@@ -315,7 +315,8 @@ export function registerTools(ctx, mesh, log) {
     register(
       define({
         name: 'mesh_peer_forget',
-        description: 'Revoke trust for a peer device and close its link. Further reads are refused until the device is trusted again.',
+        description:
+          'Revoke trust for a peer device and close its link. The revocation is durable: the account rule never re-trusts the device, so further reads stay refused until mesh_peer_pair is called.',
         properties: {
           peer: PEER_PARAM,
         },
@@ -324,7 +325,8 @@ export function registerTools(ctx, mesh, log) {
           const peer = requireString(args, 'peer')
           const resolved = mesh.resolvePeer(peer)
           if (!resolved) throw new Error(`no peer matches ${peer}`)
-          return { removed: mesh.forget(resolved.peer.deviceId), deviceId: resolved.peer.deviceId }
+          const revoked = mesh.forget(resolved.peer.deviceId)
+          return { revoked, deviceId: resolved.peer.deviceId, revokedAt: mesh.trust.get(resolved.peer.deviceId)?.revokedAt ?? null }
         },
       }),
     ),

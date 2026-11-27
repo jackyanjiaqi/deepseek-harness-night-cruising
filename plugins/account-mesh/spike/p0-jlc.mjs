@@ -89,6 +89,11 @@ const check = (label, condition, detail) => {
 
 try {
   meshA.start(); meshB.start()
+  // A first contact waits for the user's explicit answer; this harness answers
+  // both sides directly, exactly as the blocking dialog would.
+  await waitFor('discovery', () => meshA.peerViews().some(peer => peer.deviceId === 'device-beta'))
+  meshA.pair('device-beta')
+  meshB.pair('device-alpha')
   await waitFor('verified', () => meshA.peerViews().some(peer => peer.verified))
   const progress = []
   const started = Date.now()
