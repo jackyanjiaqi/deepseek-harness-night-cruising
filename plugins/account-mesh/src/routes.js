@@ -176,6 +176,23 @@ export function registerRoutes(ctx, mesh, log, codec = null) {
           log.info(`account-mesh: local test peer ${body.enabled ? 'enabled' : 'disabled'} from the panel`)
           return json(res, 200, localTestStatus(mesh))
         }
+        // Answer one pending first-contact trust request: trust it, or refuse it
+        // (a durable revocation, so the account rule cannot re-trust it later).
+        if (route === '/api/trust-request' && req.method === 'POST') {
+          const body = await readBody(req)
+          const deviceId = String(body.deviceId ?? '')
+          if (!deviceId) return json(res, 400, { error: 'deviceId is required' })
+          if (body.decision === 'trust') {
+            const result = mesh.pair(deviceId)
+            mesh.reconnect(deviceId)
+            return json(res, 200, { ok: true, decision: 'trust', deviceId, trustedAt: result.entry.trustedAt, rebound: result.rebound })
+          }
+          if (body.decision === 'refuse') {
+            const revoked = mesh.forget(deviceId)
+            return json(res, 200, { ok: true, decision: 'refuse', deviceId, revoked, revokedAt: mesh.trust.get(deviceId)?.revokedAt ?? null })
+          }
+          return json(res, 400, { error: 'decision must be trust or refuse' })
+        }
         if (route === '/api/pair' && req.method === 'POST') {
           const body = await readBody(req)
           const deviceId = String(body.deviceId ?? '')
@@ -188,7 +205,8 @@ export function registerRoutes(ctx, mesh, log, codec = null) {
           const body = await readBody(req)
           const deviceId = String(body.deviceId ?? '')
           if (!deviceId) return json(res, 400, { error: 'deviceId is required' })
-          return json(res, 200, { ok: mesh.forget(deviceId) })
+          const revoked = mesh.forget(deviceId)
+          return json(res, 200, { ok: revoked, deviceId, revokedAt: mesh.trust.get(deviceId)?.revokedAt ?? null })
         }
         if (route === '/api/reconnect' && req.method === 'POST') {
           const body = await readBody(req)

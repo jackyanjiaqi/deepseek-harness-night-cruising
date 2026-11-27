@@ -103,7 +103,16 @@ try {
   meshB.start()
   await waitFor('discovery', () => meshA.peerViews().some(peer => peer.deviceId === 'device-beta'))
   check('discovery finds the same-account peer', meshA.peerViews().some(peer => peer.deviceId === 'device-beta'))
-  check('peer is auto-trusted', meshA.peerViews().every(peer => peer.trusted))
+  // A first contact waits for the user's explicit answer instead of being trusted
+  // silently by the account rule.
+  check('first contact queues a pending trust request',
+    meshA.state().pendingTrust.some(request => request.deviceId === 'device-beta'),
+    JSON.stringify(meshA.state().pendingTrust))
+  check('pending peer is not trusted yet', meshA.peerViews().every(peer => !peer.trusted))
+  meshA.pair('device-beta')
+  meshB.pair('device-alpha')
+  check('explicit trust clears the pending request', meshA.state().pendingTrust.length === 0)
+  check('peer is trusted after the explicit answer', meshA.peerViews().every(peer => peer.trusted))
 
   await waitFor('verified link', () => meshA.peerViews().some(peer => peer.verified))
   check('Ed25519 hello verifies both sides', meshA.peerViews().some(peer => peer.verified))
@@ -184,6 +193,39 @@ try {
   const state = meshA.state()
   check('state hides the account id', !JSON.stringify(state).includes('account-1'))
   check('state lists the peer as verified', state.peers.some(peer => peer.verified && peer.online))
+
+  // Revocation is durable: no announce, heartbeat, or reconnect may re-trust it.
+  meshA.forget('device-beta')
+  check('revoked peer is not trusted', meshA.peerViews().every(peer => !peer.trusted))
+  check('revoked peer is reported as revoked', meshA.peerViews().some(peer => peer.revoked === true))
+  check('revoked entry stays in the store', meshA.trust.get('device-beta')?.revoked === true)
+  await sleep(7000)
+  check('heartbeats do not re-trust a revoked peer', meshA.peerViews().every(peer => !peer.trusted))
+  check('revoked peer queues no trust request', meshA.state().pendingTrust.length === 0)
+  const refused = await meshA.call('device-beta', 'sessions/list', {}).then(() => null, error => error)
+  check('reads stay refused after revocation', refused?.code === 'not-paired', refused?.code)
+  const reloaded = new Mesh({
+    ctx: makeCtx({ workspace: workspaceA, deviceId: 'device-alpha' }),
+    config: { discoveryPort: 48101, staticPeers: ['127.0.0.1:48102'], dataDir: path.join(root, 'home-a') },
+    log,
+    version: '0.1.0-test',
+  })
+  check('revocation survives a restart', reloaded.trust.get('device-beta')?.revoked === true)
+  meshA.pair('device-beta')
+  check('explicit trust clears the revocation', meshA.trust.isTrusted('device-beta'))
+
+  // The peer keeps its own trust entry until it learns about the revocation;
+  // the signed revoke notice makes both sides converge without touching the
+  // remote instance's settings.
+  meshA.pair('device-beta')
+  meshB.pair('device-alpha')
+  await waitFor('link after re-trust', () => meshA.peerViews().some(peer => peer.verified))
+  meshA.forget('device-beta')
+  await waitFor('peer revoked us', () => meshB.trust.get('device-alpha')?.revoked === true)
+  check('revoke notice revokes the peer side too', meshB.trust.get('device-alpha')?.revoked === true)
+  check('peer side reports the revocation in its views', meshB.peerViews().some(peer => peer.deviceId === 'device-alpha' && peer.revoked === true))
+  const refusedByPeer = await meshB.call('device-alpha', 'sessions/list', {}).then(() => null, error => error)
+  check('peer side refuses reads after the notice', refusedByPeer?.code === 'not-paired', refusedByPeer?.code)
 } catch (error) {
   failures += 1
   console.error('HARNESS ERROR', error)

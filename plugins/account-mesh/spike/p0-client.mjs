@@ -12,7 +12,14 @@ globalThis.window = {
       captured = spec
     },
   },
+  // The blocking dialog portals to document.body and owns Escape/Tab; the smoke
+  // harness supplies the two globals its effect and portal touch.
+  document: { body: { tag: 'body' } },
+  addEventListener: () => {},
+  removeEventListener: () => {},
 }
+// The dialog portals to the bare `document` global, not through window.
+globalThis.document = globalThis.window.document
 
 await import('../client.js')
 
@@ -23,6 +30,19 @@ const check = (label, condition, detail) => {
     failures += 1
     console.log(`FAIL ${label}`, detail ?? '')
   }
+}
+
+// ReactDOM is part of the Web shell baseline; the blocking trust dialog portals
+// through it, so the fake loader must supply it too.
+const ReactDOM = {
+  createPortal: (node, container) => ({ type: 'Portal', props: { container }, children: [node] }),
+}
+
+// The store engine is part of the Web shell baseline; the frame-wide trust host
+// publishes its request list through it.
+const createSnapshotStore = init => {
+  let value = init
+  return { getSnapshot: () => value, subscribe: () => () => {}, set: next => { value = next }, update: fn => fn(value) }
 }
 
 const React = {
@@ -76,13 +96,19 @@ const ctx = {
 
 try {
   check('module loader id matches the package name', captured?.id === 'dsh-account-mesh', captured?.id)
-  const module = captured.factory(name => (name === 'react' ? React : undefined))
+  const module = captured.factory(name => name === 'react' ? React
+    : name === 'react-dom' ? ReactDOM
+      : name === '@deepseek-ai/dsh-client-store' ? { createSnapshotStore } : undefined)
   module.apply(ctx)
   check('registers zh and en dictionaries', dicts.length === 2 && dicts.some(d => d.locale === 'zh') && dicts.some(d => d.locale === 'en'))
   check('injects into settings.section', injected.includes('settings.section'), injected.join(','))
   check('injects into sidebar.panellist', injected.includes('sidebar.panellist'), injected.join(','))
   check('injects into main', injected.includes('main'), injected.join(','))
-  check('registers three slots', registrations.length === 3, registrations.map(r => r.options.name).join(','))
+  check('injects into shell.overlay', injected.includes('shell.overlay'), injected.join(','))
+  check('registers four slots', registrations.length === 4, registrations.map(r => r.options.name).join(','))
+  const overlayEntry = registrations.find(r => r.options.name === 'shell.overlay')
+  check('overlay entry id names the trust request host', overlayEntry.options.id === 'account-mesh.trust-request')
+  check('overlay entry carries a locale namespace', overlayEntry.options.locale === 'account-mesh')
   const registration = registrations.find(r => r.options.name === 'settings.section')
   const panelEntry = registrations.find(r => r.options.name === 'main')
   const iconEntry = registrations.find(r => r.options.name === 'sidebar.panellist')
@@ -345,6 +371,49 @@ try {
   check('page includes the tool hint', text.includes('mesh_session_read'))
   check('page mentions the read-only guarantee', text.includes('只读'))
   check('page never contains a token field', !/token/i.test(text))
+
+  // Blocking first-contact dialog: the frame-wide overlay host renders a portal
+  // dialog for a pending request with both answers. A revoked peer shows the
+  // durable revocation instead of the untrusted chip.
+  const overlayInject = overlayEntry.options.inject()
+  const pendingList = [{ deviceId: 'peer-pending', name: 'pending-mac', fingerprint: 'FpPending123', accountTag: 'tag', address: '100.103.126.56', requestedAt: 1763000000000 }]
+  overlayInject.hooks.requests.set(pendingList)
+  // The overlay entry carries the locale namespace, so the renderer supplies
+  // the `t` seat; the smoke harness binds the zh dictionary directly.
+  const overlayT = ctx.locale.bind('account-mesh')
+  const overlayProps = { t: overlayT, useRequests: selector => selector(overlayInject.hooks.requests.getSnapshot()), decide: overlayInject.decide }
+  const dialogText = JSON.stringify(renderElement(overlayEntry.Component(overlayProps)))
+  check('pending request renders a portal dialog',
+    dialogText.includes('"type":"Portal"') && dialogText.includes('"container":{"tag":"body"}'),
+    dialogText.slice(0, 400))
+  check('dialog is modal and blocks shortcuts', dialogText.includes('"aria-modal":"true"') && dialogText.includes('"data-shortcut-modal":"other"'))
+  check('dialog names the requesting device', dialogText.includes('pending-mac') && dialogText.includes('FpPending123'))
+  check('dialog offers trust and refuse', dialogText.includes('信任这台设备') && dialogText.includes('拒绝并撤销'))
+  check('dialog explains durable refusal', dialogText.includes('账号规则不会自动恢复信任'))
+  overlayInject.hooks.requests.set([])
+  check('no pending request renders nothing', renderElement(overlayEntry.Component(overlayProps)) === null)
+  check('client posts trust decisions through the route',
+    clientSource.includes('/account-mesh/api/trust-request') && clientSource.includes('decision'))
+
+  React.__stateQueue = [{
+    data: {
+      version: '0.1.0-rc.13',
+      status: 'ready',
+      peers: [
+        { deviceId: 'peer-revoked', shortId: 'peer…2', name: 'revoked-mac', online: true, trusted: false, revoked: true, revokedAt: 1763000000000, verified: false },
+        { deviceId: 'peer-pending', shortId: 'peer…3', name: 'pending-mac', online: true, trusted: false, revoked: false, pendingTrust: true, verified: false },
+      ],
+      pendingTrust: pendingList,
+    },
+    error: null,
+  }]
+  const settingsOuter = registration.Component({ close() {} })
+  const settingsTree = typeof settingsOuter.type === 'function' ? settingsOuter.type(settingsOuter.props) : settingsOuter
+  const settingsText = JSON.stringify(renderElement(settingsTree))
+  check('revoked peer shows the revoked chip', settingsText.includes('"children":[["已撤销"]]') && settingsText.includes('账号规则不会自动恢复它'))
+  check('pending peer shows the awaiting chip', settingsText.includes('"children":[["待确认"]]'))
+  check('settings section renders no dialog of its own', !settingsText.includes('"type":"Portal"'))
+  React.__stateQueue = []
   check('client bundle has no syntax leftovers', typeof fs.statSync(path.join(import.meta.dirname, '..', 'client.js')).size === 'number')
 
   // Transfer card: edition-specific codec state plus site-provided links. The

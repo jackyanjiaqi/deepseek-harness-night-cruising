@@ -10,6 +10,12 @@ window.__ModuleLoader__.load({
   id: 'dsh-account-mesh',
   factory(require) {
     const React = require('react')
+    // ReactDOM is part of the Web shell's module baseline; the blocking trust
+    // dialog portals to document.body so it covers every panel and seat.
+    const ReactDOM = require('react-dom')
+    // The store engine is part of the Web shell's module baseline; the
+    // frame-wide trust host publishes its request list through it.
+    const { createSnapshotStore } = require('@deepseek-ai/dsh-client-store')
     const h = React.createElement
     const NS = 'account-mesh'
     const PANEL_ID = 'account-mesh'
@@ -37,6 +43,17 @@ window.__ModuleLoader__.load({
         neverSeen: '从未在本设备上线',
         untrusted: '未信任',
         trusted: '已信任',
+        revoked: '已撤销',
+        revokedHint: '你已撤销这台设备的信任；账号规则不会自动恢复它，只有「信任」按钮可以重新授权。',
+        pendingTrust: '待确认',
+        trustRequestTitle: '一台设备请求读取你的会话',
+        trustRequestBody: '{name} 与你登录了同一个账号，想读取本机 DSH 的会话与工作区（只读）。在你选择之前，它无法连接。',
+        trustRequestDevice: '设备 ID',
+        trustRequestFingerprint: '设备指纹',
+        trustRequestAddress: '地址',
+        trustRequestTrust: '信任这台设备',
+        trustRequestRefuse: '拒绝并撤销',
+        trustRequestHint: '拒绝是持久的：账号规则不会自动恢复信任，之后只能在设置页手动信任。',
         verified: '已认证',
         online: '在线',
         offline: '离线',
@@ -202,6 +219,17 @@ window.__ModuleLoader__.load({
         neverSeen: 'Never came online on this device',
         untrusted: 'Untrusted',
         trusted: 'Trusted',
+        revoked: 'Revoked',
+        revokedHint: 'You revoked this device. The account rule will not restore trust; only the Trust button grants it again.',
+        pendingTrust: 'Awaiting confirmation',
+        trustRequestTitle: 'A device asks to read your sessions',
+        trustRequestBody: '{name} is signed in to the same account and wants to read this DSH instance\'s sessions and workspaces (read-only). It stays disconnected until you answer.',
+        trustRequestDevice: 'Device ID',
+        trustRequestFingerprint: 'Device fingerprint',
+        trustRequestAddress: 'Address',
+        trustRequestTrust: 'Trust this device',
+        trustRequestRefuse: 'Refuse and revoke',
+        trustRequestHint: 'Refusing is durable: the account rule never restores trust, and the settings page is the only way back.',
         verified: 'Authenticated',
         online: 'online',
         offline: 'offline',
@@ -368,6 +396,16 @@ window.__ModuleLoader__.load({
       title: { fontSize: '16px', fontWeight: 600, margin: '0 0 4px' },
       titleVersion: { marginLeft: '10px', fontSize: '11px', fontWeight: 400, verticalAlign: '2px', fontFamily: monoStyle.fontFamily, color: 'var(--dsw-alias-label-secondary)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '999px', padding: '1px 8px', background: 'var(--dsw-alias-bg-layer-2)' },
       desc: { color: 'var(--dsw-alias-label-secondary)', margin: '0 0 16px', fontSize: '12px' },
+      // Blocking first-contact dialog: a full-viewport portal layer above every
+      // panel. The mask intercepts clicks and the card holds the only two
+      // answers, so the rest of the app cannot be used until the user decides.
+      dialogRoot: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', pointerEvents: 'auto' },
+      dialogMask: { position: 'absolute', inset: 0, background: 'var(--dsw-alias-bg-mask-1)', backdropFilter: 'var(--dsw-mask-blur)' },
+      dialogCard: { position: 'relative', zIndex: 1, width: 'min(440px, 100%)', maxHeight: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', padding: '20px 22px', borderRadius: 'var(--dsw-radius-panel, 12px)', background: 'var(--dsw-alias-bg-layer-2)', boxShadow: 'var(--dsw-elevation-prominent)', border: '1px solid var(--dsw-alias-border-l2)' },
+      dialogTitle: { margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
+      dialogBody: { margin: 0, fontSize: '13px', lineHeight: 1.6, color: 'var(--dsw-alias-label-primary)' },
+      dialogDetails: { display: 'flex', flexDirection: 'column', gap: '2px' },
+      dialogFooter: { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' },
       card: { border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)', borderRadius: '10px', padding: '12px 14px', marginBottom: '12px' },
       row: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
       label: { color: 'var(--dsw-alias-label-secondary)', minWidth: '92px', fontSize: '12px' },
@@ -897,13 +935,20 @@ window.__ModuleLoader__.load({
           h('span', { style: styles.peerName }, peer.name || peer.shortId),
           h(Chip, { tone }, peer.online ? t('online') : t('offline')),
           peer.verified ? h(Chip, { tone: 'on' }, t('verified')) : null,
-          peer.trusted ? h(Chip, { tone: 'on' }, t('trusted')) : h(Chip, { tone: 'warn' }, t('untrusted')),
+          peer.trusted
+            ? h(Chip, { tone: 'on' }, t('trusted'))
+            : peer.revoked
+              ? h(Chip, { tone: 'warn' }, t('revoked'))
+              : peer.pendingTrust
+                ? h(Chip, { tone: 'warn' }, t('pendingTrust'))
+                : h(Chip, { tone: 'warn' }, t('untrusted')),
           peer.source === 'tailnet' ? h(Chip, { tone: 'off' }, 'Tailscale') : null,
           peer.rttMs !== null && peer.rttMs !== undefined ? h(Chip, { tone: 'off' }, `${peer.rttMs} ms`) : null,
           peer.version ? h(Chip, { tone: 'off' }, `v${peer.version}`) : null),
         h('div', { style: styles.mono }, peer.deviceId),
         peer.fingerprint ? h('div', { style: styles.mono }, `${t('fingerprint')}: ${peer.fingerprint}`) : null,
         peer.online && peer.address ? h('div', { style: styles.mono }, peer.address) : null,
+        peer.revoked ? h('p', { style: styles.hint }, t('revokedHint')) : null,
         peer.transfer
           ? h('div', { style: styles.mono }, fill(t('transferValue'), { received: formatBytes(peer.transfer.receivedBytes), sent: formatBytes(peer.transfer.sentBytes), calls: peer.transfer.calls }))
           : null,
@@ -1185,6 +1230,8 @@ window.__ModuleLoader__.load({
           h('p', { style: styles.hint }, t('localTestHint')))
       }
 
+      // Pending first-contact requests are answered by the frame-wide
+      // `shell.overlay` host, so this section renders no dialog of its own.
       return h('section', { style: styles.page },
         h('h2', { style: styles.title }, t('title'),
           state.version ? h('span', { style: styles.titleVersion }, `v${state.version}`) : null),
@@ -1323,6 +1370,121 @@ window.__ModuleLoader__.load({
         h('rect', { x: 3, y: 4, width: 18, height: 12, rx: 2 }),
         h('path', { d: 'M9 20h6' }),
         h('path', { d: 'M12 16v4' }))
+    }
+
+    /**
+     * Frame-wide host for pending first-contact trust requests. It reads the
+     * Host's `pendingTrust` list on a cadence and renders the blocking dialog
+     * for the oldest unanswered request, so the request appears on whatever
+     * panel is open instead of only inside the settings section.
+     */
+    function TrustRequestHost({ useRequests, decide, t }) {
+      const requests = useRequests(current => current)
+      const [pending, setPending] = React.useState(false)
+      const [failure, setFailure] = React.useState(null)
+      const request = Array.isArray(requests) && requests.length > 0 ? requests[0] : null
+      // No request live: render nothing, but keep the hooks above unconditional.
+      if (request === null) return null
+      const answer = decision => {
+        if (pending) return
+        setPending(true)
+        setFailure(null)
+        void decide(request.deviceId, decision).then(
+          () => setPending(false),
+          error => {
+            setPending(false)
+            setFailure(error instanceof Error ? error.message : String(error))
+          },
+        )
+      }
+      return h(TrustRequestDialog, {
+        key: request.deviceId,
+        request,
+        t,
+        pending,
+        failure,
+        onDecide: answer,
+      })
+    }
+
+    /**
+     * Blocking first-contact trust dialog. It renders through a body portal over
+     * the whole app, traps Tab inside its two answers, and refuses to close on
+     * Escape or a mask press: a peer stays disconnected until the user picks
+     * Trust or Refuse. Refusing is a durable revocation, not a dismissal.
+     */
+    function TrustRequestDialog({ request, t, pending, failure, onDecide }) {
+      const dialogRef = React.useRef(null)
+      const trustRef = React.useRef(null)
+      React.useEffect(() => {
+        const node = trustRef.current
+        if (node && typeof node.focus === 'function') node.focus({ preventScroll: true })
+        // Escape and Tab are owned in the capture phase so neither the app's
+        // shortcut dispatcher nor a nested dialog can dismiss the request.
+        const onKeyDown = event => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            return
+          }
+          if (event.key !== 'Tab') return
+          const root = dialogRef.current
+          if (!root) return
+          const focusable = [...root.querySelectorAll('button:not([disabled])')]
+          if (focusable.length === 0) return
+          const first = focusable[0]
+          const last = focusable[focusable.length - 1]
+          const active = document.activeElement
+          if (event.shiftKey && (active === first || !root.contains(active))) {
+            event.preventDefault()
+            last.focus()
+          } else if (!event.shiftKey && (active === last || !root.contains(active))) {
+            event.preventDefault()
+            first.focus()
+          }
+        }
+        window.addEventListener('keydown', onKeyDown, true)
+        return () => window.removeEventListener('keydown', onKeyDown, true)
+      }, [request.deviceId])
+      const detail = (label, value) => h('div', { style: { ...styles.row, alignItems: 'flex-start', marginTop: '4px' } },
+        h('span', { style: styles.label }, label),
+        h('span', { style: styles.value }, value))
+      return ReactDOM.createPortal(
+        h('div', { style: styles.dialogRoot, role: 'presentation' },
+          h('div', { style: styles.dialogMask, 'aria-hidden': true }),
+          h('div', {
+            ref: dialogRef,
+            style: styles.dialogCard,
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': t('trustRequestTitle'),
+            // Unnamed modal scope: every application shortcut is blocked while
+            // this dialog is the foreground modal.
+            'data-shortcut-modal': 'other',
+          },
+            h('h2', { style: styles.dialogTitle }, t('trustRequestTitle')),
+            h('p', { style: styles.dialogBody }, fill(t('trustRequestBody'), { name: request.name || request.deviceId })),
+            h('div', { style: styles.dialogDetails },
+              detail(t('trustRequestDevice'), request.deviceId),
+              request.fingerprint ? detail(t('trustRequestFingerprint'), request.fingerprint) : null,
+              request.address ? detail(t('trustRequestAddress'), request.address) : null),
+            h('p', { style: styles.hint }, t('trustRequestHint')),
+            failure ? h('p', { style: styles.error }, `${t('error')}: ${failure}`) : null,
+            h('div', { style: styles.dialogFooter },
+              h('button', {
+                style: styles.button,
+                className: 'am-button',
+                disabled: pending,
+                onClick: () => onDecide('refuse'),
+              }, t('trustRequestRefuse')),
+              h('button', {
+                ref: trustRef,
+                style: styles.buttonPrimary,
+                className: 'am-button am-button-primary',
+                disabled: pending,
+                onClick: () => onDecide('trust'),
+              }, t('trustRequestTrust'))))),
+        document.body)
     }
 
     /** One tree row: hover tooltip carries full details, overflowing labels marquee on hover. */
@@ -1802,6 +1964,52 @@ window.__ModuleLoader__.load({
         const Settings = localized(SettingsPage)
         const Panel = localized(MeshPanel)
 
+        // Frame-wide pending trust requests. The Host owns the request list;
+        // this store publishes the latest read so the `shell.overlay` host can
+        // show the blocking dialog on whatever panel is open, and so the
+        // settings section and the host never disagree about what is pending.
+        const trustRequests = createSnapshotStore([])
+        let trustPollTimer = null
+        let trustPollAlive = false
+        const readTrustRequests = async () => {
+          try {
+            const response = await fetch('/account-mesh/api/state', { headers: { accept: 'application/json' } })
+            const body = await response.json().catch(() => ({}))
+            if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`)
+            const list = Array.isArray(body.pendingTrust) ? body.pendingTrust : []
+            // Publish only a changed list: the hook binds to snapshot identity,
+            // so an unchanged poll must not republish a new array.
+            if (JSON.stringify(trustRequests.getSnapshot()) !== JSON.stringify(list)) trustRequests.set(list)
+          } catch {
+            // A failed read keeps the previous list: the dialog stays until the
+            // user answers, and the next poll retries.
+          }
+        }
+        const pollTrustRequests = async () => {
+          await readTrustRequests()
+          if (trustPollAlive) trustPollTimer = setTimeout(pollTrustRequests, 2500)
+        }
+        ctx.effect(() => {
+          trustPollAlive = true
+          void pollTrustRequests()
+          return () => {
+            trustPollAlive = false
+            if (trustPollTimer !== null) clearTimeout(trustPollTimer)
+            trustPollTimer = null
+          }
+        }, 'account-mesh: pending trust requests')
+        /** Answer one pending request and publish the resulting list immediately. */
+        const decideTrustRequest = async (deviceId, decision) => {
+          const response = await fetch('/account-mesh/api/trust-request', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ deviceId, decision }),
+          })
+          const payload = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`)
+          await readTrustRequests()
+        }
+
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',
           id: PANEL_ID,
@@ -1824,6 +2032,18 @@ window.__ModuleLoader__.load({
           locale: NS,
           label: () => t('panelTitle'),
         }, Panel))
+
+        // The blocking dialog lives in the frame-wide overlay list, so it
+        // appears over every panel and seat instead of only inside Settings.
+        ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+          name: 'shell.overlay',
+          id: 'account-mesh.trust-request',
+          locale: NS,
+          inject: () => ({
+            hooks: { requests: trustRequests },
+            decide: decideTrustRequest,
+          }),
+        }, TrustRequestHost))
       },
     }
   },
