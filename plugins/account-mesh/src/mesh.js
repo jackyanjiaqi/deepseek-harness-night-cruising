@@ -215,6 +215,10 @@ export class Mesh {
     // A first contact waits for the user's explicit answer; a revoked device
     // stays revoked across every announce and heartbeat.
     this.refreshPendingTrust(peer)
+    // A revoked peer that reappears may have missed the revoke notice (it was
+    // offline, or the process restarted). Re-send it once per announce so both
+    // sides converge without the user touching the remote instance.
+    if (stored?.revoked === true) this.notifyRevoke(peer)
     if (isNew) {
       this.log?.info?.(`account-mesh: found peer ${peer.name} (${shortId(peer.deviceId)}) via ${peer.source}`)
       if (this.discovery) this.discovery.query(peer.address, peer.port)
@@ -296,7 +300,6 @@ export class Mesh {
     link.on('local-description', ({ sdp, type }) => {
       entry.offeredAt = now()
       this.sendSignal(peer, type, { sdp })
-      this.log?.info?.(`account-mesh: sent ${type} to ${shortId(peer.deviceId)}`)
     })
     link.on('local-candidate', ({ candidate, mid }) => {
       this.sendSignal(peer, 'ice', { candidate, mid })
@@ -456,7 +459,6 @@ export class Mesh {
     this.links.set(peer.deviceId, entry)
     link.on('local-description', ({ sdp, type }) => {
       this.sendSignal(peer, type, { sdp })
-      this.log?.info?.(`account-mesh: sent ${type} to ${shortId(peer.deviceId)}`)
     })
     link.on('local-candidate', ({ candidate, mid }) => this.sendSignal(peer, 'ice', { candidate, mid }))
     link.on('message', ({ text }) => this.onLinkText(peer, entry, text))
@@ -491,7 +493,10 @@ export class Mesh {
   }
 
   sendSignal(peer, kind, payload) {
-    if (!this.discovery) return
+    if (!this.discovery) {
+      this.log?.warn?.(`account-mesh: cannot send ${kind} to ${shortId(peer.deviceId)}: discovery is not running`)
+      return
+    }
     const room = roomOf(this.accountTag, this.deviceId, peer.deviceId)
     const frames = encodeSignal({
       room,
@@ -501,6 +506,12 @@ export class Mesh {
       privateKey: this.identity.privateKey,
     })
     for (const frame of frames) this.discovery.sendRaw(frame, peer.address, peer.port)
+    // One line per logical signal: the frame count is the fragmentation, and
+    // the endpoint is where it was sent, so a peer that never answers is
+    // distinguishable from a signal that never left this host.
+    this.log?.info?.(
+      `account-mesh: sent ${kind} to ${shortId(peer.deviceId)} at ${peer.address}:${peer.port} (${frames.length} frame${frames.length === 1 ? '' : 's'})`,
+    )
   }
 
   onLinkText(peer, entry, text) {
@@ -891,8 +902,10 @@ export class Mesh {
     this.pendingTrust.delete(deviceId)
     const peer = this.peers.get(deviceId)
     // Notify before the link is torn down: the peer keeps its own trust entry
-    // unless it learns about this revocation.
+    // unless it learns about this revocation. A peer that is not currently
+    // discovered cannot be notified; the revocation still applies locally.
     if (peer) this.notifyRevoke(peer)
+    else this.log?.info?.(`account-mesh: ${shortId(deviceId)} is not discovered, revoke notice not sent`)
     const entry = this.links.get(deviceId)
     entry?.link?.teardown('forgotten')
     this.links.delete(deviceId)

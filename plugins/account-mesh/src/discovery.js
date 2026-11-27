@@ -337,13 +337,22 @@ export class Discovery {
     }
   }
 
-  /** Send one already-encoded discovery/signaling payload to a peer address. */
+  /**
+   * Send one raw datagram to a peer's discovery endpoint. A refused or failed
+   * send is logged instead of swallowed: a signaling frame that never left the
+   * socket otherwise looks like a peer that stopped answering.
+   * @param buffer - datagram bytes.
+   * @param address - destination address.
+   * @param port - destination port.
+   */
   sendRaw(buffer, address, port) {
     if (!this.socket) return
     try {
-      this.socket.send(buffer, port, address)
-    } catch {
-      // ignore
+      this.socket.send(buffer, port, address, error => {
+        if (error) this.log?.warn?.(`discovery send to ${address}:${port} failed: ${error.message}`)
+      })
+    } catch (error) {
+      this.log?.warn?.(`discovery send to ${address}:${port} failed: ${error?.message ?? error}`)
     }
   }
 

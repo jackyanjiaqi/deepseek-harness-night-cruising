@@ -143,7 +143,7 @@ PASS settings section renders no dialog of its own
 
 1. **对面已升级到本版本**：撤销时发送一条签名 `revoke` 通知（`sendSignal(peer, 'revoke', { v })`）。对端 `onSignal` 收到后调用 `onRevokeNotice()`，把自己的信任条目也标成 `revoked` 并断开链接；此后它的读取被 `not-paired` 拒绝。两边的撤销状态收敛，不需要在远端手动操作。
    - 通知在 `forget()` 里**先发后断链**；对端即使已经撤销我们，也会处理这条通知（`onSignal` 对 `revoke` 有单独分支），所以双向撤销不会互相忽略。
-   - 通知是签名帧，与 offer/answer/ice 走同一条 UDP 通道；对端离线时通知丢失，对端保留自己的信任条目——这是本地撤销的固有局限，本地撤销本身仍生效。
+   - 通知是签名帧，与 offer/answer/ice 走同一条 UDP 通道；对端离线时通知丢失，但被撤销的对端每次 announce 都会收到重发的通知（`onPeer` 里 `stored.revoked === true` 时调用 `notifyRevoke`），重新上线后即收敛；本机重启后同样靠这条重发补上。
 2. **对面仍是旧版本**：旧版 `onSignal` 不认识 `revoke` 这个 kind，会忽略它，**保留自己的信任条目**。此时「我撤销后对面依然信任我」成立——对面仍会尝试向我发起连接，但我的 `serve()`/`call()` 用 `isTrusted` 拒绝，所以对面读不到任何东西；只是对面面板仍显示「已信任」。
 
 结论：**要验收「对面也不再信任我」，远端必须升级到同一版本**；只升级一端时，撤销在本地生效、远端读取被拒，但远端信任表不会自动收敛。
@@ -156,7 +156,44 @@ PASS peer side reports the revocation in its views
 PASS peer side refuses reads after the notice
 ```
 
-## 7. 尚未做的部分
+## 7. 传输诊断：为何 ping 通、插件却连不上
+
+2026-11-27 验收时 `tailscale ping` 与 `ping` 都能通到 mac-studio，但 account-mesh 一直 `link: closed`。日志显示：
+
+```text
+sent offer to 4852f673…da6
+local candidate: 172.16.190.31:xxx / 100.71.160.71:xxx typ host
+peer 4852f673 state connecting
+handshake with 4852f673…da6 stalled, retrying   ← 10s
+peer 4852f673 state closed
+```
+
+关键事实：
+
+- **`ping` / `tailscale ping` 走 ICMP**，经 WireGuard 隧道或 peer relay 转发；`tailscale ping` 甚至只是 disco 探测，不进包过滤。它们证明的是「L3 可达」，不是「UDP 打洞可达」。
+- **account-mesh 走 WebRTC**：offer/answer/ice 通过 UDP 47831 在两端之间交换，然后 ICE 用 `typ host` 候选（本机 `172.16.190.31`、`100.71.160.71`；对端 `223.73.228.x`、`192.168.5.2`）直接打洞。本机是对称 NAT，mac-studio 在 CGNAT 后面，两边都没有 TURN，host 候选打不通。
+- 日志里**从未出现 `received answer` / `received ice`**（最后一次是 11-26 15:26），说明对端的回包根本没到——要么对端的 47831 入站被防火墙拦（Windows 那台之前就是这个原因），要么对端没在跑同版本插件，要么 ICE 候选不可达。
+- peer relay 只解决 Tailscale 的 WireGuard 层（`100.x` 的 IP 包），**不解决 WebRTC 的 UDP 打洞**。
+
+因此「ping 通」与「插件连不上」并不矛盾：前者是隧道层，后者是应用层的 UDP 直连。
+
+### 诊断增强（本次改动）
+
+- `Discovery.sendRaw()` 不再吞掉发送失败：`socket.send` 的回调错误与同步异常都写进 `mesh.log`（`discovery send to <addr>:<port> failed: ...`），这样「信号没发出去」和「对端不回」可以区分。
+- `Mesh.sendSignal()` 每次发送记一行 `sent <kind> to <shortId> at <addr>:<port> (<n> frames)`，带目标端点与分片数；`discovery` 未运行时记 `cannot send ...: discovery is not running`。
+- 删掉了 `connect()` / `acceptOffer()` 里重复的 `sent offer` 日志（现在统一由 `sendSignal` 记录）。
+- 撤销通知：对端不在发现表时记 `revoke notice not sent`；被撤销的对端每次 announce 都会重发通知（`onPeer` 里 `stored.revoked === true`），离线错过通知或本机重启后都能收敛。
+
+### 验收建议
+
+1. 两端都升级到同一版本（rc.15 及以上），确认对端 `mesh_peers` 里能看到本机；
+2. 在 mac-studio 上确认 DSH 的入站 UDP 47831 与 ICE 随机端口没有被防火墙拦；
+3. 若仍打不通，给两端配一个 TURN 服务器（`iceServers`），走 TCP/TLS 绕过对称 NAT；
+4. 或把两台放到同一物理网段（本机 `172.16.190.31` 与对端 `192.168.5.2` 不在同一网段）。
+
+信任机制本身可以在单机用 `spike/p0-mesh.mjs` 完整验证（首次接触弹阻塞对话框、信任、撤销、心跳不复活、重启仍撤销、撤销通知收敛）。
+
+## 8. 尚未做的部分
 
 - 没有实现 `inert` 级别的「父级控件全部禁用」：插件拿不到 AppFrame 的 DOM 引用，当前靠 mask + 快捷键阻塞 + Tab 循环三层实现阻塞。
 - overlay host 的轮询是 2.5s 节奏，只影响显示延迟，不中止任何请求（符合本仓「去除所有超时」约定）。

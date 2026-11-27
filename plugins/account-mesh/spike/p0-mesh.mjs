@@ -226,6 +226,19 @@ try {
   check('peer side reports the revocation in its views', meshB.peerViews().some(peer => peer.deviceId === 'device-alpha' && peer.revoked === true))
   const refusedByPeer = await meshB.call('device-alpha', 'sessions/list', {}).then(() => null, error => error)
   check('peer side refuses reads after the notice', refusedByPeer?.code === 'not-paired', refusedByPeer?.code)
+
+  // A revoked peer keeps announcing; the notice is re-sent so a peer that
+  // missed it (offline, or a fresh process) converges without user action.
+  meshB.trust.upsert({
+    deviceId: 'device-alpha',
+    name: 'JIAQIdeMac-mini',
+    publicKey: meshB.peers.get('device-alpha')?.publicKey ?? '',
+    fingerprint: 'reset',
+    accountTag: meshB.accountTag,
+  })
+  check('peer side trust reset for the resend probe', meshB.trust.isTrusted('device-alpha'))
+  await waitFor('resend revokes the peer side again', () => meshB.trust.get('device-alpha')?.revoked === true)
+  check('announce re-sends the revoke notice', meshB.trust.get('device-alpha')?.revoked === true)
 } catch (error) {
   failures += 1
   console.error('HARNESS ERROR', error)

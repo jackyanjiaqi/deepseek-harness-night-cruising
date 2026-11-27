@@ -64,7 +64,7 @@ rc.13 的保险柜密钥只存在于进程内，重启后只能重拉全量。�
    - 对话框挂在 `shell.overlay`（frame 级 list slot，`id: account-mesh.trust-request`），所以无论当前在会话、设置页还是其它面板都会出现，离开设置页也不会消失。
    - 请求列表来自 Host 的 `/account-mesh/api/state` 轮询（2.5s 节奏，只影响显示，不中止任何请求），经 `@deepseek-ai/dsh-client-store` 的快照 store 发布给 overlay host。
 5. **撤销是持久的**：`forget` 不再删除条目，而是写入 `revoked: true` + `revokedAt`（`peers.json` 版本 2）。账号规则不会自动恢复被撤销的设备：后续 announce、心跳、信令都被忽略，重启后仍然撤销。只有显式 `pair`（面板「信任」按钮、`mesh_peer_pair` 工具或 `POST /account-mesh/api/pair`）能清除撤销。
-   - **撤销通知**：撤销时先向对端发送一条签名 `revoke` 帧，再断开链接。对端收到后把自己的信任条目也标成 `revoked` 并断链，所以两边状态收敛；对端离线时通知丢失，对端保留自己的信任条目。
+   - **撤销通知**：撤销时先向对端发送一条签名 `revoke` 帧，再断开链接。对端收到后把自己的信任条目也标成 `revoked` 并断链，所以两边状态收敛。对端离线时通知丢失，但被撤销的对端每次 announce 都会收到重发的通知，重新上线后即收敛；本机重启后同样靠这条重发补上。
    - **兼容性**：旧版本对端不认识 `revoke` 帧，会忽略它并保留自己的信任条目——此时本地撤销生效、远端读取被 `not-paired` 拒绝，但远端信任表不会自动收敛。要验收「对面也不再信任我」，远端必须升级到同一版本。
 6. **只读数据面**：固定 op 白名单（`sessions/list`、`sessions/events`、`workspaces/list`、`files/list`、`files/stat`、`files/read`）。没有写入、prompt、shell 或任意命令通道。
 
