@@ -98,6 +98,40 @@ index ece6ead1bdc1f5bc2655ee71c0db93b8af8f8c86..26e95fa66f4ae94536f6b7ecc420349a
 -        maxInputBytes: 4096
 -        maxOutputTokens: 64
 -        timeoutMs: 60000
+diff --git a/packages/llm/llm/src/assistant-stream.ts b/packages/llm/llm/src/assistant-stream.ts
+index 7fca34c5d5bf432f7fad81bd48edfbdaf5083e83..1fc437c82c7189c6d1d8e5dbdeda79f282277aed 100644
+--- a/packages/llm/llm/src/assistant-stream.ts
++++ b/packages/llm/llm/src/assistant-stream.ts
+@@ -340,6 +340,29 @@ export function assistantStreamFirstTokenTime(stream: readonly AssistantStreamRe
+   return undefined
+ }
+ 
++/**
++ * Shortest decode window that can measure a generation rate. Providers that
++ * deliver a whole completion in one burst (no incremental deltas) leave a
++ * window of a few milliseconds; tokens divided by that is not a rate.
++ */
++export const MIN_MEASURABLE_DECODE_MS = 50
++
++/**
++ * Timestamps of the first and last token delta in one compact stream.
++ * @param stream - compact records from one durable Assistant settlement.
++ * @returns the token window, or undefined when the stream carries no token.
++ */
++export function assistantStreamTokenSpan(stream: readonly AssistantStreamRecord[]): { first: number; last: number } | undefined {
++  let first: number | undefined
++  let last: number | undefined
++  for (const { time, chunk } of expandAssistantStream(stream)) {
++    if (!isTokenDelta(chunk)) continue
++    if (first === undefined) first = time
++    last = time
++  }
++  return first === undefined || last === undefined ? undefined : { first, last }
++}
++
+ /**
+  * Whether one compact stream carries any reader-visible content per {@link isVisibleChunk},
+  * stopping at the first qualifying member.
 diff --git a/packages/sdk/server/src/index.ts b/packages/sdk/server/src/index.ts
 index 3fa37595509d1f519503d70b6f28e0b39ea744eb..6c7a223ffb744dc1dcdca6ed4f6e33044f8fb429 100644
 --- a/packages/sdk/server/src/index.ts
@@ -189,6 +223,61 @@ index bccfa6634e071c5bf1fad2f6b2fde80b0c8e503b..91091df610a1e87298a211439fecd067
          stopReason: info.stopReason,
          ...(info.lastAssistantMessage === undefined
            ? {}
+diff --git a/packages/session/session-stats/src/projection.ts b/packages/session/session-stats/src/projection.ts
+index 39b8916dd482025e80bdb3a72ca4b74b2a614eed..0b8189dbf04fe8c0478cac28c27243fe1003e643 100644
+--- a/packages/session/session-stats/src/projection.ts
++++ b/packages/session/session-stats/src/projection.ts
+@@ -24,7 +24,7 @@
+  */
+ 
+ import { z } from 'zod'
+-import { assistantStreamFirstTokenTime } from '@deepseek-ai/dsh-llm'
++import { assistantStreamFirstTokenTime, assistantStreamTokenSpan, MIN_MEASURABLE_DECODE_MS } from '@deepseek-ai/dsh-llm'
+ import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
+ 
+ 
+@@ -151,8 +151,18 @@ export const sessionStatsProjectionDefinition = {
+           next.ttftMs += Math.max(0, firstToken - open.startTime)
+           next.ttftSteps += 1
+           const outputTokens = usageOutputTokens(event.data.usage)
+-          if (outputTokens !== null) {
+-            next.decodeMs += Math.max(0, event.time - firstToken)
++          // A provider that delivers the whole completion in one burst leaves a
++          // token window of a couple of milliseconds; counting it as decode
++          // time reports tens of thousands of tokens per second. Only a window
++          // wide enough to be a rate contributes.
++          const span = assistantStreamTokenSpan(event.data.stream)
++          const decodeSpan = span !== undefined && span.last > span.first
++            ? span.last - span.first
++            // One delta carries no internal spacing: fall back to the assembled
++            // message boundary, which still measures a real wait.
++            : Math.max(0, event.time - firstToken)
++          if (outputTokens !== null && decodeSpan >= MIN_MEASURABLE_DECODE_MS) {
++            next.decodeMs += decodeSpan
+             next.decodeTokens += outputTokens
+           }
+         }
+diff --git a/packages/session/session-stats/tests/projection.spec.ts b/packages/session/session-stats/tests/projection.spec.ts
+index 1f1d6103ebfef0b30109f5e2535d5737538e91e0..37a48881f42b154655439e6c210c359aef5965e5 100644
+--- a/packages/session/session-stats/tests/projection.spec.ts
++++ b/packages/session/session-stats/tests/projection.spec.ts
+@@ -209,6 +209,16 @@ describe('sessionStats wall-time fold (controlled timestamps)', () => {
+     }))
+   })
+ 
++  it('ignores a burst stream that carries no measurable decode window', () => {
++    expect(fold([
++      at(1_000, 'step/start', { turn: 1, step: 1 }),
++      messageAt(3_003, [
++        { time: 3_000, chunk: { type: 'text-delta', index: 0, text: 'a' } },
++        { time: 3_001, chunk: { type: 'text-delta', index: 0, text: 'b' } },
++      ], { inputTokens: 10, outputTokens: 200 }),
++    ])).toEqual(totals({ llmMs: 2_003, ttftMs: 2_000, ttftSteps: 1, decodeMs: 0, decodeTokens: 0 }))
++  })
++
+   it('keeps the first attempt token boundary across an in-step retry (window resetForRetry parity)', () => {
+     expect(fold([
+       at(1_000, 'step/start', { turn: 1, step: 1 }),
 diff --git a/packages/session/session-title-first-prompt-llm/src/index.ts b/packages/session/session-title-first-prompt-llm/src/index.ts
 index 1cd6aa26ea23be4b45142a8ef6de52a164a23dda..b8be83f82af67c86aa55700f135a793239dbaee2 100644
 --- a/packages/session/session-title-first-prompt-llm/src/index.ts

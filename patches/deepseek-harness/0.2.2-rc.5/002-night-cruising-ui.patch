@@ -619,10 +619,10 @@ index 0000000000000000000000000000000000000000..6b39177194d57828785e45f14c670787
 +.nv-actions button:disabled { opacity: .4; cursor: not-allowed; border-color: #ffffff14; }
 diff --git a/apps/web/src/night-cruising.ts b/apps/web/src/night-cruising.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..ff548e1090c8879874b18f498a61215e836cd229
+index 0000000000000000000000000000000000000000..b63cd91e5fdd8adcd5fa3b7a0eebd3dde47a19aa
 --- /dev/null
 +++ b/apps/web/src/night-cruising.ts
-@@ -0,0 +1,761 @@
+@@ -0,0 +1,763 @@
 +import './night-cruising.css'
 +
 +/** One editable timeout row served by `/night-cruising/timeouts`. */
@@ -920,7 +920,9 @@ index 0000000000000000000000000000000000000000..ff548e1090c8879874b18f498a61215e
 + */
 +async function save(): Promise<void> {
 +  if (groups.length === 0) return
-+  const next: Record<string, number> = { ...values }
++  // Policy-owned rows are not submitted at all: the Host refuses any change,
++  // and echoing them back used to make every save look like an illegal edit.
++  const next: Record<string, number> = {}
 +  for (const [key, input] of inputs) {
 +    const entry = entriesByKey.get(key)
 +    if (entry === undefined || entry.locked) continue
@@ -1472,6 +1474,80 @@ index 11ff789b8aa632caa1834faa9b23f8a68d0bebc7..1e86d2aca9505f4f5a55b65d34708275
    'workspace.defaultName': '默认工作区',
    'unknown': '未知',
    'none': '无',
+diff --git a/packages/client/ui-chat/src/client/chat/StatsPills.tsx b/packages/client/ui-chat/src/client/chat/StatsPills.tsx
+index dd5060ff5ca46e3521b5f75b7d9ab2d365a2dd66..074a43d57fadf73e57af3f77fbbf2562df1e3fa6 100644
+--- a/packages/client/ui-chat/src/client/chat/StatsPills.tsx
++++ b/packages/client/ui-chat/src/client/chat/StatsPills.tsx
+@@ -169,10 +169,16 @@ function useSessionStats(useChat: StatPillProps['useChat'], useProjection: UsePr
+   return useMemo(() => projected ?? deriveStats(settledNodes), [projected, settledNodes])
+ }
+ 
+-function decodeSpeed(stats: WindowStats, t: Translate): string {
+-  return t('message.tokensPerSecond', {
+-    tps: formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1_000)),
+-  })
++/** Highest plausible generation rate; above it the sample is a provider burst. */
++const MAX_PLAUSIBLE_TPS = 5_000
++
++function decodeSpeed(stats: WindowStats, t: Translate): string | null {
++  if (stats.decodeMs < 50 || stats.decodeTokens <= 0) return null
++  const tps = stats.decodeTokens / (stats.decodeMs / 1_000)
++  // Older sessions counted a whole burst as decode time; keep their number off
++  // the bar instead of printing five digits of fiction.
++  if (!Number.isFinite(tps) || tps > MAX_PLAUSIBLE_TPS) return null
++  return t('message.tokensPerSecond', { tps: formatTokensPerSecond(tps) })
+ }
+ 
+ /** The full reading above a pill, only while an ellipsis cuts its label; the delay matches the dock's context meter. */
+@@ -251,7 +257,7 @@ function DialogPill({ stat, icon, label, text, title, titleValue, children }: Pi
+ export const ActivityPill = memo(function ActivityPill({ useChat, useProjection, usePerformanceUsage, t }: StatPillProps) {
+   const mode = usePerformanceUsage(value => value)
+   const stats = useSessionStats(useChat, useProjection)
+-  const speed = stats.decodeMs > 0 ? decodeSpeed(stats, t) : null
++  const speed = decodeSpeed(stats, t)
+   const icon = <IconGaugeOutlineRegular />
+   if (mode === 'compact') return speed === null ? null : <PlainPill stat="activity" icon={icon} {...reading(speed, null)} />
+   if (stats.steps === 0) return null
+diff --git a/packages/client/ui-chat/src/client/contract/turn-metrics.ts b/packages/client/ui-chat/src/client/contract/turn-metrics.ts
+index 6cbd619beb36516c2f75372085db94e0ac64bf2f..195e37259c74c958645fb3855aa5b007fc004904 100644
+--- a/packages/client/ui-chat/src/client/contract/turn-metrics.ts
++++ b/packages/client/ui-chat/src/client/contract/turn-metrics.ts
+@@ -4,6 +4,9 @@ import type {
+   AssistantMessageNode,
+ } from '@deepseek-ai/dsh-client-ui-conversation/client'
+ 
++/** Mirrors `@deepseek-ai/dsh-llm`'s threshold; a client bundle may not import that package as a value. */
++const MIN_MEASURABLE_DECODE_MS = 50
++
+ /** One assistant step's derivable latency facts; null marks an unrecorded part. */
+ export interface StepReading {
+   /** step/start → first token delta, in ms. */
+@@ -36,8 +39,11 @@ export function assistantStepReading(node: AssistantNode): StepReading {
+   const ttftMs = timing !== undefined && timing.stepStartTime !== null && timing.firstTokenTime !== null
+     ? Math.max(0, timing.firstTokenTime - timing.stepStartTime)
+     : null
+-  const decodeMs = timing !== undefined && timing.firstTokenTime !== null
++  const rawDecodeMs = timing !== undefined && timing.firstTokenTime !== null
+     ? Math.max(0, timing.completedTime - timing.firstTokenTime)
+     : null
++  // Below the threshold the provider emitted one burst, so the window measures
++  // nothing; report it as unrecorded instead of as an absurd rate.
++  const decodeMs = rawDecodeMs !== null && rawDecodeMs >= MIN_MEASURABLE_DECODE_MS ? rawDecodeMs : null
+   return { ttftMs, decodeMs, outputTokens: usageOutputTokens(node.usage) }
+ }
+diff --git a/packages/client/ui-chat/tests/turn-metrics.client.spec.ts b/packages/client/ui-chat/tests/turn-metrics.client.spec.ts
+index 7d0ffed6e4c79e5ddb2bf20ef26c527df43924b0..1626b3178684bc960baff6b94fd9084423dbd3ba 100644
+--- a/packages/client/ui-chat/tests/turn-metrics.client.spec.ts
++++ b/packages/client/ui-chat/tests/turn-metrics.client.spec.ts
+@@ -49,7 +49,7 @@ describe('assistantStepReading', () => {
+     expect(assistantStepReading(assistant({
+       seq: 2, turn: 1, step: 1,
+       timing: { stepStartTime: 2_000, firstTokenTime: 1_500, completedTime: 1_200 },
+-    }))).toEqual({ ttftMs: 0, decodeMs: 0, outputTokens: null })
++    }))).toEqual({ ttftMs: 0, decodeMs: null, outputTokens: null })
+   })
+ 
+   it('rejects non-object, missing, and non-finite usage token counts', () => {
 diff --git a/packages/client/ui-conversation/src/client/apply.ts b/packages/client/ui-conversation/src/client/apply.ts
 index 37420f7fc2ffc77e74074f553312c3910552594f..456ef499992f0ce6df031f077b1ffd7833b23888 100644
 --- a/packages/client/ui-conversation/src/client/apply.ts

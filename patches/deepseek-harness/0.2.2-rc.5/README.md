@@ -13,7 +13,7 @@
 | `001-packaging-and-desktop` | diff | 25 | 打包、Linux 运行时、deb/AppImage、Windows 预检、桌面发布脚本、vitest 配置 | 001 005 007 008 009 014 |
 | `002-night-cruising-ui` | diff | 16 | 主题、欢迎页、底部栏前端、视图选择、点击外部关闭、保险柜栏 | 003(主题) 011 013(前端) 016 017 |
 | `003-timeout-policy` | diff | 39 | 超时注册表、Shell/Job/MCP/子 agent/会话等待、底部设置存储、守卫、SDK 依赖补丁 | 002 004 006(SDK) 012 015 018 |
-| `004-session-titles` | diff | 17 | 标题生成、bundle 配置、boot、workflow、SDK server | 003(标题) 004 |
+| `004-session-titles` | diff | 18 | 标题生成、会话统计（TPS 可信度）、bundle 配置、boot、workflow、SDK server | 003(标题) 004 |
 | `005-test-infrastructure` | diff | 184 | `apps/web` e2e 夹具、stress、vitest、Python SDK、脚本夹具 | 006(测试) |
 
 代码补丁都是**基线 → 最终**的净差异，文件集合互不重叠；二进制只出现在 `000` 的 `files/` 下，任何 `.patch` 里都不会出现 `GIT binary patch` 或 base64 媒体。
