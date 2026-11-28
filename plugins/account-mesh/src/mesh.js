@@ -22,6 +22,7 @@ import { fingerprintOf, loadOrCreateIdentity, pairCode, signBytes, verifyBytes }
 import { readAccount } from './account.js'
 import { TrustStore } from './trust.js'
 import { b64u, digest, now, shortId } from './util.js'
+import { createLinkKeys, deriveLinkKey, exportLinkPublic, importLinkPublic, openLinkBox, sealLinkBox } from './link-crypto.js'
 
 const HELLO_CONTEXT = 'dsh-account-mesh/v1/hello'
 /**
@@ -43,7 +44,10 @@ export const DEFAULT_CONFIG = {
   discoveryPort: 47831,
   staticPeers: [],
   tailscaleProbe: true,
-  autoTrustSameAccount: true,
+  // Secure default for a plugin installed on someone else's machine: a
+  // same-account peer is only auto-paired when the user opts in. The account
+  // tag is self-reported and can be spoofed on a LAN.
+  autoTrustSameAccount: false,
   allowRoots: [],
   iceServers: [],
   // Opt-in fixed ICE range for hosts whose firewall cannot allow the app
@@ -305,6 +309,7 @@ export class Mesh {
       link,
       initiator,
       verified: false,
+      eph: createLinkKeys(),
       ready,
       resolveReady,
       rejectReady,
@@ -359,8 +364,11 @@ export class Mesh {
     const nonce = b64u(Buffer.from(cryptoRandom(24)))
     entry.helloNonce = nonce
     const signature = signBytes(this.identity.privateKey, `${HELLO_CONTEXT}|${nonce}|${this.deviceId}`)
+    const xpk = exportLinkPublic(entry.eph)
+    const xsig = signBytes(this.identity.privateKey, `${HELLO_CONTEXT}|${nonce}|${this.deviceId}|${xpk}`)
     // Both directions carry the plugin version, so each side can show which
-    // build the other one runs; the panel flags mixed-version pairs.
+    // build the other one runs; the panel flags mixed-version pairs. xpk/xsig
+    // are additive: old peers ignore them and fall back to the DTLS channel.
     entry.link.rpc({
       op: 'hello',
       params: {
@@ -370,6 +378,8 @@ export class Mesh {
         v: this.version,
         pk: b64u(this.identity.publicKey),
         sig: signature,
+        xpk,
+        xsig,
       },
     })
   }
@@ -466,6 +476,7 @@ export class Mesh {
       link,
       initiator: false,
       verified: false,
+      eph: createLinkKeys(),
       ready,
       resolveReady,
       rejectReady,
@@ -571,8 +582,11 @@ export class Mesh {
     }
     // The hello is signed, so the announced plugin version is trustworthy.
     entry.peerVersion = typeof params.v === 'string' && params.v ? params.v : null
+    this.acceptLinkKey(entry, nonce, params)
     const signature = signBytes(this.identity.privateKey, `${HELLO_CONTEXT}|${nonce}|${this.deviceId}`)
-    entry.link.rpc({ op: 'hello-ack', params: { nonce, v: this.version, sig: signature } })
+    const xpk = exportLinkPublic(entry.eph)
+    const xsig = signBytes(this.identity.privateKey, `${HELLO_CONTEXT}|${nonce}|${this.deviceId}|${xpk}`)
+    entry.link.rpc({ op: 'hello-ack', params: { nonce, v: this.version, sig: signature, xpk, xsig } })
     this.markVerified(entry)
   }
 
@@ -586,7 +600,26 @@ export class Mesh {
       return
     }
     if (!entry.peerVersion && typeof params.v === 'string' && params.v) entry.peerVersion = params.v
+    this.acceptLinkKey(entry, nonce, params)
     this.markVerified(entry)
+  }
+
+  /** Verify and derive the per-link X25519 ticket key, if the peer sent one. */
+  acceptLinkKey(entry, nonce, params) {
+    if (typeof params.xpk !== 'string' || typeof params.xsig !== 'string') return
+    const payload = `${HELLO_CONTEXT}|${nonce}|${entry.peer.deviceId}|${params.xpk}`
+    if (!verifyBytes(entry.peer.publicKey, payload, params.xsig)) {
+      this.log?.warn?.(`account-mesh: rejected unauthenticated link key from ${shortId(entry.peer.deviceId)}`)
+      return
+    }
+    try {
+      const peerX = importLinkPublic(params.xpk)
+      // Both sides send hello independently; the X25519 secret is already unique
+      // per link, so use a fixed salt instead of the direction-specific nonce.
+      entry.linkKey = deriveLinkKey(entry.eph.privateKey, peerX, '', this.deviceId, entry.peer.deviceId)
+    } catch (error) {
+      this.log?.warn?.(`account-mesh: link key derivation failed: ${error.message}`)
+    }
   }
 
   markVerified(entry) {
@@ -621,7 +654,17 @@ export class Mesh {
       if (frame.op === 'sessions/export/prepare') result = await this.transfer.prepare(frame.params ?? {}, entry)
       else if (frame.op === 'sessions/export/block') result = await this.transfer.block(frame.params ?? {}, entry)
       else if (frame.op === 'sessions/export/cancel') result = await this.transfer.cancel(frame.params ?? {})
-      else if (frame.op === 'vault/open') result = await this.hostedVault.hostOpen({ ...(frame.params ?? {}), peerId: entry.peer.deviceId })
+      else if (frame.op === 'vault/open') {
+        result = await this.hostedVault.hostOpen({ ...(frame.params ?? {}), peerId: entry.peer.deviceId })
+        if (result?.ok === true && entry.linkKey) {
+          const p = frame.params ?? {}
+          const aad = `dsh-mesh/vault/v2/wrap|${String(p.depositId ?? '')}|${String(p.gen ?? '')}|${String(p.archiveSha ?? '')}|${entry.peer.deviceId}`
+          result.keyBox = sealLinkBox(entry.linkKey, Buffer.from(String(result.key), 'base64url'), aad)
+          result.nextKeyBox = sealLinkBox(entry.linkKey, Buffer.from(String(result.nextKey), 'base64url'), aad)
+          delete result.key
+          delete result.nextKey
+        }
+      }
       else if (frame.op === 'vault/commit') result = await this.hostedVault.hostCommit({ ...(frame.params ?? {}), peerId: entry.peer.deviceId })
       else if (frame.op === 'vault/status') result = await this.hostedVault.hostState()
       else result = await this.runOp(frame.op, frame.params ?? {})
@@ -712,7 +755,9 @@ export class Mesh {
   fetchSession(peerId, sessionId, options = {}) {
     const call = (target, op, params) => this.call(target, op, params, options.signal)
     if (this.codec?.state?.().active === true) {
-      const trusted = this.trust.get(this.resolvePeer(peerId)?.peer.deviceId ?? peerId)
+      const resolvedId = this.resolvePeer(peerId)?.peer.deviceId ?? peerId
+      const trusted = this.trust.get(resolvedId)
+      const linkEntry = this.links.get(resolvedId)
       return this.transfer.fetch({
         peerId,
         sessionId,
@@ -721,6 +766,8 @@ export class Mesh {
         onProgress: options.onProgress,
         verifyVault: ack => Boolean(trusted?.publicKey && typeof ack?.payload === 'string' && typeof ack?.sig === 'string'
           && verifyBytes(trusted.publicKey, ack.payload, ack.sig)),
+        selfDeviceId: this.deviceId,
+        unsealVault: (box, aad) => linkEntry?.linkKey ? openLinkBox(linkEntry.linkKey, box, aad) : undefined,
       })
     }
     // Standard DSH has no JLC native module. Page the projection serially so a
@@ -772,6 +819,10 @@ export class Mesh {
   async deletePeerVault(peerId) {
     return this.hostedVault?.deletePeerVault(peerId) ?? { ok: false }
   }
+
+  /** Owner approves/denies a pending remote release request. */
+  async approveVaultRelease(id) { return this.hostedVault?.approveRelease(id) ?? false }
+  async denyVaultRelease(id) { return this.hostedVault?.denyRelease(id) ?? false }
 
   /** Owner-side release/retention policy. */
   async setVaultOwnerPolicy(policy) {

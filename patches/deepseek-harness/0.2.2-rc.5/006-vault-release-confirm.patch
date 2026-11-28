@@ -1,0 +1,76 @@
+diff --git a/apps/web/src/night-cruising.ts b/apps/web/src/night-cruising.ts
+index b63cd91e5fdd8adcd5fa3b7a0eebd3dde47a19aa..ce105b0a9f1530fd7cf13428fbc39848f3d1b4c3 100644
+--- a/apps/web/src/night-cruising.ts
++++ b/apps/web/src/night-cruising.ts
+@@ -422,6 +422,7 @@ interface VaultHostState {
+   roots: VaultRoot[]
+   pending: VaultPending[]
+   ownerPeers: { peerId: string; entries: number; bytes: number; kinds: string[]; lastUsedAt: number }[]
++  releasePending: { id: string; peerId: string; depositId: string; gen: number; createdAt: number; expiresAt: number }[]
+   policy: { release: 'auto' | 'confirm' | 'deny'; keyTtlMs: number; retentionDays: number }
+ }
+ 
+@@ -498,9 +499,10 @@ function renderVault(): void {
+   }
+   const roots = vaultState.roots
+   const pending = vaultState.pending
++  const releasePending = vaultState.releasePending ?? []
+   if (vaultSummary !== null) {
+-    vaultSummary.textContent = pending.length > 0
+-      ? `托管保险柜 · 待确认 ${String(pending.length)}`
++    vaultSummary.textContent = pending.length + releasePending.length > 0
++      ? `托管保险柜 · 待确认 ${String(pending.length + releasePending.length)}`
+       : roots.length > 0
+         ? `托管保险柜 · ${String(roots.length)} 台设备`
+         : '托管保险柜'
+@@ -562,6 +564,24 @@ function renderVault(): void {
+   vaultHost.append(hostSection)
+ 
+   const owner = vaultEl('section', 'nv-section')
++  owner.append(vaultEl('h3', undefined, '本机作为远端：待确认开柜'))
++  owner.append(vaultEl('p', undefined, '严格模式下，远端申请开柜不会自动放行；请核对设备、托管项和代次后允许或拒绝。'))
++  if (releasePending.length === 0) owner.append(vaultEl('div', 'nv-empty', '没有待确认的开柜请求。'))
++  for (const item of releasePending) {
++    const card = vaultEl('div', 'nv-section nv-pending')
++    card.dataset.expiresAt = String(item.expiresAt)
++    const head = vaultEl('div', 'nv-pending-head')
++    head.append(vaultEl('span', 'nv-peer', item.peerId))
++    head.append(vaultEl('span', 'nv-badge', `代 ${String(item.gen)}`))
++    head.append(vaultEl('span', 'nv-countdown', remainingText(item.expiresAt)))
++    card.append(head)
++    card.append(vaultEl('div', 'nv-empty', `托管项 ${item.depositId.slice(0, 10)}…`))
++    const actions = vaultEl('div', 'nv-actions')
++    actions.append(vaultButton('允许本次开柜', () => { void releaseVault(item.id, 'approve') }))
++    actions.append(vaultButton('拒绝', () => { void releaseVault(item.id, 'deny') }))
++    card.append(actions)
++    owner.append(card)
++  }
+   owner.append(vaultEl('h3', undefined, '本机作为远端：托管给其他设备'))
+   owner.append(vaultEl('p', undefined, '远端本机持有钥匙；你可以随时撤销某台设备的全部托管，让它下一次打开时删除本地密文并回退完整拉取。'))
+   if ((vaultState.ownerPeers ?? []).length === 0) owner.append(vaultEl('div', 'nv-empty', '还没有设备托管本机数据。'))
+@@ -579,7 +599,7 @@ function renderVault(): void {
+   const policy = vaultEl('div', 'nv-policy')
+   const releaseLabel = vaultEl('label', 'nv-field', '开柜策略')
+   const release = vaultEl('select')
+-  for (const [value, label] of [['auto', '自动放行已信任设备'], ['confirm', '需要本机确认（暂未实现 UI）'], ['deny', '拒绝新开柜']] as const) {
++  for (const [value, label] of [['auto', '自动放行已信任设备'], ['confirm', '需要本机确认'], ['deny', '拒绝新开柜']] as const) {
+     const option = vaultEl('option', undefined, label)
+     option.value = value
+     if (vaultState.policy.release === value) option.selected = true
+@@ -634,6 +654,16 @@ async function openVaultDir(peerId: string): Promise<void> {
+   }
+ }
+ 
++async function releaseVault(id: string, action: 'approve' | 'deny'): Promise<void> {
++  try {
++    await vaultRequest('POST', 'vault/host/release', { id, action })
++    await loadVault()
++    setVaultStatus(action === 'approve' ? '已允许本次开柜' : '已拒绝本次开柜')
++  } catch (error) {
++    setVaultStatus(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
+ async function revokeVaultPeer(peerId: string): Promise<void> {
+   if (!window.confirm(`撤销 ${peerId} 对本机全部托管项的访问？对方下一次打开会删除本地密文。`)) return
+   try {

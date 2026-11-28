@@ -13,7 +13,9 @@
     - id: account-mesh
       name: dsh-account-mesh
       config:
-        autoTrustSameAccount: true
+        # Secure default: pair the first same-account device through the
+        # blocking dialog instead of trusting a self-reported account tag.
+        autoTrustSameAccount: false
         # Transfer codec (rc.11). `auto` enables JLC only in Night Cruising;
         # standard DSH always stays on JSONL. `off` forces JSONL in both.
         # codec: auto
@@ -40,7 +42,7 @@
         # Test-only: force a device id for two Hosts on one machine.
         # deviceId: ''
         # Optional MCP endpoint (streamable HTTP) exposing the same read-only
-        # operations to external MCP clients. Unset keeps it off; set mcpToken
-        # to require `Authorization: Bearer <token>`.
+        # operations to external MCP clients. Unset keeps it off. Setting
+        # mcpPort without a non-empty mcpToken refuses to start (fail closed).
         # mcpPort: 47990
-        # mcpToken: ''
+        # mcpToken: '<random>'

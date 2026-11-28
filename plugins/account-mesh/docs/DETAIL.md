@@ -43,7 +43,7 @@ ai 侧可用的工具（本地 agent 调用，不会写远端）：
 
 ### 当前范围
 
-rc.14 已实现 napi 绑定、传输方式状态/开关、双版本判定、设置页和站点配置，并接通 `mesh-bin` 的 JLC 块传输：`mesh_session_fetch`/`/account-mesh/api/fetch` 把整份会话拉入内存，按 manifest/block 分块校验，并把 archive 写入进程级 AES-256-GCM 加密“保险柜”（`dataDir/vault/*.ncv`，0600），关闭 DSH 清除；不写明文会话文件。原生 DSH 没有 JLC 时，`fetchJsonl` 按 `sessions/events` 每页 500 项串行拉取，返回可见进度；设置页提示用户可下载夜间巡航版加速。rc.14 同时修复了 >48 KiB RPC 文本分片重组的稀疏数组 bug（长会话挂起的根因）。当前“巡航加速中”表示 native 编解码器已加载；具体会话仍需用户触发拉取，不是所有 RPC 自动走 JLC。
+rc.16 已实现 napi 绑定、传输方式状态/开关、双版本判定、设置页和站点配置，并接通 `mesh-bin` 的 JLC 块传输与托管保险柜 NCV2：`mesh_session_fetch`/`/account-mesh/api/fetch` 把整份会话拉入内存，按 manifest/block 分块校验；archive + 投影 sidecar 写入用户选择根目录的 `.hdr/.dat`，密钥由远端按代发放；不写明文会话文件。原生 DSH 没有 JLC 时，`fetchJsonl` 按 `sessions/events` 每页 500 项串行拉取，返回可见进度；设置页提示用户可下载夜间巡航版加速。rc.14 同时修复了 >48 KiB RPC 文本分片重组的稀疏数组 bug（长会话挂起的根因）。rc.16 增加托管保险柜、本机目录倒计时审批、删除内容/重设目录、远端撤销和底部栏设置。当前“巡航加速中”表示 native 编解码器已加载；具体会话仍需用户触发拉取，不是所有 RPC 自动走 JLC。
 
 ### 托管保险柜（设计，未实现）
 
@@ -60,7 +60,7 @@ rc.13 的保险柜密钥只存在于进程内，重启后只能重拉全量。�
 1. **发现**：UDP 组播/广播（默认端口 `47831`）覆盖物理网段；Tailscale 不转发组播，所以同时用 `tailscale status --json` 列出 tailnet 在线设备并逐台单播探测。也可用 `staticPeers` 手动指定。
 2. **握手**：参考 p2play-js —— 每个设备对生成一个房间，设备 id 字典序小的一方发 offer，SDP/ICE 以带 Ed25519 签名的分片帧直连发送。
 3. **认证**：双方在数据通道上互发 nonce，签回对方的 nonce；只有签名与信任表里的公钥一致才放行。已信任设备换了公钥会重新绑定并告警。
-4. **首次信任**：同账号的陌生设备**不再被自动信任**。它照常被发现并排队成一条「待确认」请求，客户端弹出**阻塞式对话框**（`document.body` portal，覆盖整个应用；Escape 与遮罩点击都不能关闭，Tab 只在两个按钮间循环，未命名 modal 作用域会挡住所有应用快捷键），用户必须选「信任这台设备」或「拒绝并撤销」。在你选择之前，该设备的信令一律被丢弃，不会建立任何通道。
+4. **首次信任**：默认**不按同账号自动排队**；陌生设备只出现在发现列表，需要用户在面板或 `mesh_peer_pair` 中显式配对。开启 `autoTrustSameAccount` 后，同账号设备才会被排队成一条「待确认」请求，客户端弹出**阻塞式对话框**（`document.body` portal，覆盖整个应用；Escape 与遮罩点击都不能关闭，Tab 只在两个按钮间循环，未命名 modal 作用域会挡住所有应用快捷键），用户必须选「信任这台设备」或「拒绝并撤销」。在你选择之前，该设备的信令一律被丢弃，不会建立任何通道。
    - 对话框挂在 `shell.overlay`（frame 级 list slot，`id: account-mesh.trust-request`），所以无论当前在会话、设置页还是其它面板都会出现，离开设置页也不会消失。
    - 请求列表来自 Host 的 `/account-mesh/api/state` 轮询（2.5s 节奏，只影响显示，不中止任何请求），经 `@deepseek-ai/dsh-client-store` 的快照 store 发布给 overlay host。
 5. **撤销是持久的**：`forget` 不再删除条目，而是写入 `revoked: true` + `revokedAt`（`peers.json` 版本 2）。账号规则不会自动恢复被撤销的设备：后续 announce、心跳、信令都被忽略，重启后仍然撤销。只有显式 `pair`（面板「信任」按钮、`mesh_peer_pair` 工具或 `POST /account-mesh/api/pair`）能清除撤销。
@@ -81,7 +81,7 @@ rc.13 的保险柜密钥只存在于进程内，重启后只能重拉全量。�
 ## 限制
 
 - **只读**：不提供把内容写回远端的能力，也不改写远端会话日志。
-- **首次信任需要人工确认**：`autoTrustSameAccount` 默认开启时，首次接触仍要用户回答阻塞对话框；`accountTag` 只能证明对方自称同账号，局域网或 tailnet 内可被冒充，所以确认步骤是必要的。关闭 `autoTrustSameAccount` 后不再排队请求，只能手动信任。
+- **首次信任需要人工确认**：`autoTrustSameAccount` 默认**关闭**；关闭时同账号设备只做发现，不排队、不重绑，只能手动配对。开启后，首次接触会排队一条待确认请求（仍需用户在阻塞对话框里选择），但**已信任设备换钥会自动重绑**——`accountTag` 只能证明对方自称同账号，局域网或 tailnet 内可被冒充，所以默认关闭。
 - **撤销不会自动恢复**：被撤销的设备需要用户显式重新信任；这是设计上的持久状态，不是可以靠心跳冲掉的临时标记。
 - **范围**：一期只覆盖局域网与 Tailscale tailnet。跨公网需要自建信令与 STUN/TURN，未实现。
 - **路径**：文件读取限制在工作区、会话工作目录与 `allowRoots` 内，`realpath` 之后校验；检查与打开之间的符号链接替换（TOCTOU）未完全消除。
@@ -95,12 +95,12 @@ rc.13 的保险柜密钥只存在于进程内，重启后只能重拉全量。�
 
 插件没有 `Config` 导出，所有字段可选，写在 profile 的 `cordis.patch.yml`：
 
-> rc.14 新增 `deviceId` 仅用于同一台机器模拟两端测试；生产留空。`cacheMaxBytes` 是 JLC 内存缓存上限，不是模型用量门控。
+> rc.15 保留 `deviceId` 仅用于同一台机器模拟两端测试；生产留空。`cacheMaxBytes` 是 JLC 内存投影缓存上限，不是模型用量门控。
 
 ```yaml
 - id: account-mesh
   config:
-    autoTrustSameAccount: true
+    autoTrustSameAccount: false
     discoveryPort: 47831
     staticPeers: ['other-host:47831']
     tailscaleProbe: true
@@ -118,12 +118,12 @@ rc.13 的保险柜密钥只存在于进程内，重启后只能重拉全量。�
     vaultMaxBytes: 268435456   # 保险柜密文上限（默认 256 MiB）
     deviceId: ''              # 仅测试：同机模拟两端；生产留空
     mcpPort: 47990            # 可选：开启 MCP streamable-HTTP 端点
-    mcpToken: ''              # 可选：要求 Authorization: Bearer <token>
+    mcpToken: '<random>'      # 设置 mcpPort 时必填；空 token 会拒绝启动
 ```
 
 ### MCP 端点（可选）
 
-设置 `mcpPort` 后，插件在 `127.0.0.1:<mcpPort>/mcp` 上提供 MCP streamable-HTTP 端点（协议 `2025-06-18`），工具与 agent 工具一一对应且全部只读：`mesh_status`、`mesh_peers`、`mesh_session_list`、`mesh_session_read`、`mesh_session_summary`、`mesh_workspace_list`、`mesh_file_read`。没有写入、prompt、shell 或任意命令工具。
+设置 `mcpPort` 且配置非空 `mcpToken` 后，插件在 `127.0.0.1:<mcpPort>/mcp` 上提供 MCP streamable-HTTP 端点（协议 `2025-06-18`），工具与 agent 工具一一对应且全部只读：`mesh_status`、`mesh_peers`、`mesh_session_list`、`mesh_session_read`、`mesh_session_summary`、`mesh_workspace_list`、`mesh_file_read`。没有写入、prompt、shell 或任意命令工具。
 
 外部 MCP 客户端可在 profile 里用配置型 bundle 接入：
 
@@ -148,5 +148,5 @@ rc.13 的保险柜密钥只存在于进程内，重启后只能重拉全量。�
 - 本机（A）决定远端数据目录：`vault/host/root` 校验可写；默认目录失败/不可写时产生带倒计时的待确认项（`vault.approvalTimeout`），到期自动拒绝；`vault/host/open` 直接打开目录；`vault/host/delete` 删除内容后才允许更换目录。
 - 本机作为远端（B）可撤销某设备托管（`vault/revoke`），A 下次打开删除本地容器；B 的账本/根密钥保留。过期票据不会触发删除，容器留在本地。
 - 底栏“托管保险柜”入口在设置面板显示两个 scope：`远端在本机的托管`（目录/删除/待确认）和 `本机托管到远端的策略`（撤销/释放策略/钥匙 TTL 跳转超时设置）。`vault.approvalTimeout`、`vault.keyTtl` 在夜间巡航底栏“超时设置”中。
-- 当前 P1 使用已认证 DTLS/Ed25519 RPC 通道直接投递钥匙票据；设计中的额外 X25519 链路包裹尚未实现。`vaultRelease: confirm` 暂只返回拒绝，确认 UI 未实现。
+- 已实现 X25519 每链路临时密钥和 `K_g/K_{g+1}` 的 linkKey AES-GCM 包裹；`vaultRelease: confirm` 的 releasePending/approve/deny 与底栏确认卡片均已接入。
 - `.dat` 成员当前为 archive + projection；未来电台/游戏可使用同对象格式的额外成员，设计见 `docs/托管保险柜与本地缓存.md` §17。

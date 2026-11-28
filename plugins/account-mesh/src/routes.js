@@ -173,6 +173,14 @@ export function registerRoutes(ctx, mesh, log, codec = null) {
           const result = await mesh.deletePeerVault(peer)
           return json(res, 200, { ok: true, ...result, vault: await mesh.hostedVaultState() })
         }
+        if (route === '/api/vault/host/release' && req.method === 'POST') {
+          const body = await readBody(req)
+          const id = String(body.id ?? '')
+          const action = String(body.action ?? '')
+          if (!id || !['approve', 'deny'].includes(action)) return json(res, 400, { error: 'id and action are required' })
+          const ok = action === 'approve' ? await mesh.approveVaultRelease(id) : await mesh.denyVaultRelease(id)
+          return json(res, 200, { ok, vault: await mesh.hostedVaultState() })
+        }
         if (route === '/api/vault/host/policy' && req.method === 'POST') {
           const body = await readBody(req)
           try {

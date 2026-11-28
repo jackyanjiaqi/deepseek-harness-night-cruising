@@ -7,7 +7,7 @@ Read-only mesh between DSH instances signed in to the **same DeepSeek account**,
 - Discovery: UDP multicast/broadcast, plus unicast probing of tailnet peers (`tailscale status --json`) because multicast does not cross Tailscale.
 - Handshake: p2play-js style room / deterministic initiator / signed `offer`/`answer`/`ice` fragments over the same UDP socket.
 - Authentication: Ed25519 nonce challenge on the data channel, bound to a local trust table.
-- Trust: a first-contact peer waits for the user's answer in a blocking dialog (Trust or Refuse); revocation is durable (`revoked` in `peers.json`) and only an explicit pair clears it, so announce/heartbeat traffic can never re-trust a device the user refused.
+- Trust: first contact is never trusted automatically. With `autoTrustSameAccount` enabled, a same-account peer queues a blocking dialog (Trust or Refuse); otherwise pair it explicitly. Revocation is durable (`revoked` in `peers.json`) and only an explicit pair clears it, so announce/heartbeat traffic can never re-trust a device the user refused.
 - Data plane: read-only whitelist — sessions list/read, workspaces list, file list/stat/read. No write, prompt, shell or arbitrary-command path exists.
 - Trust requests: `mesh_peer_pair` answers a pending request; `mesh_peer_forget` revokes durably and sends a signed `revoke` notice so a same-version peer revokes this device too. The blocking dialog lives in the frame-wide `shell.overlay` slot (`id: account-mesh.trust-request`) and posts `POST /account-mesh/api/trust-request` with `{deviceId, decision: "trust" | "refuse"}`.
 - Transfer: JSONL by default in standard DSH; Night Cruising may enable the optional JLC codec after a restart. The setting page and site-owned download/featured links live in the `transfer` state.
@@ -32,7 +32,7 @@ Set `mcpPort` in the plugin config to expose the same read-only operations to ex
 - id: account-mesh
   config:
     mcpPort: 47990
-    mcpToken: ''        # set to require Authorization: Bearer <token>
+    mcpToken: '<random>'  # required when mcpPort is set
 ```
 
 Endpoint: `http://127.0.0.1:47990/mcp` (protocol `2025-06-18`). Tools: `mesh_status`, `mesh_peers`, `mesh_session_list`, `mesh_session_read`, `mesh_session_summary`, `mesh_workspace_list`, `mesh_file_read`. No write, prompt, shell or arbitrary-command tool exists.

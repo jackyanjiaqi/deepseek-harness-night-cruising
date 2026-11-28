@@ -114,6 +114,9 @@ export class Discovery {
       tailnet: { probes: 0, replies: 0, lastProbeAt: 0, lastReplyAt: 0, peers: 0 },
     }
     this.probeResults = new Map()
+    // Per-destination throttle for failed sends: a powered-off peer used to
+    // produce one warn line every few seconds and grow mesh.log forever.
+    this.sendFailureAt = new Map()
   }
 
   start() {
@@ -345,14 +348,34 @@ export class Discovery {
    * @param address - destination address.
    * @param port - destination port.
    */
+  /** At most one warn per destination per minute, with a suppressed count. */
+  warnSendFailure(address, port, error) {
+    const key = `${address}:${port}`
+    const at = Date.now()
+    const previous = this.sendFailureAt.get(key)
+    if (previous && at - previous.at < 60000) {
+      previous.count += 1
+      return
+    }
+    const suppressed = previous?.count ?? 0
+    this.sendFailureAt.set(key, { at, count: 0 })
+    if (this.sendFailureAt.size > 64) {
+      for (const [entryKey, entry] of this.sendFailureAt) {
+        if (at - entry.at > 300000) this.sendFailureAt.delete(entryKey)
+      }
+    }
+    const suffix = suppressed > 0 ? ` (${suppressed} similar failure(s) suppressed)` : ''
+    this.log?.warn?.(`discovery send to ${address}:${port} failed: ${error?.message ?? error}${suffix}`)
+  }
+
   sendRaw(buffer, address, port) {
     if (!this.socket) return
     try {
       this.socket.send(buffer, port, address, error => {
-        if (error) this.log?.warn?.(`discovery send to ${address}:${port} failed: ${error.message}`)
+        if (error) this.warnSendFailure(address, port, error)
       })
     } catch (error) {
-      this.log?.warn?.(`discovery send to ${address}:${port} failed: ${error?.message ?? error}`)
+      this.warnSendFailure(address, port, error)
     }
   }
 

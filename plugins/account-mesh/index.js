@@ -19,6 +19,7 @@ import { registerRoutes } from './src/routes.js'
 import { registerMcp } from './src/mcp.js'
 import { detectDistribution } from './src/distribution.js'
 import { CodecController } from './src/codec.js'
+import { hardenPermissions } from './src/permissions.js'
 
 export const name = 'account-mesh'
 export const inject = []
@@ -30,6 +31,8 @@ export function apply(ctx, config = {}) {
   const dataDir = config.dataDir || path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'account-mesh')
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 })
   const log = createLog({ dir: dataDir, debug: config.debug !== false, logger: ctx.logger })
+  const hardened = hardenPermissions(dataDir, log)
+  if (hardened.fixed.length > 0) log.info(`permissions: hardened ${hardened.fixed.length} path(s)`)
   log.info(`starting dsh-account-mesh ${version}`)
 
   // Edition gate for the optional JLC transfer codec. Standard DSH stays on

@@ -7,6 +7,7 @@
  * no prompt path and no shell path in this module.
  */
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { sliceLines } from './util.js'
 
@@ -110,12 +111,35 @@ export class DataPlane {
     this.config = config
     this.log = log
     this.rootsCache = { at: 0, roots: [] }
+    this.deniedCache = { at: 0, roots: [] }
   }
 
   sessionQuery() {
     const service = this.ctx.get('sessionQuery')
     if (!service) throw rpcError('service-missing', 'sessionQuery is not mounted in this Host')
     return service
+  }
+
+  /**
+   * Directories this plane must never serve, even when a workspace or an
+   * explicit root covers them: the plugin's own keys live under $DSH_HOME and
+   * a covered home directory must not turn a trusted peer into a key reader.
+   */
+  deniedRoots() {
+    if (Date.now() - this.deniedCache.at < 60000) return this.deniedCache.roots
+    const roots = new Set()
+    const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
+    for (const entry of [home, this.config?.dataDir]) {
+      if (!entry) continue
+      roots.add(realpathOf(entry) ?? path.resolve(String(entry)))
+    }
+    this.deniedCache = { at: Date.now(), roots: [...roots] }
+    return this.deniedCache.roots
+  }
+
+  isDenied(resolved) {
+    if (typeof resolved !== 'string') return false
+    return this.deniedRoots().some(root => isInside(root, resolved))
   }
 
   /** Allowed file roots, resolved to real paths and refreshed periodically. */
@@ -300,6 +324,7 @@ export class DataPlane {
     for (const candidate of candidates) {
       const resolved = realpathOf(candidate)
       if (!resolved) continue
+      if (this.isDenied(resolved)) throw rpcError('path-denied', `path is in a protected directory: ${input}`)
       const root = roots.find(entry => isInside(entry, resolved))
       if (!root) throw rpcError('path-outside', `path is outside the allowed roots: ${input}`)
       return { path: resolved, root }
@@ -309,7 +334,11 @@ export class DataPlane {
 
   async listFiles({ path: input } = {}) {
     const resolved = input ? await this.resolveReadable(input) : await this.resolveRootPath()
-    const entries = fs.readdirSync(resolved.path, { withFileTypes: true }).map(entry => {
+    if (this.isDenied(resolved.path)) throw rpcError('path-denied', `path is in a protected directory: ${resolved.path}`)
+    const entries = fs.readdirSync(resolved.path, { withFileTypes: true }).filter(entry => {
+      const real = realpathOf(path.join(resolved.path, entry.name))
+      return real === undefined || !this.isDenied(real)
+    }).map(entry => {
       const full = path.join(resolved.path, entry.name)
       let size
       let mtime
@@ -336,6 +365,7 @@ export class DataPlane {
     const first = registry?.list?.()[0]
     const resolved = realpathOf(first?.path)
     if (!resolved) throw rpcError('not-found', 'no workspace is available on this host')
+    if (this.isDenied(resolved)) throw rpcError('path-denied', 'the workspace is inside a protected directory')
     return { path: resolved, root: resolved }
   }
 

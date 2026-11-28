@@ -4,3 +4,4 @@
 003-timeout-policy.patch
 004-session-titles.patch
 005-test-infrastructure.patch
+006-vault-release-confirm.patch

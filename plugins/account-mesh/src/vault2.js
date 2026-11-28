@@ -26,7 +26,9 @@ import { signBytes, verifyBytes } from './identity.js'
 
 const MAGIC_HDR = 'NCV2'
 const MAGIC_DAT = 'NCV2D'
-const VERSION = 2
+const MAGIC_SINGLE = 'NCV2S'
+const VERSION = 3
+const SINGLE_HEADER_BYTES = 2048
 const NONCE = 12
 const TAG = 16
 const DEFAULT_KEY_TTL = 10 * 60 * 1000
@@ -61,6 +63,55 @@ function decryptBox(key, box, aad) {
   return Buffer.concat([decipher.update(body), decipher.final()])
 }
 
+function memberAad(type, version, aadBase) {
+  return `data|${type}|${aadBase}${type === 'projection' ? `|proj${version}` : ''}`
+}
+
+/** Pack typed encrypted members into the NCV2D member table. */
+function packMembers(members) {
+  const chunks = [Buffer.from(MAGIC_DAT, 'ascii'), Buffer.from([VERSION])]
+  const count = Buffer.alloc(2)
+  count.writeUInt16BE(members.length)
+  chunks.push(count)
+  for (const member of members) {
+    const type = Buffer.from(String(member.type), 'utf8')
+    const typeLength = Buffer.from([type.length])
+    const boxLength = Buffer.alloc(4)
+    boxLength.writeUInt32BE(member.box.length)
+    chunks.push(typeLength, type, boxLength, member.box)
+  }
+  return Buffer.concat(chunks)
+}
+
+/** Read the typed member table; unknown member types are retained for future callers. */
+function parseMembers(data, offset = 0) {
+  if (data.length < offset + 7 || data.subarray(offset, offset + 5).toString('ascii') !== MAGIC_DAT) {
+    throw new Error('bad NCV2 data')
+  }
+  let cursor = offset + 5
+  const version = data.readUInt8(cursor++)
+  if (version !== 2 && version !== VERSION) throw new Error('bad NCV2 data version')
+  if (version === 2) return { version, members: [{ type: 'archive', box: readV2Box(data, cursor, 0) }, { type: 'projection', box: readV2Box(data, cursor, 1) }], end: data.length }
+  const count = data.readUInt16BE(cursor); cursor += 2
+  const members = []
+  for (let index = 0; index < count; index += 1) {
+    const typeLength = data.readUInt8(cursor++); const type = data.subarray(cursor, cursor + typeLength).toString('utf8'); cursor += typeLength
+    const boxLength = data.readUInt32BE(cursor); cursor += 4
+    if (cursor + boxLength > data.length) throw new Error('bad NCV2 member')
+    members.push({ type, box: data.subarray(cursor, cursor + boxLength) })
+    cursor += boxLength
+  }
+  return { version, members, end: cursor }
+}
+
+function readV2Box(data, offset, index) {
+  const archiveLength = data.readUInt32BE(offset)
+  if (index === 0) return data.subarray(offset + 4, offset + 4 + archiveLength)
+  const second = offset + 4 + archiveLength
+  const length = data.readUInt32BE(second)
+  return data.subarray(second + 4, second + 4 + length)
+}
+
 function defaultRoot(peer, base = process.cwd()) {
   return path.join(base, '.night-cruising', 'vault', safeSegment(peer).slice(0, 24))
 }
@@ -82,6 +133,7 @@ export class HostedVault {
   constructor({ dataDir, config = {}, log, identity, statSession }) {
     this.dataDir = dataDir
     this.config = config
+    this.format = config.vaultFormat === 'split' ? 'split' : 'single'
     this.log = log
     this.identity = identity
     this.statSession = statSession
@@ -91,7 +143,7 @@ export class HostedVault {
     this.settingsPath = path.join(this.baseDir, 'host-settings.json')
     this.indexPath = path.join(this.baseDir, 'index.json')
     this.ledger = { version: 1, entries: {} }
-    this.settings = { version: 1, roots: {}, pending: {}, owner: {} }
+    this.settings = { version: 1, roots: {}, pending: {}, owner: {}, releasePending: {}, releaseApprovals: {} }
     this.index = { version: 1, containers: {} }
     this.rootKey = undefined
     this.ready = this.#init()
@@ -103,6 +155,8 @@ export class HostedVault {
     this.ledger = await this.#readJson(this.ledgerPath, this.ledger)
     this.settings = await this.#readJson(this.settingsPath, this.settings)
     this.settings.owner ??= {}
+    this.settings.releasePending ??= {}
+    this.settings.releaseApprovals ??= {}
     this.index = await this.#readJson(this.indexPath, this.index)
     await this.#prune()
   }
@@ -262,7 +316,7 @@ export class HostedVault {
     const entries = this.#entriesForPeer(peerId)
     for (const [hash, entry] of entries) {
       delete this.index.containers[hash]
-      await Promise.all([fsp.unlink(entry.hdrPath).catch(() => {}), fsp.unlink(entry.datPath).catch(() => {})])
+      await Promise.all([entry.singlePath ? fsp.unlink(entry.singlePath).catch(() => {}) : Promise.resolve(), entry.hdrPath ? fsp.unlink(entry.hdrPath).catch(() => {}) : Promise.resolve(), entry.datPath ? fsp.unlink(entry.datPath).catch(() => {}) : Promise.resolve()])
     }
     if (this.settings.roots?.[peerId]) this.settings.roots[peerId].clearedAt = Date.now()
     await this.#saveIndex()
@@ -312,15 +366,26 @@ export class HostedVault {
     const entry = this.index.containers?.[hashHex(logical)]
     if (!entry) return null
     try {
-      const header = JSON.parse(await fsp.readFile(entry.hdrPath, 'utf8'))
-      if (header.magic !== MAGIC_HDR || header.version !== VERSION) throw new Error('bad NCV2 header')
+      let header
+      if (entry.singlePath) {
+        const single = await fsp.readFile(entry.singlePath)
+        const headerLength = single.readUInt32BE(0)
+        if (headerLength < 2 || 4 + headerLength > SINGLE_HEADER_BYTES || SINGLE_HEADER_BYTES > single.length) throw new Error('bad NCV2S header')
+        header = JSON.parse(single.subarray(4, 4 + headerLength).toString('utf8'))
+        if (header.magic !== MAGIC_HDR || header.version !== VERSION) throw new Error('bad NCV2S container')
+        entry.lastUsedAt = Date.now()
+        await this.#saveIndex()
+        return { entry, header, single }
+      }
+      header = JSON.parse(await fsp.readFile(entry.hdrPath, 'utf8'))
+      if (header.magic !== MAGIC_HDR || ![2, VERSION].includes(header.version)) throw new Error('bad NCV2 header')
       if (!(await fsp.stat(entry.datPath)).isFile()) throw new Error('missing NCV2 data')
       entry.lastUsedAt = Date.now()
       await this.#saveIndex()
       return { entry, header }
     } catch (error) {
       this.log?.warn?.(`hosted vault local entry unusable: ${error.message}`)
-      await this.deleteLocal(peerId, sessionId, priority)
+      await this.deleteLocal(peerId, sessionId, priority, kind, objectId, variant)
       return null
     }
   }
@@ -328,10 +393,11 @@ export class HostedVault {
   /** Decrypt one local container with a released generation key. */
   async decrypt(local, key) {
     const header = local.header
-    const archiveBox = await this.#readDatBox(local.entry.datPath, 0)
-    const projectionBox = await this.#readDatBox(local.entry.datPath, 1)
+    const dat = local.single ? local.single.subarray(SINGLE_HEADER_BYTES) : await fsp.readFile(local.entry.datPath)
     const aadBase = `${header.depositId}|${header.archiveSha}`
     const dek = decryptBox(key, fromB64u(header.wrap), `hdr|${header.depositId}|${header.gen}|${header.archiveSha}`)
+    const archiveBox = this.#readDatBox(dat, 0)
+    const projectionBox = this.#readDatBox(dat, 1)
     const archive = decryptBox(dek, archiveBox, `data|archive|${aadBase}`)
     let projection
     try {
@@ -347,12 +413,13 @@ export class HostedVault {
     await this.ready
     if (!vault?.depositId || !vault?.key) return null
     const root = await this.ensureRoot(peerId)
-    const workspaceDir = path.join(root, workspaceRelative(sessionCwd))
+    const workspaceDir = path.join(root, kind, workspaceRelative(sessionCwd))
     await fsp.mkdir(workspaceDir, { recursive: true, mode: 0o700 })
     const logical = `${peerId}\u0000${kind}\u0000${objectId}\u0000${variant}`
     const base = hashHex(logical).slice(0, 40)
     const hdrPath = path.join(workspaceDir, `${base}.hdr`)
     const datPath = path.join(workspaceDir, `${base}.dat`)
+    const singlePath = path.join(workspaceDir, `${base}.ncv2`)
     const dek = crypto.randomBytes(32)
     const depositId = String(vault.depositId)
     const archiveSha = vault.archiveSha ?? sha256(archive).toString('hex')
@@ -362,62 +429,75 @@ export class HostedVault {
     const projection = zlib.gzipSync(Buffer.from(JSON.stringify({ version: 1, archiveSha, items, dialogItems })))
     const projectionBox = encryptBox(dek, projection, `data|projection|${aad}|proj1`)
     const dat = Buffer.alloc(5 + 1 + 4 + archiveBox.length + 4 + projectionBox.length)
-    dat.write(MAGIC_DAT, 0, 'ascii')
-    dat.writeUInt8(VERSION, 5)
-    dat.writeUInt32BE(archiveBox.length, 6)
-    archiveBox.copy(dat, 10)
-    dat.writeUInt32BE(projectionBox.length, 10 + archiveBox.length)
-    projectionBox.copy(dat, 14 + archiveBox.length)
-    const datTmp = `${datPath}.${process.pid}.tmp`
-    await fsp.writeFile(datTmp, dat, { mode: 0o600 })
-    await fsp.rename(datTmp, datPath)
+    dat.write(MAGIC_DAT, 0, 'ascii'); dat.writeUInt8(VERSION, 5)
+    dat.writeUInt32BE(archiveBox.length, 6); archiveBox.copy(dat, 10)
+    dat.writeUInt32BE(projectionBox.length, 10 + archiveBox.length); projectionBox.copy(dat, 14 + archiveBox.length)
     const key = fromB64u(vault.key)
-    const wrapAad = `hdr|${depositId}|${gen}|${archiveSha}`
-    const wrapped = encryptBox(key, dek, wrapAad)
-    const header = {
-      magic: MAGIC_HDR,
-      version: VERSION,
-      gen,
-      kind,
-      variant,
-      priority,
-      depositId,
-      archiveSha,
-      wrap: b64u(wrapped),
-      createdAt: Date.now(),
+    const wrapped = encryptBox(key, dek, `hdr|${depositId}|${gen}|${archiveSha}`)
+    const header = { magic: MAGIC_HDR, version: VERSION, gen, kind, variant, priority, objectIdHash: hashHex(objectId), depositId, archiveSha, wrap: b64u(wrapped), createdAt: Date.now() }
+    if (this.format === 'single') {
+      const headerBytes = Buffer.from(JSON.stringify(header), 'utf8')
+      if (headerBytes.length > SINGLE_HEADER_BYTES - 4) throw new Error('NCV2S header is too large')
+      const single = Buffer.alloc(SINGLE_HEADER_BYTES + dat.length)
+      single.writeUInt32BE(headerBytes.length, 0); headerBytes.copy(single, 4)
+      dat.copy(single, SINGLE_HEADER_BYTES)
+      const tmp = `${singlePath}.${process.pid}.tmp`
+      await fsp.writeFile(tmp, single, { mode: 0o600 }); await fsp.rename(tmp, singlePath)
+      await Promise.all([fsp.unlink(hdrPath).catch(() => {}), fsp.unlink(datPath).catch(() => {})])
+      this.index.containers[hashHex(logical)] = { peerId, sessionIdHash: hashHex(sessionId), objectIdHash: hashHex(objectId), kind, variant, priority, depositId, archiveSha, singlePath, bytes: single.length, lastUsedAt: Date.now() }
+      await this.#saveIndex()
+      return { singlePath, bytes: single.length }
     }
+    const datTmp = `${datPath}.${process.pid}.tmp`
+    await fsp.writeFile(datTmp, dat, { mode: 0o600 }); await fsp.rename(datTmp, datPath)
     const hdrTmp = `${hdrPath}.${process.pid}.tmp`
-    await fsp.writeFile(hdrTmp, `${JSON.stringify(header, null, 2)}\n`, { mode: 0o600 })
-    await fsp.rename(hdrTmp, hdrPath)
-    this.index.containers[hashHex(logical)] = {
-      peerId,
-      sessionIdHash: hashHex(sessionId),
-      kind,
-      variant,
-      priority,
-      depositId,
-      kind,
-      variant,
-      objectIdHash: hashHex(objectId),
-      archiveSha,
-      hdrPath,
-      datPath,
-      bytes: dat.length,
-      lastUsedAt: Date.now(),
-    }
+    await fsp.writeFile(hdrTmp, `${JSON.stringify(header, null, 2)}\n`, { mode: 0o600 }); await fsp.rename(hdrTmp, hdrPath)
+    this.index.containers[hashHex(logical)] = { peerId, sessionIdHash: hashHex(sessionId), objectIdHash: hashHex(objectId), kind, variant, priority, depositId, archiveSha, hdrPath, datPath, bytes: dat.length, lastUsedAt: Date.now() }
     await this.#saveIndex()
     return { hdrPath, datPath, bytes: dat.length }
   }
 
-  /** Re-wrap DEK into the next generation and atomically replace only `.hdr`. */
+  /**
+   * Generic object write for future radio/game payloads. `data` is the primary
+   * binary member; `metadata` is the encrypted projection/sidecar member.
+   */
+  async storeObject({ peerId, kind, objectId, variant = 'default', data, metadata = null, vault, sessionCwd }) {
+    return this.store({
+      peerId,
+      sessionId: objectId,
+      priority: variant,
+      kind,
+      objectId,
+      variant,
+      archive: Buffer.from(data),
+      items: metadata ?? {},
+      dialogItems: [],
+      vault,
+      sessionCwd,
+    })
+  }
+
+  /** Re-wrap DEK into the next generation and replace only the header. */  /** Re-wrap DEK into the next generation and replace only the header. */
   async rewrap(local, currentKey, nextKey, nextGen) {
     const header = local.header
     const dek = decryptBox(currentKey, fromB64u(header.wrap), `hdr|${header.depositId}|${header.gen}|${header.archiveSha}`)
     const wrapped = encryptBox(nextKey, dek, `hdr|${header.depositId}|${nextGen}|${header.archiveSha}`)
     const next = { ...header, gen: nextGen, wrap: b64u(wrapped) }
-    const tmp = `${local.entry.hdrPath}.${process.pid}.tmp`
-    await fsp.writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
-    await fsp.rename(tmp, local.entry.hdrPath)
+    if (local.single) {
+      const headerBytes = Buffer.from(JSON.stringify(next), 'utf8')
+      if (headerBytes.length > SINGLE_HEADER_BYTES - 4) throw new Error('NCV2S header is too large')
+      const handle = await fsp.open(local.entry.singlePath, 'r+')
+      try {
+        const region = Buffer.alloc(SINGLE_HEADER_BYTES)
+        region.writeUInt32BE(headerBytes.length, 0); headerBytes.copy(region, 4)
+        await handle.write(region, 0, SINGLE_HEADER_BYTES, 0)
+        await handle.sync()
+      } finally { await handle.close() }
+    } else {
+      const tmp = `${local.entry.hdrPath}.${process.pid}.tmp`
+      await fsp.writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
+      await fsp.rename(tmp, local.entry.hdrPath)
+    }
     local.header = next
     local.entry.depositId = next.depositId
     local.entry.archiveSha = next.archiveSha
@@ -431,14 +511,13 @@ export class HostedVault {
     const entry = this.index.containers?.[logicalHash]
     if (!entry) return false
     delete this.index.containers[logicalHash]
-    await Promise.all([fsp.unlink(entry.hdrPath).catch(() => {}), fsp.unlink(entry.datPath).catch(() => {})])
+    await Promise.all([entry.singlePath ? fsp.unlink(entry.singlePath).catch(() => {}) : Promise.resolve(), entry.hdrPath ? fsp.unlink(entry.hdrPath).catch(() => {}) : Promise.resolve(), entry.datPath ? fsp.unlink(entry.datPath).catch(() => {}) : Promise.resolve()])
     await this.#saveIndex()
     return true
   }
 
-  async #readDatBox(file, index) {
-    const dat = await fsp.readFile(file)
-    if (dat.length < 10 || dat.subarray(0, 5).toString('ascii') !== MAGIC_DAT || dat.readUInt8(5) !== VERSION) {
+  #readDatBox(dat, index) {
+    if (dat.length < 10 || dat.subarray(0, 5).toString('ascii') !== MAGIC_DAT) {
       throw new Error('bad NCV2 data')
     }
     if (index === 0) {
@@ -521,8 +600,19 @@ export class HostedVault {
     if (!Number.isSafeInteger(g) || g < entry.confirmedGen || g > entry.issuedGen) return { error: 'gen-mismatch' }
     const policy = await this.ownerPolicy()
     if (policy.release === 'deny') return { error: 'denied' }
-    if (policy.release === 'confirm') return { error: 'confirmation-required' }
     const now = Date.now()
+    if (policy.release === 'confirm') {
+      const approvalKey = `${depositId}:${g}`
+      const approval = this.settings.releaseApprovals?.[approvalKey]
+      if (!approval || approval.expiresAt <= now || approval.revoked) {
+        const existing = Object.values(this.settings.releasePending ?? {}).find(item => item.depositId === depositId && item.gen === g && !item.denied)
+        const id = existing?.id ?? b64u(crypto.randomBytes(12))
+        const expiresAt = existing?.expiresAt ?? now + await this.footerTimeout('vault.approvalTimeout', Number(this.config.vaultApprovalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT))
+        this.settings.releasePending[id] = { id, peerId, depositId, gen: g, archiveSha: entry.archiveSha, challenge: String(challenge ?? ''), createdAt: existing?.createdAt ?? now, expiresAt }
+        await this.#saveSettings()
+        return { error: 'confirmation-required', requestId: id, expiresAt }
+      }
+    }
     const keyTtl = policy.keyTtlMs
     const nextGen = g + 1
     const k = this.derive(depositId, peerId, entry.archiveSha, g)
@@ -564,6 +654,28 @@ export class HostedVault {
     entry.lastUsedAt = Date.now()
     await this.#saveLedger()
     return { ok: true, gen: g }
+  }
+
+  /** Owner approves one remote release request; the next vault/open succeeds. */
+  async approveRelease(id) {
+    await this.ready
+    const request = this.settings.releasePending?.[id]
+    if (!request || request.denied) return false
+    const policy = await this.ownerPolicy()
+    this.settings.releaseApprovals[`${request.depositId}:${request.gen}`] = { expiresAt: Date.now() + policy.keyTtlMs }
+    delete this.settings.releasePending[id]
+    await this.#saveSettings()
+    return true
+  }
+
+  async denyRelease(id) {
+    await this.ready
+    const request = this.settings.releasePending?.[id]
+    if (!request) return false
+    request.denied = true
+    request.deniedReason = 'local-user'
+    await this.#saveSettings()
+    return true
   }
 
   async revokePeer(peerId) {
@@ -637,6 +749,7 @@ export class HostedVault {
       roots,
       pending: pending.map(({ id, peerId, reason, suggestedRoot, expiresAt, createdAt, attempts }) => ({ id, peerId, reason, suggestedRoot, expiresAt, createdAt, attempts })),
       ownerPeers: [...ownerPeersMap.values()].map(item => ({ ...item, kinds: [...item.kinds] })),
+      releasePending: Object.values(this.settings.releasePending ?? {}).filter(item => !item.denied && item.expiresAt > Date.now()).map(({ id, peerId, depositId, gen, createdAt, expiresAt }) => ({ id, peerId, depositId, gen, createdAt, expiresAt })),
       policy: await this.ownerPolicy(),
     }
   }

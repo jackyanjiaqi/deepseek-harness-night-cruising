@@ -94,7 +94,7 @@ function containerFiles() {
     for (const name of fs.readdirSync(dir)) {
       const file = path.join(dir, name)
       if (fs.statSync(file).isDirectory()) walk(file)
-      else if (name.endsWith('.hdr') || name.endsWith('.dat')) found.push(file)
+      else if (name.endsWith('.hdr') || name.endsWith('.dat') || name.endsWith('.ncv2')) found.push(file)
     }
   }
   if (fs.existsSync(vaultRoot)) walk(vaultRoot)
@@ -112,8 +112,8 @@ try {
   const result = await meshA.fetchSession('device-beta', 'session-vault')
   check('first fetch deposits a hosted container', result.vaultStored === true && result.vaultHit === false, JSON.stringify({ vaultStored: result.vaultStored, vaultHit: result.vaultHit }))
   const files = containerFiles()
-  check('first fetch writes NCV2 hdr + dat', files.some(file => file.endsWith('.hdr')) && files.some(file => file.endsWith('.dat')), files.join(','))
-  const raw = files.find(file => file.endsWith('.dat'))
+  check('first fetch writes a single NCV2S container', files.some(file => file.endsWith('.ncv2')), files.join(','))
+  const raw = files.find(file => file.endsWith('.ncv2'))
   check('vault data has no plaintext', raw && !fs.readFileSync(raw).includes(Buffer.from('secret remote')))
   const state = await meshA.hostedVaultState()
   check('host state reports a peer root', state?.roots?.some(entry => entry.peerId === 'device-beta'), JSON.stringify(state))
@@ -123,6 +123,21 @@ try {
   const ack = await meshB.hostedVault.hostOpen({ peerId: 'device-alpha', depositId: local.header.depositId, gen: local.header.gen, challenge: 'test', archiveSha: local.header.archiveSha, priority: 'dialog' })
   const opened = await meshA.hostedVault.decrypt(local, Buffer.from(ack.key, 'base64url')).then(() => true, () => false)
   check('released key opens the container', opened)
+
+  // Future radio/game objects use the same hostRelease + storeObject path, with
+  // arbitrary binary data and metadata instead of a session archive.
+  for (const [kind, objectId, variant, payload] of [
+    ['radio', 'station-1', 'segment:1', Buffer.from('radio-opus-segment')],
+    ['game', 'room-1', 'asset-pack', Buffer.from('game-asset-pack')],
+  ]) {
+    const sha = crypto.createHash('sha256').update(payload).digest('hex')
+    const prepared = await meshB.hostedVault.hostPrepare({ peerId: 'device-alpha', sessionId: objectId, kind, objectId, variant, archiveSha: sha, archiveBytes: payload.length })
+    await meshA.hostedVault.storeObject({ peerId: 'device-beta', kind, objectId, variant, data: payload, metadata: { kind, objectId }, vault: prepared })
+    const object = await meshA.hostedVault.openLocal('device-beta', objectId, variant, kind, objectId, variant)
+    const release = await meshB.hostedVault.hostOpen({ peerId: 'device-alpha', depositId: object.header.depositId, gen: object.header.gen, challenge: 'media', archiveSha: sha, kind, objectId, variant })
+    const decoded = await meshA.hostedVault.decrypt(object, Buffer.from(release.key, 'base64url'))
+    check(`${kind} object stores and opens arbitrary data`, decoded.archive.equals(payload) && decoded.projection?.items?.objectId === objectId, JSON.stringify({ bytes: decoded.archive.length }))
+  }
   check('key TTL comes from the bottom-bar timeout store', Number(ack.expiresAt) - Date.now() <= 2000, String(Number(ack.expiresAt) - Date.now()))
   await meshA.stop(); await meshB.stop(); codecA.stop(); codecB.stop()
   await sleep(300)
@@ -139,6 +154,21 @@ try {
   const second = await secondA.fetchSession('device-beta', 'session-vault')
   check('restart opens from NCV2 with a vault hit', second.vaultHit === true && second.blocks === 0, JSON.stringify({ vaultHit: second.vaultHit, blocks: second.blocks }))
   check('sidecar projection survives restart', second.items?.length === 4 && second.dialogItems?.length >= 2, JSON.stringify({ items: second.items?.length, dialog: second.dialogItems?.length }))
+
+  // Strict release: first open queues a local approval, approve makes the next
+  // open succeed without changing the container.
+  await secondB.hostedVault.updateOwnerPolicy({ release: 'confirm' })
+  const strictLocal = await secondA.hostedVault.openLocal('device-beta', 'session-vault', 'dialog')
+  const strictRequest = await secondB.hostedVault.hostOpen({ peerId: 'device-alpha', depositId: strictLocal.header.depositId, gen: strictLocal.header.gen, challenge: 'strict', archiveSha: strictLocal.header.archiveSha, priority: 'dialog' })
+  check('confirm mode queues a release request', strictRequest.error === 'confirmation-required' && Boolean(strictRequest.requestId), JSON.stringify(strictRequest))
+  const strictState = await secondB.hostedVault.hostState()
+  check('release request appears in host state', strictState.releasePending?.some(item => item.id === strictRequest.requestId), JSON.stringify(strictState.releasePending))
+  await secondB.hostedVault.approveRelease(strictRequest.requestId)
+  const strictAck = await secondB.hostedVault.hostOpen({ peerId: 'device-alpha', depositId: strictLocal.header.depositId, gen: strictLocal.header.gen, challenge: 'strict', archiveSha: strictLocal.header.archiveSha, priority: 'dialog' })
+  check('approved release returns keys', strictAck.ok === true && typeof strictAck.key === 'string', JSON.stringify({ ok: strictAck.ok, error: strictAck.error }))
+  await secondB.hostedVault.updateOwnerPolicy({ release: 'auto' })
+
+
   const guarded = await meshA.setVaultRoot('device-beta', path.join(root, 'different-root')).then(() => null, error => error.code)
   check('root cannot change while content exists', guarded === 'vault-not-empty', String(guarded))
   const removed = await meshA.deletePeerVault('device-beta')

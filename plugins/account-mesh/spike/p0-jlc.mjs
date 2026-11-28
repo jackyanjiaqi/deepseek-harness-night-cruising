@@ -122,9 +122,9 @@ try {
 } finally {
   await meshA.stop(); await meshB.stop(); codecA.stop(); codecB.stop()
   const vaultFiles = []
-  const walk = dir => { if (!fs.existsSync(dir)) return; for (const name of fs.readdirSync(dir)) { const file = path.join(dir, name); if (fs.statSync(file).isDirectory()) walk(file); else if (name.endsWith('.hdr') || name.endsWith('.dat')) vaultFiles.push(file) } }
+  const walk = dir => { if (!fs.existsSync(dir)) return; for (const name of fs.readdirSync(dir)) { const file = path.join(dir, name); if (fs.statSync(file).isDirectory()) walk(file); else if (name.endsWith('.hdr') || name.endsWith('.dat') || name.endsWith('.ncv2')) vaultFiles.push(file) } }
   walk(path.join(root, 'local-vault'))
-  check('stop preserves hosted ciphertext for the next process', vaultFiles.length >= 2)
+  check('stop preserves hosted ciphertext for the next process', vaultFiles.length >= 1)
   console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`)
   process.exit(failures === 0 ? 0 : 1)
 }

@@ -68,13 +68,13 @@ const log = {
 
 const meshA = new Mesh({
   ctx: makeCtx({ workspace: workspaceA, deviceId: 'device-alpha' }),
-  config: { discoveryPort: 48101, staticPeers: ['127.0.0.1:48102'], dataDir: path.join(root, 'home-a') },
+  config: { discoveryPort: 48101, staticPeers: ['127.0.0.1:48102'], dataDir: path.join(root, 'home-a'), autoTrustSameAccount: true },
   log,
   version: '0.1.0-test',
 })
 const meshB = new Mesh({
   ctx: makeCtx({ workspace: workspaceB, deviceId: 'device-beta' }),
-  config: { discoveryPort: 48102, staticPeers: ['127.0.0.1:48101'], dataDir: path.join(root, 'home-b') },
+  config: { discoveryPort: 48102, staticPeers: ['127.0.0.1:48101'], dataDir: path.join(root, 'home-b'), autoTrustSameAccount: true },
   log,
   version: '0.1.0-test',
 })
@@ -206,7 +206,7 @@ try {
   check('reads stay refused after revocation', refused?.code === 'not-paired', refused?.code)
   const reloaded = new Mesh({
     ctx: makeCtx({ workspace: workspaceA, deviceId: 'device-alpha' }),
-    config: { discoveryPort: 48101, staticPeers: ['127.0.0.1:48102'], dataDir: path.join(root, 'home-a') },
+    config: { discoveryPort: 48101, staticPeers: ['127.0.0.1:48102'], dataDir: path.join(root, 'home-a'), autoTrustSameAccount: true },
     log,
     version: '0.1.0-test',
   })

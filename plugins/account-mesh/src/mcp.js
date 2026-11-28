@@ -246,7 +246,9 @@ function readBody(request, limit = 4 * 1024 * 1024) {
 }
 
 function authorized(request, token) {
-  if (!token) return true
+  // Fail closed. registerMcp() refuses to start without a token, so this is
+  // defense in depth: an empty token must never mean "no authentication".
+  if (!token) return false
   const header = String(request.headers.authorization ?? '')
   return header === `Bearer ${token}`
 }
@@ -262,8 +264,12 @@ export function registerMcp(ctx, mesh, log, config = {}) {
     return () => {}
   }
   const path = String(config.mcpPath ?? '/mcp')
-  const token = typeof config.mcpToken === 'string' ? config.mcpToken : ''
-  const host = String(config.mcpHost ?? (token ? '127.0.0.1' : '127.0.0.1'))
+  const token = typeof config.mcpToken === 'string' ? config.mcpToken.trim() : ''
+  if (!token) {
+    log.error('account-mesh: mcpPort is set but mcpToken is empty; refusing to start the MCP endpoint')
+    return () => {}
+  }
+  const host = String(config.mcpHost ?? '127.0.0.1')
   const tools = toolCatalogue(mesh)
   const sessions = new Map()
 

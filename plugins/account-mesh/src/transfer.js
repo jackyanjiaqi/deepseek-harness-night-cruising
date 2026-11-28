@@ -245,7 +245,7 @@ export class TransferManager {
   }
 
   /** Receiver: pull every block, assemble in memory and project it. */
-  async fetch({ peerId, sessionId, priority = 'dialog', call, onProgress, verifyVault }) {
+  async fetch({ peerId, sessionId, priority = 'dialog', call, onProgress, verifyVault, unsealVault, selfDeviceId }) {
     const native = this.native()
     const vaultKey = this.cacheKey(peerId, sessionId, priority)
     // Hosted NCV2: try a local container and ask the owner for the generation
@@ -265,8 +265,10 @@ export class TransferManager {
             objectId: sessionId,
             variant: priority,
           })
-          if (ack?.ok !== true || typeof ack.key !== 'string' || typeof ack.nextKey !== 'string') {
-            throw Object.assign(new Error(String(ack?.error ?? 'vault-open-rejected')), { code: `vault-${String(ack?.error ?? 'rejected')}` })
+          const hasRaw = typeof ack.key === 'string' && typeof ack.nextKey === 'string'
+          const hasBox = typeof ack.keyBox === 'string' && typeof ack.nextKeyBox === 'string'
+          if (ack?.ok !== true || (!hasRaw && !hasBox)) {
+            throw Object.assign(new Error(`vault open rejected: ${JSON.stringify(ack)}`), { code: `vault-${String(ack?.error ?? 'rejected')}` })
           }
           if (typeof verifyVault === 'function' && !verifyVault(ack)) {
             throw Object.assign(new Error('vault ticket signature is invalid'), { code: 'vault-bad-signature' })
@@ -274,8 +276,17 @@ export class TransferManager {
           if (Number(ack.expiresAt) <= Date.now()) {
             throw Object.assign(new Error('vault ticket has expired'), { code: 'vault-expired' })
           }
-          const currentKey = Buffer.from(ack.key, 'base64url')
-          const nextKey = Buffer.from(ack.nextKey, 'base64url')
+          let currentKey
+          let nextKey
+          if (typeof ack.keyBox === 'string' && typeof ack.nextKeyBox === 'string') {
+            const aad = `dsh-mesh/vault/v2/wrap|${local.header.depositId}|${local.header.gen}|${local.header.archiveSha}|${String(selfDeviceId ?? '')}`
+            currentKey = unsealVault?.(ack.keyBox, aad)
+            nextKey = unsealVault?.(ack.nextKeyBox, aad)
+            if (!currentKey || !nextKey) throw Object.assign(new Error('vault ticket box is invalid'), { code: 'vault-bad-box' })
+          } else {
+            currentKey = Buffer.from(ack.key, 'base64url')
+            nextKey = Buffer.from(ack.nextKey, 'base64url')
+          }
           const opened = await this.hostedVault.decrypt(local, currentKey)
           await this.hostedVault.rewrap(local, currentKey, nextKey, Number(ack.nextGen))
           call(peerId, 'vault/commit', { depositId: local.header.depositId, gen: Number(ack.nextGen) }).catch(error => {
@@ -301,7 +312,7 @@ export class TransferManager {
           }
         } catch (error) {
           this.log?.warn?.(`hosted vault open failed: ${error.message}`)
-          if (/^(vault-(revoked|unknown|peer-mismatch|archive-mismatch|kind-mismatch|gen-mismatch|bad-signature|denied))$/.test(String(error.code ?? ''))) {
+          if (/^(vault-(revoked|unknown|peer-mismatch|archive-mismatch|kind-mismatch|gen-mismatch|bad-signature|bad-box|denied))$/.test(String(error.code ?? ''))) {
             await this.hostedVault.deleteLocal(peerId, sessionId, priority)
           }
         }

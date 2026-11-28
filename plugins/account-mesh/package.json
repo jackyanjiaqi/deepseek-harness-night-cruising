@@ -1,6 +1,6 @@
 {
   "name": "dsh-account-mesh",
-  "version": "0.1.0-rc.15",
+  "version": "0.1.0-rc.17",
   "description": "Read-only same-account mesh between DSH instances on the LAN, including Tailscale, over WebRTC data channels",
   "license": "MIT",
   "author": "jackyanjiaqi",
@@ -68,10 +68,11 @@
     "tag": "next"
   },
   "scripts": {
-    "test": "node spike/p0-apply.mjs && node spike/p0-client.mjs",
+    "test": "node spike/p0-apply.mjs && node spike/p0-client.mjs && node spike/p0-security.mjs",
     "test:mesh": "IDLE_MS=33000 node spike/p0-mesh.mjs",
     "check": "for f in index.js client.js src/*.js; do node --check \"$f\" || exit 1; done",
     "test:jlc": "node spike/p0-jlc.mjs",
-    "test:vault": "node spike/p0-vault.mjs"
+    "test:vault": "node spike/p0-vault.mjs",
+    "test:security": "node spike/p0-security.mjs"
   }
 }

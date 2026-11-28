@@ -7,7 +7,7 @@
 - **发现**：UDP 组播/广播，加上对 tailnet 对端的单播探测（`tailscale status --json`），因为组播不跨 Tailscale。
 - **握手**：p2play-js 风格的房间 / 确定性发起方 / 在同一 UDP socket 上发送带签名的 `offer`/`answer`/`ice` 分片。
 - **认证**：数据通道上的 Ed25519 nonce 挑战，绑定本地信任表。
-- **信任**：首次接触的对端会在阻塞式对话框中等待用户回答（信任或拒绝）；撤销是持久的（`peers.json` 中的 `revoked`），只有显式配对才能清除，因此 announce/心跳流量永远无法把用户拒绝过的设备重新信任。
+- **信任**：首次接触默认不自动信任。开启 `autoTrustSameAccount` 时，同账号对端会排队进入阻塞式对话框（信任或拒绝）；否则需显式配对。撤销是持久的（`peers.json` 中的 `revoked`），只有显式配对才能清除，因此 announce/心跳流量永远无法把用户拒绝过的设备重新信任。
 - **数据面**：只读白名单 —— 会话列表/读取、工作区列表、文件列表/状态/读取。不存在写入、prompt、shell 或任意命令通道。
 - **信任请求**：`mesh_peer_pair` 回答一条待确认请求；`mesh_peer_forget` 执行持久撤销，并发送一条带签名的 `revoke` 通知，让同版本对端也撤销本设备。阻塞式对话框位于 frame 级 `shell.overlay` 槽位（`id: account-mesh.trust-request`），并通过 `POST /account-mesh/api/trust-request` 提交 `{deviceId, decision: "trust" | "refuse"}`。
 - **传输**：原生 DSH 默认 JSONL；夜间巡航版可在重启后启用可选的 JLC 编解码器。设置页与站点提供的下载/精选链接位于 `transfer` 状态中。
@@ -32,7 +32,7 @@
 - id: account-mesh
   config:
     mcpPort: 47990
-    mcpToken: ''        # 设置后要求 Authorization: Bearer <token>
+    mcpToken: '<随机值>'  # 设置 mcpPort 时必填
 ```
 
 端点：`http://127.0.0.1:47990/mcp`（协议 `2025-06-18`）。工具：`mesh_status`、`mesh_peers`、`mesh_session_list`、`mesh_session_read`、`mesh_session_summary`、`mesh_workspace_list`、`mesh_file_read`。不存在写入、prompt、shell 或任意命令工具。

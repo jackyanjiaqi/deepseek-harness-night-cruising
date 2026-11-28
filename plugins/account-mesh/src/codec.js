@@ -433,8 +433,16 @@ function readSettingsFile(file) {
 function writeSettingsFile(file, settings) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   const temporary = `${file}.tmp`
-  fs.writeFileSync(temporary, `${JSON.stringify(settings)}\n`, 'utf8')
+  // Remove a stale temp file first: writeFileSync's mode only applies on
+  // create, and a leftover 0644 temp file must not carry over via rename.
+  fs.rmSync(temporary, { force: true })
+  fs.writeFileSync(temporary, `${JSON.stringify(settings)}\n`, { encoding: 'utf8', mode: 0o600 })
   fs.renameSync(temporary, file)
+  try {
+    fs.chmodSync(file, 0o600)
+  } catch {
+    // Best effort: startup hardening retries every sensitive file.
+  }
 }
 
 function hasLinks(links) {
